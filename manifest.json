@@ -1,9 +1,9 @@
 {
-	"id": "obsidian-plugin-template",
-	"name": "Obsidian Plugin Template",
+	"id": "obsidian-property-porter",
+	"name": "Property Porter",
 	"version": "0.1.0",
 	"minAppVersion": "1.9.0",
-	"description": "Replace this description with what your plugin does.",
+	"description": "Copy YAML frontmatter properties from one note and paste them into another.",
 	"author": "Scott Otterson",
 	"authorUrl": "https://github.com/notuntoward",
 	"isDesktopOnly": false

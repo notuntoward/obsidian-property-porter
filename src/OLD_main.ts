@@ -77,12 +77,16 @@ export default class PropertyPorter extends Plugin {
 
 	getParsedFrontmatter(file: TFile): Record<string, unknown> {
 		const cache = this.app.metadataCache.getFileCache(file);
-		if (!cache?.frontmatter) return {};
-		
-		const fm = { ...cache.frontmatter };
-		// Obsidian injects a positional cache object; we don't want to copy/paste it
-		delete fm.position; 
-		return fm;
+		return cache?.frontmatter ? { ...cache.frontmatter } : {};
+	}
+
+	hasFrontmatter(raw: string): boolean {
+		return /^---\r?\n/.test(raw);
+	}
+
+	extractBody(raw: string): string {
+		const match = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
+		return match ? match[2] : raw;
 	}
 
 	getFilteredSourceFrontmatter(): Promise<Record<string, unknown> | null> {
@@ -119,6 +123,51 @@ export default class PropertyPorter extends Plugin {
 		return Promise.resolve(result);
 	}
 
+
+	stringifyFrontmatter(fm: Record<string, unknown>): string {
+		const lines: string[] = ["---"];
+		for (const [key, value] of Object.entries(fm)) {
+			lines.push(`${key}: ${this.serializeValue(value)}`);
+		}
+		lines.push("---");
+		return lines.join("\n");
+	}
+
+	serializeValue(value: unknown): string {
+		if (value === null || value === undefined) return "";
+		if (Array.isArray(value)) {
+			const items = value.map((v) => this.serializeScalar(v)).join(", ");
+			return `[${items}]`;
+		}
+		if (typeof value === "object") {
+			const inner = Object.entries(value as Record<string, unknown>)
+				.map(([k, v]) => `${k}: ${this.serializeScalar(v)}`)
+				.join(", ");
+			return `{ ${inner} }`;
+		}
+		return this.serializeScalar(value);
+	}
+
+	serializeScalar(value: unknown): string {
+		if (typeof value === "string") {
+			if (
+				/[:\{\}\[\],#&\*!\|>'"%@`\n]/.test(value) ||
+				value.includes(" ") ||
+				value === ""
+			) {
+				return `"${value.replace(/"/g, '\\"')}"`;
+			}
+			return value;
+		}
+		if (typeof value === "number" || typeof value === "boolean") return String(value);
+		if (value === null) return "null";
+		return String(value);
+	}
+
+	async getFileContent(file: TFile): Promise<string> {
+		return this.app.vault.cachedRead(file);
+	}
+
 	copyProperties(): void {
 		const fmPromise = this.getFilteredSourceFrontmatter();
 		fmPromise.then((fm) => {
@@ -142,23 +191,40 @@ export default class PropertyPorter extends Plugin {
 			return;
 		}
 
-		const file = targetFile ?? await this.pickTargetFile();
+		let file = targetFile;
+		if (!file) {
+			file = await this.pickTargetFile();
+		}
 		if (!file) return;
 
-		// Use Obsidian's native fileManager to safely read/write frontmatter
-		await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
-			const existingFm = { ...frontmatter };
-			delete existingFm.position;
+		const raw = await this.getFileContent(file);
+		const existingFm = this.getParsedFrontmatter(file);
+		const hasExisting = this.hasFrontmatter(raw);
+		const body = this.extractBody(raw);
 
-			const merged = this.mergeFrontmatter(this.clipboard, existingFm);
+		const merged = this.mergeFrontmatter(this.clipboard, existingFm);
 
-			// Apply the merged properties back onto the mutated object
-			for (const [key, value] of Object.entries(merged)) {
-				frontmatter[key] = value;
+		const fmLines: string[] = [];
+		for (const [key, value] of Object.entries(merged)) {
+			if (Array.isArray(value)) {
+				fmLines.push(`${key}:`);
+				for (const item of value) {
+					fmLines.push(`  - ${this.serializeScalar(item)}`);
+				}
+			} else {
+				fmLines.push(`${key}: ${this.serializeValue(value)}`);
 			}
-		});
+		}
+		const fmContent = fmLines.join("\n");
 
-		new Notice(`Property Porter: Pasted properties into ${file.basename}`);
+		const newContent = hasExisting
+			? `---\n${fmContent}\n---\n${body}`
+			: `---\n${fmContent}\n---\n\n${raw}`;
+
+		await this.app.vault.process(file, () => newContent);
+		new Notice(
+			`Property Porter: Pasted ${Object.keys(merged).length} properties into ${file.basename}`
+		);
 
 		if (this.settings.autoClear) {
 			this.clearClipboard();
