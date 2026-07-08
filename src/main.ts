@@ -1,9 +1,14 @@
 import { App, Plugin, PluginSettingTab, Setting, TFile, Notice, SuggestModal } from "obsidian";
+import {
+	filterFrontmatter,
+	mergeFrontmatter,
+	type PasteMode,
+} from "./frontmatter";
 
 interface PropertyPorterSettings {
 	onlyInclude: string;
 	excludeKeys: string;
-	pasteMode: "overwrite" | "skip" | "merge";
+	pasteMode: PasteMode;
 	autoClear: boolean;
 }
 
@@ -93,28 +98,11 @@ export default class PropertyPorter extends Plugin {
 		}
 
 		const fm = this.getParsedFrontmatter(active);
-
-		const onlyInclude = this.settings.onlyInclude
-			.split(",")
-			.map((s) => s.trim())
-			.filter(Boolean);
-
-		let result: Record<string, unknown> = {};
-
-		if (onlyInclude.length > 0) {
-			for (const key of onlyInclude) {
-				if (key in fm) result[key] = fm[key];
-			}
-		} else {
-			const exclude = this.settings.excludeKeys
-				.split(",")
-				.map((s) => s.trim().toLowerCase())
-				.filter(Boolean);
-			result = { ...fm };
-			for (const key of Object.keys(result)) {
-				if (exclude.includes(key.toLowerCase())) delete result[key];
-			}
-		}
+		const result = filterFrontmatter(
+			fm,
+			this.settings.onlyInclude,
+			this.settings.excludeKeys
+		);
 
 		return Promise.resolve(result);
 	}
@@ -195,90 +183,25 @@ export default class PropertyPorter extends Plugin {
 		source: Record<string, unknown>,
 		destination: Record<string, unknown>
 	): Record<string, unknown> {
-		const mode = this.settings.pasteMode;
-		const result: Record<string, unknown> = { ...destination };
-
-		for (const key of Object.keys(source)) {
-			if (mode === "skip" && key in destination) continue;
-
-			if (mode === "merge") {
-				result[key] = this.deepMerge(source[key], destination[key]);
-			} else {
-				result[key] = source[key];
-			}
-		}
-
-		return result;
+		return mergeFrontmatter(source, destination, this.settings.pasteMode);
 	}
 
-	deepMerge(source: unknown, destination: unknown): unknown {
-		if (
-			source === null ||
-			source === undefined ||
-			source === "" ||
-			(Array.isArray(source) && (source as unknown[]).length === 0)
-		) {
-			return destination;
-		}
-		if (
-			destination === null ||
-			destination === undefined ||
-			destination === "" ||
-			(Array.isArray(destination) && (destination as unknown[]).length === 0)
-		) {
-			return source;
-		}
-
-		const sourceArray = Array.isArray(source);
-		const destArray = Array.isArray(destination);
-
-		if (sourceArray && destArray) {
-			return this.mergeArrays(
-				source as unknown[],
-				destination as unknown[]
-			);
-		}
-		if (sourceArray || destArray) {
-			return source;
-		}
-		if (typeof source === "object" && typeof destination === "object") {
-			const destObj = destination as Record<string, unknown>;
-			const sourceObj = source as Record<string, unknown>;
-			const out: Record<string, unknown> = { ...destObj };
-			for (const key of Object.keys(sourceObj)) {
-				if (key in destObj) {
-					out[key] = this.deepMerge(sourceObj[key], destObj[key]);
-				} else {
-					out[key] = sourceObj[key];
-				}
-			}
-			return out;
-		}
-		return source;
-	}
-
-	normalizeArrayItems(arr: unknown[]): unknown[] {
-		return arr.map((item) =>
-			typeof item === "string" ? item.replace(/^#/, "") : item
+	deepMerge(_source: unknown, _destination: unknown): unknown {
+		throw new Error(
+			"deepMerge is extracted to ./frontmatter and should not be called on the plugin instance."
 		);
 	}
 
-	mergeArrays(source: unknown[], destination: unknown[]): unknown[] {
-		const normalizedSource = this.normalizeArrayItems(source);
-		const normalizedDest = this.normalizeArrayItems(destination);
+	mergeArrays(_source: unknown[], _destination: unknown[]): unknown[] {
+		throw new Error(
+			"mergeArrays is extracted to ./frontmatter and should not be called on the plugin instance."
+		);
+	}
 
-		const seen = new Set(normalizedDest.map((v) => JSON.stringify(v)));
-		const result = [...normalizedDest];
-
-		for (const item of normalizedSource) {
-			const key = JSON.stringify(item);
-			if (!seen.has(key)) {
-				result.push(item);
-				seen.add(key);
-			}
-		}
-
-		return result;
+	normalizeArrayItems(_arr: unknown[]): unknown[] {
+		throw new Error(
+			"normalizeArrayItems is extracted to ./frontmatter and should not be called on the plugin instance."
+		);
 	}
 }
 
