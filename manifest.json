@@ -1,0 +1,10 @@
+{
+	"id": "obsidian-plugin-template",
+	"name": "Obsidian Plugin Template",
+	"version": "0.1.0",
+	"minAppVersion": "1.9.0",
+	"description": "Replace this description with what your plugin does.",
+	"author": "Scott Otterson",
+	"authorUrl": "https://github.com/notuntoward",
+	"isDesktopOnly": false
+}
