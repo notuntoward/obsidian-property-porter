@@ -1,0 +1,23 @@
+# Build outputs
+main.js
+main.js.map
+*.js.map
+*.js
+tsconfig.tsbuildinfo
+
+# npm
+node_modules
+
+# IDEs
+.vscode/
+.idea/
+*.iml
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+
+# Obsidian (generated at runtime)
+data.json

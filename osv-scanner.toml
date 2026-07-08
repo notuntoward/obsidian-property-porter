@@ -1,0 +1,12 @@
+# OSV-Scanner configuration
+# Used by OpenSSF Scorecard's Vulnerabilities check.
+# See: https://google.github.io/osv-scanner/configuration/
+
+# ---------- esbuild dev-server false positive -----------------------------
+# esbuild <0.25.0 has a reported dev-server vulnerability (GHSA-67mh-4wv8-2f99)
+# that only affects the `esbuild --serve` dev server. Production plugin builds
+# use `esbuild production` (no dev server) and ship a static bundle, so the
+# advisory does not apply. Keep esbuild pinned/updated to avoid the alert.
+
+# Add [[IgnoredVulns]] entries here for any other advisories you have reviewed
+# and determined not to apply to this plugin's production bundle.
