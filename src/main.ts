@@ -257,16 +257,27 @@ export default class PropertyPorter extends Plugin {
 		return source;
 	}
 
+	normalizeArrayItems(arr: unknown[]): unknown[] {
+		return arr.map((item) =>
+			typeof item === "string" ? item.replace(/^#/, "") : item
+		);
+	}
+
 	mergeArrays(source: unknown[], destination: unknown[]): unknown[] {
-		const seen = new Set(destination.map((v) => JSON.stringify(v)));
-		const result = [...destination];
-		for (const item of source) {
+		const normalizedSource = this.normalizeArrayItems(source);
+		const normalizedDest = this.normalizeArrayItems(destination);
+
+		const seen = new Set(normalizedDest.map((v) => JSON.stringify(v)));
+		const result = [...normalizedDest];
+
+		for (const item of normalizedSource) {
 			const key = JSON.stringify(item);
 			if (!seen.has(key)) {
 				result.push(item);
 				seen.add(key);
 			}
 		}
+
 		return result;
 	}
 }
