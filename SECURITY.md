@@ -8,7 +8,7 @@ vulnerability, please report it **privately** before opening a public issue.
 ### How to report
 
 * **GitHub Advisories**: Use GitHub's private vulnerability reporting feature at
-  <https://github.com/notuntoward/obsidian-plugin-template/security/advisories/new>
+  <https://github.com/notuntoward/obsidian-property-porter/security/advisories/new>
 
 Please include the following in your report:
 
