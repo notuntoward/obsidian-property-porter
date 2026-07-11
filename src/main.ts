@@ -90,33 +90,29 @@ export default class PropertyPorter extends Plugin {
 		return fm;
 	}
 
-	getFilteredSourceFrontmatter(): Promise<Record<string, unknown> | null> {
+	getFilteredSourceFrontmatter(): Record<string, unknown> | null {
 		const active = this.getActiveFile();
 		if (!active) {
 			new Notice("Property Porter: No active file");
-			return Promise.resolve(null);
+			return null;
 		}
 
 		const fm = this.getParsedFrontmatter(active);
-		const result = filterFrontmatter(
+		return filterFrontmatter(
 			fm,
 			this.settings.onlyInclude,
 			this.settings.excludeKeys
 		);
-
-		return Promise.resolve(result);
 	}
 
-	copyProperties(): void {
-		const fmPromise = this.getFilteredSourceFrontmatter();
-		fmPromise.then((fm) => {
-			if (!fm) return;
-			this.clipboard = fm;
-			this.updateStatusBar();
-			new Notice(
-				`Porter clipboard: ${Object.keys(this.clipboard).length} properties copied`
-			);
-		});
+	async copyProperties(): Promise<void> {
+		const fm = this.getFilteredSourceFrontmatter();
+		if (!fm) return;
+		this.clipboard = fm;
+		this.updateStatusBar();
+		new Notice(
+			`Property Porter: ${Object.keys(this.clipboard).length} properties copied`
+		);
 	}
 
 	clearClipboard(): void {
