@@ -94,6 +94,11 @@ describe("deepMerge", () => {
 		expect(deepMerge("src", "dest")).toBe("src");
 		expect(deepMerge(1, 2)).toBe(1);
 	});
+
+	it("returns source when one value is an array and the other is not", () => {
+		expect(deepMerge(["a"], "dest")).toEqual(["a"]);
+		expect(deepMerge("src", ["b"])).toBe("src");
+	});
 });
 
 describe("mergeFrontmatter", () => {

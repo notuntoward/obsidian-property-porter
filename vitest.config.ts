@@ -17,7 +17,6 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       include: ['src/**/*.ts'],
-      exclude: ['src/main.ts'], // main.ts is too coupled to Obsidian API to unit test
     },
   },
 });

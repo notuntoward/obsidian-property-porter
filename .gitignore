@@ -8,6 +8,9 @@ tsconfig.tsbuildinfo
 # npm
 node_modules
 
+# Test coverage
+coverage/
+
 # IDEs
 .vscode/
 .idea/
