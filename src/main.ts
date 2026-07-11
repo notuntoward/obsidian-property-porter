@@ -201,7 +201,7 @@ export default class PropertyPorter extends Plugin {
 	}
 }
 
-class SuggestFilesModal extends SuggestModal<TFile> {
+export class SuggestFilesModal extends SuggestModal<TFile> {
 	constructor(app: App, private readonly files: TFile[], private readonly onSelect: (file: TFile) => void) {
 		super(app);
 	}
@@ -221,7 +221,7 @@ class SuggestFilesModal extends SuggestModal<TFile> {
 	}
 }
 
-class PropertyPorterSettingTab extends PluginSettingTab {
+export class PropertyPorterSettingTab extends PluginSettingTab {
 	constructor(app: App, private readonly plugin: PropertyPorter) {
 		super(app, plugin);
 	}
