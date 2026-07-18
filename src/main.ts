@@ -14,6 +14,7 @@ import {
 import {
 	filterFrontmatter,
 	mergeFrontmatter,
+	unionFrontmatter,
 	isEmptyPropertyValue,
 	countPropertyValue,
 	parseCommaList,
@@ -86,6 +87,12 @@ export default class PropertyPorter extends Plugin {
 			id: "paste-into-active-tab-group",
 			name: "Paste properties into the active tab group",
 			callback: () => this.pasteIntoActiveTabGroup(),
+		});
+
+		this.addCommand({
+			id: "copy-from-active-tab-group",
+			name: "Copy properties from the active tab group",
+			callback: () => this.copyPropertiesFromActiveTabGroup(),
 		});
 
 		this.addCommand({
@@ -182,6 +189,25 @@ export default class PropertyPorter extends Plugin {
 		const fm = this.getFilteredSourceFrontmatter(file);
 		if (!fm) return;
 		this.applyClipboard(fm);
+	}
+
+	// Collects properties from every note in the active tab group, reusing the
+	// same group resolution and per-note filtering as the other commands, then
+	// unions them into a single clipboard payload (list properties accumulate
+	// every distinct value across the notes).
+	async copyPropertiesFromActiveTabGroup(): Promise<void> {
+		const files = this.getActiveTabGroupFiles();
+		if (files.length === 0) {
+			new Notice("Property Porter: No markdown files in the active tab group");
+			return;
+		}
+
+		const collected = files
+			.map((file) => this.getFilteredSourceFrontmatter(file))
+			.filter((fm): fm is Record<string, unknown> => fm !== null);
+		if (collected.length === 0) return;
+
+		this.applyClipboard(unionFrontmatter(collected));
 	}
 
 	clearClipboard(): void {
