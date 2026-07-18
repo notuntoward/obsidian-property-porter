@@ -13,14 +13,27 @@ Copy some or all YAML frontmatter properties from one note and paste them into a
 3. Run `npm run build`.
 4. Enable **Property Porter** in Obsidian's Community Plugins settings.
 
+## Terminology
+
+Precise wording matters here because "property" and "tag" mean different things:
+
+- **Property** — a YAML frontmatter *key*, e.g. `tags`, `status`, `aliases`. The **Only include** and **Exclude keys** settings operate on properties.
+- **Property value** — whatever is stored under a property key. For `tags`, that's a list; for `status`, that might be a single string.
+- **Item** — one element of a *list-type* property's value. Each tag in `tags: [a, b, c]` is an item of the `tags` property — an item is never itself a "property".
+
+Currently, only the `tags` property has a dedicated item picker (**Select tags to paste**, below); every other property is copied or pasted as a whole value via **Copy properties**/**Paste properties**.
+
 ## Usage
 
-Property Porter provides four commands:
+Property Porter provides five commands:
 
-- **Copy properties from active note** — saves the selected properties from the active file into an internal clipboard. The status bar shows `PP: N` with the number of copied properties.
+- **Copy properties from active note** — saves the properties matching **Only include**/**Exclude keys** from the active file into an internal clipboard, replacing whatever was there before. The status bar shows `PP: N`, where `N` is the total number of individual values copied (each list item counts separately; e.g. three tags shows `PP: 3`).
 - **Paste properties into another note** — opens a file picker so you can choose which file to paste into.
 - **Paste properties into active note** — pastes directly into whichever file is active.
-- **Clear clipboard** — empties the internal clipboard.
+- **Select tags to paste** — opens a searchable picker over every tag used anywhere in the vault so you can build up a `tags` list to paste, without needing an active note with those exact tags already on it. Requires **Only include** to be set to exactly `tags`. The picker is seeded with whatever tags are already in the clipboard, so you can keep adding across multiple runs; use "Clear all" or Ctrl/Cmd+Backspace to empty it, or the × on any tag to drop just that one. Type to filter, Enter to add the highlighted tag, Enter again on an empty search box (or "Finish selection") to commit. Esc cancels without changing the clipboard.
+- **Clear properties** — empties the internal clipboard.
+
+Commands other than **Select tags to paste** always *replace* the clipboard outright; they don't merge with whatever was copied/selected before.
 
 ## Settings
 

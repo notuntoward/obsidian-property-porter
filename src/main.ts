@@ -1,7 +1,20 @@
-import { App, Plugin, PluginSettingTab, Setting, TFile, Notice, SuggestModal } from "obsidian";
+import {
+	App,
+	Plugin,
+	PluginSettingTab,
+	Setting,
+	TFile,
+	Notice,
+	SuggestModal,
+	Modal,
+	getAllTags,
+} from "obsidian";
 import {
 	filterFrontmatter,
 	mergeFrontmatter,
+	isEmptyPropertyValue,
+	countPropertyValue,
+	parseCommaList,
 	type PasteMode,
 } from "./frontmatter";
 
@@ -18,6 +31,18 @@ const DEFAULT_SETTINGS: PropertyPorterSettings = {
 	pasteMode: "merge",
 	autoClear: false,
 };
+
+// Obsidian injects a positional cache object (`position`) into frontmatter
+// read from metadataCache/processFrontMatter; strip it before copy/paste so
+// we never write it back and corrupt the destination file's internal
+// tracking data.
+function stripPosition(
+	fm: Record<string, unknown>
+): Record<string, unknown> {
+	const copy = { ...fm };
+	delete copy.position;
+	return copy;
+}
 
 export default class PropertyPorter extends Plugin {
 	settings: PropertyPorterSettings = DEFAULT_SETTINGS;
@@ -50,8 +75,14 @@ export default class PropertyPorter extends Plugin {
 
 		this.addCommand({
 			id: "clear-clipboard",
-			name: "Clear clipboard",
+			name: "Clear properties",
 			callback: () => this.clearClipboard(),
+		});
+
+		this.addCommand({
+			id: "select-tags-to-paste",
+			name: "Select tags to paste",
+			callback: () => this.selectTagsToPaste(),
 		});
 
 		this.addSettingTab(new PropertyPorterSettingTab(this.app, this));
@@ -71,8 +102,16 @@ export default class PropertyPorter extends Plugin {
 		this.updateStatusBar();
 	}
 
+	countClipboardValues(): number {
+		let sum = 0;
+		for (const value of Object.values(this.clipboard)) {
+			sum += countPropertyValue(value);
+		}
+		return sum;
+	}
+
 	updateStatusBar(): void {
-		const count = Object.keys(this.clipboard).length;
+		const count = this.countClipboardValues();
 		this.statusBarItem.setText(count > 0 ? `PP: ${count}` : "");
 	}
 
@@ -83,11 +122,7 @@ export default class PropertyPorter extends Plugin {
 	getParsedFrontmatter(file: TFile): Record<string, unknown> {
 		const cache = this.app.metadataCache.getFileCache(file);
 		if (!cache?.frontmatter) return {};
-		
-		const fm = { ...cache.frontmatter };
-		// Obsidian injects a positional cache object; we don't want to copy/paste it
-		delete fm.position; 
-		return fm;
+		return stripPosition(cache.frontmatter);
 	}
 
 	getFilteredSourceFrontmatter(): Record<string, unknown> | null {
@@ -110,8 +145,9 @@ export default class PropertyPorter extends Plugin {
 		if (!fm) return;
 		this.clipboard = fm;
 		this.updateStatusBar();
+		const count = this.countClipboardValues();
 		new Notice(
-			`Property Porter: ${Object.keys(this.clipboard).length} properties copied`
+			`Property Porter: ${count} propert${count === 1 ? "y" : "ies"} copied`
 		);
 	}
 
@@ -120,8 +156,14 @@ export default class PropertyPorter extends Plugin {
 		this.updateStatusBar();
 	}
 
+	hasClipboardContent(): boolean {
+		return Object.values(this.clipboard).some(
+			(value) => !isEmptyPropertyValue(value)
+		);
+	}
+
 	async pasteProperties(targetFile?: TFile | null): Promise<void> {
-		if (Object.keys(this.clipboard).length === 0) {
+		if (!this.hasClipboardContent()) {
 			new Notice("Property Porter: Clipboard is empty");
 			return;
 		}
@@ -131,9 +173,7 @@ export default class PropertyPorter extends Plugin {
 
 		// Use Obsidian's native fileManager to safely read/write frontmatter
 		await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
-			const existingFm = { ...frontmatter };
-			delete existingFm.position;
-
+			const existingFm = stripPosition(frontmatter);
 			const merged = this.mergeFrontmatter(this.clipboard, existingFm);
 
 			// Apply the merged properties back onto the mutated object
@@ -173,6 +213,88 @@ export default class PropertyPorter extends Plugin {
 				resolve(file);
 			}).open();
 		});
+	}
+
+	getKnownTagsForPicking(): string[] {
+		// Delegate to Obsidian's own tag extraction (getAllTags) instead of
+		// re-parsing frontmatter.tags by hand: it already covers the
+		// `tags`/`tag` frontmatter key aliases, both array and
+		// comma-separated string forms, and inline #tags in the note body.
+		const seen = new Set<string>();
+		const files = this.app.vault.getMarkdownFiles();
+		for (const file of files) {
+			const cache = this.app.metadataCache.getFileCache(file);
+			if (!cache) continue;
+			const tags = getAllTags(cache);
+			if (!tags) continue;
+			for (const tag of tags) {
+				const trimmed = tag.replace(/^#/, "");
+				if (trimmed.length > 0) seen.add(trimmed);
+			}
+		}
+		return Array.from(seen).sort((a, b) =>
+			a.toLowerCase().localeCompare(b.toLowerCase())
+		);
+	}
+
+	getClipboardTags(): string[] {
+		const value = this.clipboard["tags"];
+		if (!Array.isArray(value)) return [];
+		const seen = new Set<string>();
+		for (const v of value) {
+			if (typeof v === "string" && v.length > 0) seen.add(v);
+		}
+		return Array.from(seen);
+	}
+
+	async selectTagsToPaste(): Promise<void> {
+		const onlyList = parseCommaList(this.settings.onlyInclude);
+		const isTagsOnly =
+			onlyList.length === 1 && onlyList[0].toLowerCase() === "tags";
+
+		if (!isTagsOnly) {
+			new Notice(
+				"Property Porter: 'Select tags to paste' requires 'Only include' to be exactly 'tags' in settings"
+			);
+			return;
+		}
+
+		const knownTags = this.getKnownTagsForPicking();
+		const existingTags = this.getClipboardTags();
+		const result = await new Promise<{
+			items: string[];
+			cancelled: boolean;
+		}>((resolve) => {
+			new MultiSelectSuggestModal(
+				this.app,
+				knownTags,
+				"",
+				(selectedItems) =>
+					resolve({ items: selectedItems, cancelled: false }),
+				() => resolve({ items: [], cancelled: true }),
+				existingTags
+			).open();
+		});
+
+		// Escape/close without finishing is a true cancel: leave any
+		// existing clipboard untouched and stay silent.
+		if (result.cancelled) return;
+
+		// Clicking "Finish selection" always commits, even with zero tags,
+		// since that's how the user clears a previously accumulated
+		// selection (e.g. "Clear all" then "Finish selection (0)").
+		const selected = result.items;
+		this.clipboard = { tags: selected };
+		this.updateStatusBar();
+		if (selected.length === 0) {
+			new Notice("Property Porter: No tags selected. Cleared tags from clipboard.");
+			return;
+		}
+		new Notice(
+			`Property Porter: ${selected.length} tag${
+				selected.length === 1 ? "" : "s"
+			} ready to paste`
+		);
 	}
 
 	mergeFrontmatter(
@@ -218,6 +340,272 @@ export class SuggestFilesModal extends SuggestModal<TFile> {
 
 	onChooseSuggestion(file: TFile): void {
 		this.onSelect(file);
+	}
+}
+
+export class MultiSelectSuggestModal extends Modal {
+	private readonly selected: string[] = [];
+	private submitted = false;
+	private query = "";
+	private activeIndex = 0;
+	private filtered: string[] = [];
+
+	private chipsContainerEl: HTMLElement | null = null;
+	private inputEl: HTMLInputElement | null = null;
+	private listEl: HTMLElement | null = null;
+	private hintEl: HTMLElement | null = null;
+	private doneButton: HTMLButtonElement | null = null;
+	private clearAllButton: HTMLButtonElement | null = null;
+
+	constructor(
+		app: App,
+		private readonly values: string[],
+		private readonly prefix: string,
+		private readonly onSubmit: (selected: string[]) => void,
+		private readonly onCancel: () => void,
+		initialSelected: string[] = []
+	) {
+		super(app);
+		for (const value of initialSelected) {
+			if (!this.selected.includes(value)) this.selected.push(value);
+		}
+	}
+
+	getSelectedValues(): string[] {
+		return [...this.selected];
+	}
+
+	onOpen(): void {
+		const { contentEl } = this;
+		contentEl.empty();
+		contentEl.addClass("pp-multi-select-modal");
+
+		this.chipsContainerEl = contentEl.createDiv({
+			cls: "pp-selected-chips-container",
+		});
+
+		this.inputEl = contentEl.createEl("input", {
+			type: "text",
+			cls: "pp-multi-select-input",
+		});
+		this.inputEl.placeholder =
+			"Type to filter, Enter to add, Enter again to finish";
+
+		this.inputEl.addEventListener("input", () => {
+			this.query = this.inputEl?.value ?? "";
+			this.activeIndex = 0;
+			this.renderList();
+		});
+		this.inputEl.addEventListener("keydown", (e) => this.handleKeydown(e));
+
+		const controlsEl = contentEl.createDiv({
+			cls: "pp-multi-select-controls",
+		});
+		this.hintEl = controlsEl.createDiv({ cls: "pp-multi-select-hint" });
+		const buttonsEl = controlsEl.createDiv({
+			cls: "pp-multi-select-buttons",
+		});
+		this.clearAllButton = buttonsEl.createEl("button", {
+			text: "Clear all",
+			cls: "pp-clear-all-button",
+		});
+		this.clearAllButton.addEventListener("click", () => this.clearAll());
+		this.doneButton = buttonsEl.createEl("button", {
+			text: "Finish selection (0)",
+			cls: ["mod-cta", "pp-finish-button"],
+		});
+		this.doneButton.addEventListener("click", () => this.submit());
+
+		this.listEl = contentEl.createDiv({ cls: "pp-multi-select-list" });
+
+		this.renderChips();
+		this.renderList();
+		this.updateHint();
+
+		window.setTimeout(() => this.inputEl?.focus(), 0);
+	}
+
+	onClose(): void {
+		this.contentEl.empty();
+		if (!this.submitted) this.onCancel();
+	}
+
+	private getFiltered(query: string): string[] {
+		const q = query.trim().toLowerCase();
+		const pool = this.values.filter((v) => !this.selected.includes(v));
+		if (q === "") return pool.slice(0, 100);
+
+		const ranked: { value: string; rank: number }[] = [];
+		for (const value of pool) {
+			const lower = value.toLowerCase();
+			let rank: number;
+			if (lower === q) rank = 0;
+			else if (lower.startsWith(q)) rank = 1;
+			else if (lower.includes(q)) rank = 2;
+			else continue;
+			ranked.push({ value, rank });
+		}
+		ranked.sort((a, b) => {
+			if (a.rank !== b.rank) return a.rank - b.rank;
+			return a.value.toLowerCase().localeCompare(b.value.toLowerCase());
+		});
+		return ranked.map((r) => r.value).slice(0, 100);
+	}
+
+	private renderList(): void {
+		if (!this.listEl) return;
+		this.filtered = this.getFiltered(this.query);
+		if (this.activeIndex >= this.filtered.length) {
+			this.activeIndex = Math.max(0, this.filtered.length - 1);
+		}
+		this.listEl.empty();
+		this.filtered.forEach((value, index) => {
+			const item = this.listEl!.createDiv({
+				cls: "pp-multi-select-item",
+			});
+			if (index === this.activeIndex) item.addClass("is-active");
+			item.createSpan({ text: `${this.prefix}${value}` });
+			item.addEventListener("mousedown", (e) => {
+				e.preventDefault();
+				this.addValue(value);
+			});
+			item.addEventListener("mouseenter", () => {
+				if (this.activeIndex === index) return;
+				this.activeIndex = index;
+				this.renderList();
+			});
+		});
+	}
+
+	private handleKeydown(e: KeyboardEvent): void {
+		if (e.key === "ArrowDown") {
+			e.preventDefault();
+			if (this.filtered.length > 0) {
+				this.activeIndex = Math.min(
+					this.activeIndex + 1,
+					this.filtered.length - 1
+				);
+				this.renderList();
+			}
+			return;
+		}
+		if (e.key === "ArrowUp") {
+			e.preventDefault();
+			if (this.filtered.length > 0) {
+				this.activeIndex = Math.max(this.activeIndex - 1, 0);
+				this.renderList();
+			}
+			return;
+		}
+		if (e.key === "Enter") {
+			e.preventDefault();
+			if ((this.inputEl?.value ?? "").trim() === "") {
+				if (this.selected.length > 0) this.submit();
+				return;
+			}
+			if (this.filtered.length > 0) {
+				this.addValue(this.filtered[this.activeIndex]);
+			}
+			return;
+		}
+		if (
+			e.key === "Backspace" &&
+			(this.inputEl?.value ?? "") === "" &&
+			this.selected.length > 0
+		) {
+			e.preventDefault();
+			if (e.ctrlKey || e.metaKey) {
+				this.clearAll();
+			} else {
+				this.removeValue(this.selected[this.selected.length - 1]);
+			}
+			return;
+		}
+	}
+
+	private addValue(value: string): void {
+		if (!this.selected.includes(value)) {
+			this.selected.push(value);
+		}
+		this.query = "";
+		if (this.inputEl) this.inputEl.value = "";
+		this.activeIndex = 0;
+		this.refreshSelectionUI();
+		this.inputEl?.focus();
+	}
+
+	private removeValue(value: string): void {
+		const idx = this.selected.indexOf(value);
+		if (idx >= 0) this.selected.splice(idx, 1);
+		this.refreshSelectionUI();
+	}
+
+	private clearAll(): void {
+		if (this.selected.length === 0) return;
+		this.selected.length = 0;
+		this.refreshSelectionUI();
+		this.inputEl?.focus();
+	}
+
+	// Every mutation of `selected` (add/remove/clear) needs the same three
+	// views kept in sync: the chip strip, the suggestion list (which
+	// excludes already-selected values), and the hint/button labels.
+	private refreshSelectionUI(): void {
+		this.renderChips();
+		this.renderList();
+		this.updateHint();
+	}
+
+	private renderChips(): void {
+		if (!this.chipsContainerEl) return;
+		this.chipsContainerEl.empty();
+		if (this.selected.length === 0) {
+			this.chipsContainerEl.style.display = "none";
+			return;
+		}
+		this.chipsContainerEl.style.display = "flex";
+		const label = this.chipsContainerEl.createDiv({
+			cls: "pp-selected-chips-label",
+		});
+		label.setText(`${this.selected.length} selected:`);
+		for (const value of this.selected) {
+			const chip = this.chipsContainerEl.createDiv({
+				cls: "pp-selected-chip",
+			});
+			chip.createSpan({ text: this.prefix + value });
+			const removeBtn = chip.createSpan({
+				cls: "pp-selected-chip-remove",
+				text: "×",
+			});
+			removeBtn.addEventListener("click", (e) => {
+				e.stopPropagation();
+				this.removeValue(value);
+			});
+		}
+	}
+
+	private updateHint(): void {
+		if (this.hintEl) {
+			const selectedText =
+				this.selected.length === 0
+					? "Type to filter, click or press Enter to add a tag."
+					: "Press Enter on an empty box, or click Finish selection, when done. Backspace removes the last tag; Ctrl/Cmd+Backspace clears all.";
+			this.hintEl.setText(selectedText);
+		}
+		if (this.doneButton) {
+			this.doneButton.setText(
+				`Finish selection (${this.selected.length})`
+			);
+		}
+		if (this.clearAllButton) {
+			this.clearAllButton.disabled = this.selected.length === 0;
+		}
+	}
+
+	private submit(): void {
+		this.submitted = true;
+		this.onSubmit(this.getSelectedValues());
+		this.close();
 	}
 }
 
