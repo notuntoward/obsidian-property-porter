@@ -97,6 +97,31 @@ export function deepMerge(source: unknown, destination: unknown): unknown {
 	return source;
 }
 
+// Unions a sequence of frontmatter objects into a single result. List
+// (array) properties accumulate every distinct value across the inputs via
+// `mergeArrays`; scalar properties take the first non-empty value seen. Used
+// when collecting properties from many notes (e.g. an active tab group) into
+// one clipboard payload.
+export function unionFrontmatter(
+	inputs: Record<string, unknown>[]
+): Record<string, unknown> {
+	const result: Record<string, unknown> = {};
+	for (const input of inputs) {
+		for (const [key, value] of Object.entries(input)) {
+			if (key in result) {
+				const existing = result[key];
+				if (Array.isArray(existing) && Array.isArray(value)) {
+					result[key] = mergeArrays(value, existing);
+				}
+				// scalar already set: keep the first value, ignore later
+				continue;
+			}
+			result[key] = value;
+		}
+	}
+	return result;
+}
+
 export type PasteMode = "overwrite" | "skip" | "merge";
 
 export function mergeFrontmatter(

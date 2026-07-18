@@ -105,7 +105,7 @@ describe("PropertyPorter", () => {
 
 			expect(loadSettings).toHaveBeenCalled();
 			expect(plugin.statusBarItem).toBeDefined();
-			expect(addCommand).toHaveBeenCalledTimes(7);
+			expect(addCommand).toHaveBeenCalledTimes(8);
 			expect(addSettingTab).toHaveBeenCalledWith(
 				expect.any(PropertyPorterSettingTab)
 			);
@@ -619,6 +619,63 @@ describe("PropertyPorter", () => {
 			await plugin.pasteIntoActiveTabGroup();
 
 			expect(fileCache[f1.path].frontmatter).toEqual({ tags: ["a"] });
+		});
+	});
+
+	describe("copyPropertiesFromActiveTabGroup", () => {
+		it("shows notice when the active tab group has no open files", async () => {
+			const { plugin } = createPlugin({ leaves: [] });
+			await plugin.onload();
+			const spy = vi.spyOn(obsidianMock, "Notice");
+
+			await plugin.copyPropertiesFromActiveTabGroup();
+
+			expect(spy).toHaveBeenCalledWith(
+				"Property Porter: No markdown files in the active tab group"
+			);
+		});
+
+		it("unions list properties across the group and keeps first scalar", async () => {
+			const f1 = new obsidianMock.TFile("a.md");
+			const f2 = new obsidianMock.TFile("b.md");
+			const other = new obsidianMock.TFile("other.md");
+			const { plugin, fileCache } = createPlugin({
+				leaves: [
+					{ file: f1, group: "g1" },
+					{ file: f2, group: "g1" },
+					{ file: other, group: "g2" },
+				],
+			});
+			await plugin.onload();
+			plugin.settings.onlyInclude = "tags, status";
+			fileCache[f1.path] = { frontmatter: { tags: ["x"], status: "one" } };
+			fileCache[f2.path] = { frontmatter: { tags: ["y", "x"], status: "two" } };
+
+			await plugin.copyPropertiesFromActiveTabGroup();
+
+			// tags union across the group (f1, f2); "other" is a different group
+			// and must be excluded. status is a scalar, so the first note wins.
+			expect(plugin.clipboard).toEqual({
+				tags: ["x", "y"],
+				status: "one",
+			});
+		});
+
+		it("does not read duplicates of the same file in the group twice", async () => {
+			const f1 = new obsidianMock.TFile("a.md");
+			const { plugin, fileCache } = createPlugin({
+				leaves: [
+					{ file: f1, group: "g1" },
+					{ file: f1, group: "g1" },
+				],
+			});
+			await plugin.onload();
+			plugin.settings.onlyInclude = "tags";
+			fileCache[f1.path] = { frontmatter: { tags: ["x"] } };
+
+			await plugin.copyPropertiesFromActiveTabGroup();
+
+			expect(plugin.clipboard).toEqual({ tags: ["x"] });
 		});
 	});
 
