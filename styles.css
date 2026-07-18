@@ -103,3 +103,8 @@
 .pp-multi-select-item:hover {
 	background-color: var(--background-modifier-hover);
 }
+
+.pp-create-item {
+	font-style: italic;
+	color: var(--text-accent);
+}
