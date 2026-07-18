@@ -37,8 +37,8 @@ Commands other than **Select tags to paste** always *replace* the clipboard outr
 ### Paste modes
 
 - **Overwrite** — destination properties are replaced unconditionally.
-- **Skip existing** — only newly added properties are inserted; existing keys are left unchanged.
-- **Merge** — destination properties are merged with copied properties. Arrays/sets are merged by union; falsy source values preserve the destination. Objects are merged recursively.
+- **Skip existing** — new keys are added; any key already present in the destination is left completely unchanged (the clipboard value is discarded, not combined).
+- **Merge** — new keys are added; for keys already present, the values are combined — lists are unioned, objects are merged recursively, and scalar values take the clipboard's value unless it is empty (in which case the destination is kept).
 
 ## Terminology
 
