@@ -105,7 +105,7 @@ describe("PropertyPorter", () => {
 
 			expect(loadSettings).toHaveBeenCalled();
 			expect(plugin.statusBarItem).toBeDefined();
-			expect(addCommand).toHaveBeenCalledTimes(6);
+			expect(addCommand).toHaveBeenCalledTimes(7);
 			expect(addSettingTab).toHaveBeenCalledWith(
 				expect.any(PropertyPorterSettingTab)
 			);
@@ -365,6 +365,49 @@ describe("PropertyPorter", () => {
 			await plugin.copyProperties();
 
 			expect(plugin.clipboard).toEqual({ a: 1 });
+		});
+
+		it("copies from a note chosen via the file selector", async () => {
+			const active = new obsidianMock.TFile("active.md");
+			const source = new obsidianMock.TFile("source.md");
+			const { plugin, fileCache } = createPlugin({
+				activeFile: active,
+				markdownFiles: [active, source],
+			});
+			await plugin.onload();
+			fileCache[source.path] = { frontmatter: { status: "from-source" } };
+			plugin.settings.onlyInclude = "status";
+			obsidianMock.FuzzySuggestModal.prototype.open = function (this: any) {
+				this.onChooseItem(source);
+			};
+			const spy = vi.spyOn(obsidianMock, "Notice");
+
+			await plugin.copyPropertiesFrom();
+
+			expect(plugin.clipboard).toEqual({ status: "from-source" });
+			expect(spy).toHaveBeenCalledWith(
+				"Property Porter: 1 property copied"
+			);
+		});
+
+		it("does nothing when there are no other markdown files to pick from", async () => {
+			const active = new obsidianMock.TFile("active.md");
+			const { plugin } = createPlugin({
+				activeFile: active,
+				markdownFiles: [active],
+			});
+			await plugin.onload();
+			plugin.clipboard = { a: 1 };
+			const spy = vi.spyOn(obsidianMock, "Notice");
+
+			await plugin.copyPropertiesFrom();
+
+			// pickTargetFile resolves null when no *other* markdown files
+			// exist, so the clipboard is left untouched.
+			expect(plugin.clipboard).toEqual({ a: 1 });
+			expect(spy).toHaveBeenCalledWith(
+				"Property Porter: No other markdown files found"
+			);
 		});
 	});
 

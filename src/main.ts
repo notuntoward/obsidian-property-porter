@@ -65,6 +65,12 @@ export default class PropertyPorter extends Plugin {
 		});
 
 		this.addCommand({
+			id: "copy-properties-from",
+			name: "Copy properties from another note",
+			callback: () => this.copyPropertiesFrom(),
+		});
+
+		this.addCommand({
 			id: "paste-properties",
 			name: "Paste properties into another note",
 			callback: () => this.pasteProperties(),
@@ -134,14 +140,14 @@ export default class PropertyPorter extends Plugin {
 		return stripPosition(cache.frontmatter);
 	}
 
-	getFilteredSourceFrontmatter(): Record<string, unknown> | null {
-		const active = this.getActiveFile();
-		if (!active) {
+	getFilteredSourceFrontmatter(file?: TFile | null): Record<string, unknown> | null {
+		const source = file ?? this.getActiveFile();
+		if (!source) {
 			new Notice("Property Porter: No active file");
 			return null;
 		}
 
-		const fm = this.getParsedFrontmatter(active);
+		const fm = this.getParsedFrontmatter(source);
 		return filterFrontmatter(
 			fm,
 			this.settings.onlyInclude,
@@ -149,15 +155,33 @@ export default class PropertyPorter extends Plugin {
 		);
 	}
 
-	async copyProperties(): Promise<void> {
-		const fm = this.getFilteredSourceFrontmatter();
-		if (!fm) return;
+	// Copies the given frontmatter onto the clipboard, refreshes the status
+	// bar, and reports how many values were copied. Shared by every copy
+	// command so the clipboard-selection rule stays in one place.
+	applyClipboard(fm: Record<string, unknown>): void {
 		this.clipboard = fm;
 		this.updateStatusBar();
 		const count = this.countClipboardValues();
 		new Notice(
 			`Property Porter: ${count} propert${count === 1 ? "y" : "ies"} copied`
 		);
+	}
+
+	async copyProperties(): Promise<void> {
+		const fm = this.getFilteredSourceFrontmatter();
+		if (!fm) return;
+		this.applyClipboard(fm);
+	}
+
+	// Copies properties from a note the user picks via the same file selector
+	// used by "Paste properties into another note", then applies the same
+	// copy logic as `copyProperties`.
+	async copyPropertiesFrom(): Promise<void> {
+		const file = await this.pickTargetFile();
+		if (!file) return;
+		const fm = this.getFilteredSourceFrontmatter(file);
+		if (!fm) return;
+		this.applyClipboard(fm);
 	}
 
 	clearClipboard(): void {
