@@ -25,21 +25,40 @@ export function mergeArrays(
 	return result;
 }
 
+// Parses a user-facing comma-separated settings string (e.g. "tags, status")
+// into a trimmed, non-empty list. Shared by every setting that accepts this
+// format (Only include, Exclude keys) so the parsing rules stay consistent.
+export function parseCommaList(value: string): string[] {
+	return value
+		.split(",")
+		.map((s) => s.trim())
+		.filter(Boolean);
+}
+
+export function isEmptyPropertyValue(value: unknown): boolean {
+	return (
+		value === null ||
+		value === undefined ||
+		value === "" ||
+		(Array.isArray(value) && value.length === 0)
+	);
+}
+
+// Counts the number of individual values a property represents: array
+// properties (e.g. tags) count each item, empty values count 0, and any
+// other scalar counts as 1. This is what a user actually means by "how
+// many things did I copy/paste", as opposed to counting frontmatter keys.
+export function countPropertyValue(value: unknown): number {
+	if (isEmptyPropertyValue(value)) return 0;
+	if (Array.isArray(value)) return value.length;
+	return 1;
+}
+
 export function deepMerge(source: unknown, destination: unknown): unknown {
-	if (
-		source === null ||
-		source === undefined ||
-		source === "" ||
-		(Array.isArray(source) && (source as unknown[]).length === 0)
-	) {
+	if (isEmptyPropertyValue(source)) {
 		return destination;
 	}
-	if (
-		destination === null ||
-		destination === undefined ||
-		destination === "" ||
-		(Array.isArray(destination) && (destination as unknown[]).length === 0)
-	) {
+	if (isEmptyPropertyValue(destination)) {
 		return source;
 	}
 
@@ -98,10 +117,7 @@ export function filterFrontmatter(
 	onlyInclude: string,
 	excludeKeys: string
 ): Record<string, unknown> {
-	const onlyList = onlyInclude
-		.split(",")
-		.map((s) => s.trim())
-		.filter(Boolean);
+	const onlyList = parseCommaList(onlyInclude);
 
 	let result: Record<string, unknown> = {};
 
@@ -110,10 +126,9 @@ export function filterFrontmatter(
 			if (key in fm) result[key] = fm[key];
 		}
 	} else {
-		const exclude = excludeKeys
-			.split(",")
-			.map((s) => s.trim().toLowerCase())
-			.filter(Boolean);
+		const exclude = parseCommaList(excludeKeys).map((s) =>
+			s.toLowerCase()
+		);
 		result = { ...fm };
 		for (const key of Object.keys(result)) {
 			if (exclude.includes(key.toLowerCase())) delete result[key];

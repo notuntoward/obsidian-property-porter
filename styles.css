@@ -1,0 +1,105 @@
+.pp-multi-select-modal {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
+.pp-selected-chips-container {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	padding: 4px 0;
+}
+
+.pp-selected-chips-label {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	align-self: center;
+}
+
+.pp-selected-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	padding: var(--tag-padding-y) var(--tag-padding-x);
+	border-radius: var(--tag-radius);
+	background-color: var(--tag-background);
+	border: var(--tag-border-width) solid var(--tag-border-color);
+	color: var(--tag-color);
+	font-size: var(--tag-size);
+	font-weight: var(--tag-weight);
+	text-decoration: var(--tag-decoration);
+	line-height: 1.4;
+}
+
+.pp-selected-chip:hover {
+	background-color: var(--tag-background-hover);
+	border-color: var(--tag-border-color-hover);
+	color: var(--tag-color-hover);
+	text-decoration: var(--tag-decoration-hover);
+}
+
+.pp-selected-chip-remove {
+	cursor: pointer;
+	font-weight: bold;
+	padding: 0 2px;
+	border-radius: 50%;
+	color: inherit;
+}
+
+.pp-selected-chip-remove:hover {
+	background-color: var(--background-modifier-hover);
+	color: inherit;
+}
+
+.pp-multi-select-input {
+	width: 100%;
+	padding: 6px 10px;
+	border-radius: 6px;
+	border: 1px solid var(--background-modifier-border);
+	background-color: var(--background-primary);
+	color: var(--text-normal);
+	font-size: var(--font-ui-medium);
+}
+
+.pp-multi-select-controls {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	padding: 4px 0;
+}
+
+.pp-multi-select-hint {
+	flex: 1;
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+}
+
+.pp-multi-select-buttons {
+	display: flex;
+	gap: 8px;
+	flex-shrink: 0;
+}
+
+.pp-clear-all-button:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+.pp-multi-select-list {
+	max-height: 300px;
+	overflow-y: auto;
+	border-top: 1px solid var(--background-modifier-border);
+}
+
+.pp-multi-select-item {
+	padding: 6px 10px;
+	border-radius: 4px;
+	cursor: pointer;
+}
+
+.pp-multi-select-item.is-active,
+.pp-multi-select-item:hover {
+	background-color: var(--background-modifier-hover);
+}

@@ -4,8 +4,62 @@ import {
 	mergeArrays,
 	deepMerge,
 	mergeFrontmatter,
+	isEmptyPropertyValue,
+	countPropertyValue,
+	parseCommaList,
 	type PasteMode,
 } from "../src/frontmatter";
+
+describe("parseCommaList", () => {
+	it("trims whitespace and drops empty entries", () => {
+		expect(parseCommaList(" tags ,  status ,,aliases")).toEqual([
+			"tags",
+			"status",
+			"aliases",
+		]);
+	});
+
+	it("returns an empty array for blank input", () => {
+		expect(parseCommaList("")).toEqual([]);
+		expect(parseCommaList("   ")).toEqual([]);
+	});
+});
+
+describe("countPropertyValue", () => {
+	it("counts each array item individually", () => {
+		expect(countPropertyValue(["a", "b", "c"])).toBe(3);
+	});
+
+	it("counts a non-empty scalar as 1", () => {
+		expect(countPropertyValue("done")).toBe(1);
+		expect(countPropertyValue(0)).toBe(1);
+		expect(countPropertyValue(false)).toBe(1);
+	});
+
+	it("counts empty values as 0", () => {
+		expect(countPropertyValue([])).toBe(0);
+		expect(countPropertyValue(null)).toBe(0);
+		expect(countPropertyValue(undefined)).toBe(0);
+		expect(countPropertyValue("")).toBe(0);
+	});
+});
+
+describe("isEmptyPropertyValue", () => {
+	it("treats null, undefined, empty string, and empty array as empty", () => {
+		expect(isEmptyPropertyValue(null)).toBe(true);
+		expect(isEmptyPropertyValue(undefined)).toBe(true);
+		expect(isEmptyPropertyValue("")).toBe(true);
+		expect(isEmptyPropertyValue([])).toBe(true);
+	});
+
+	it("treats non-empty strings, arrays, numbers, booleans, and objects as non-empty", () => {
+		expect(isEmptyPropertyValue("x")).toBe(false);
+		expect(isEmptyPropertyValue(["a"])).toBe(false);
+		expect(isEmptyPropertyValue(0)).toBe(false);
+		expect(isEmptyPropertyValue(false)).toBe(false);
+		expect(isEmptyPropertyValue({})).toBe(false);
+	});
+});
 
 describe("normalizeArrayItems", () => {
 	const normalize = (arr: unknown[]) =>
