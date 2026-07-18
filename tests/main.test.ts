@@ -13,8 +13,35 @@ function createApp(options: any = {}) {
 	const activeFile = options.activeFile ?? null;
 	const markdownFiles = options.markdownFiles ?? [];
 	const fileCache: Record<string, any> = options.fileCache ?? {};
+
+	// Build workspace leaves for the active-tab-group feature. Each entry in
+	// `leaves` is { file, group? }; leaves sharing the same `group` value are
+	// considered part of the same tab group. The active leaf is leaves[0].
+	// Leaves in the same group share a single WorkspaceTabs instance so the
+	// `leaf.parent === activeParent` identity check works like real Obsidian.
+	const groupMap = new Map<string, any>();
+	const leaves: any[] = (options.leaves ?? []).map((leaf: any) => {
+		const groupId = leaf.group ?? "default";
+		let group = groupMap.get(groupId);
+		if (!group) {
+			group = new obsidianMock.WorkspaceTabs(groupId);
+			groupMap.set(groupId, group);
+		}
+		return {
+			parent: group,
+			view: new obsidianMock.FileView(leaf.file),
+			getRoot: () => group,
+		};
+	});
+
 	const app = new obsidianMock.App({
-		workspace: { getActiveFile: () => activeFile },
+		workspace: {
+			getActiveFile: () => activeFile,
+			activeLeaf: leaves[0] ?? null,
+			iterateAllLeaves: (cb: (leaf: any) => void) => {
+				for (const leaf of leaves) cb(leaf);
+			},
+		},
 		metadataCache: {
 			getFileCache: (file: obsidianMock.TFile) =>
 				fileCache[file.path] ?? null,
@@ -78,7 +105,7 @@ describe("PropertyPorter", () => {
 
 			expect(loadSettings).toHaveBeenCalled();
 			expect(plugin.statusBarItem).toBeDefined();
-			expect(addCommand).toHaveBeenCalledTimes(5);
+			expect(addCommand).toHaveBeenCalledTimes(6);
 			expect(addSettingTab).toHaveBeenCalledWith(
 				expect.any(PropertyPorterSettingTab)
 			);
@@ -450,8 +477,8 @@ describe("PropertyPorter", () => {
 			});
 			await plugin.onload();
 			plugin.clipboard = { tags: ["a"] };
-			obsidianMock.SuggestModal.prototype.open = function (this: any) {
-				this.onChooseSuggestion(other);
+			obsidianMock.FuzzySuggestModal.prototype.open = function (this: any) {
+				this.onChooseItem(other);
 			};
 
 			await plugin.pasteProperties();
@@ -483,6 +510,75 @@ describe("PropertyPorter", () => {
 		});
 	});
 
+	describe("pasteIntoActiveTabGroup", () => {
+		it("shows notice when clipboard is empty", async () => {
+			const active = new obsidianMock.TFile("active.md");
+			const { plugin } = createPlugin({
+				leaves: [{ file: active, group: "g1" }],
+			});
+			await plugin.onload();
+			const spy = vi.spyOn(obsidianMock, "Notice");
+
+			await plugin.pasteIntoActiveTabGroup();
+
+			expect(spy).toHaveBeenCalledWith(
+				"Property Porter: Clipboard is empty"
+			);
+		});
+
+		it("shows notice when the active tab group has no open files", async () => {
+			const { plugin } = createPlugin({
+				leaves: [],
+			});
+			await plugin.onload();
+			plugin.clipboard = { tags: ["a"] };
+			const spy = vi.spyOn(obsidianMock, "Notice");
+
+			await plugin.pasteIntoActiveTabGroup();
+
+			expect(spy).toHaveBeenCalledWith(
+				"Property Porter: No markdown files in the active tab group"
+			);
+		});
+
+		it("pastes into every file in the active tab group", async () => {
+			const f1 = new obsidianMock.TFile("a.md");
+			const f2 = new obsidianMock.TFile("b.md");
+			const other = new obsidianMock.TFile("other.md");
+			const { plugin, fileCache } = createPlugin({
+				leaves: [
+					{ file: f1, group: "g1" },
+					{ file: f2, group: "g1" },
+					{ file: other, group: "g2" },
+				],
+			});
+			await plugin.onload();
+			plugin.clipboard = { tags: ["a"] };
+
+			await plugin.pasteIntoActiveTabGroup();
+
+			expect(fileCache[f1.path].frontmatter).toEqual({ tags: ["a"] });
+			expect(fileCache[f2.path].frontmatter).toEqual({ tags: ["a"] });
+			expect(fileCache[other.path]).toBeUndefined();
+		});
+
+		it("does not paste into duplicates of the same file in the group", async () => {
+			const f1 = new obsidianMock.TFile("a.md");
+			const { plugin, fileCache } = createPlugin({
+				leaves: [
+					{ file: f1, group: "g1" },
+					{ file: f1, group: "g1" },
+				],
+			});
+			await plugin.onload();
+			plugin.clipboard = { tags: ["a"] };
+
+			await plugin.pasteIntoActiveTabGroup();
+
+			expect(fileCache[f1.path].frontmatter).toEqual({ tags: ["a"] });
+		});
+	});
+
 	describe("pickTargetFile", () => {
 		it("returns null when no other markdown files", async () => {
 			const active = new obsidianMock.TFile("active.md");
@@ -507,8 +603,8 @@ describe("PropertyPorter", () => {
 				activeFile: active,
 				markdownFiles: [active, other],
 			});
-			obsidianMock.SuggestModal.prototype.open = function (this: any) {
-				this.onChooseSuggestion(other);
+			obsidianMock.FuzzySuggestModal.prototype.open = function (this: any) {
+				this.onChooseItem(other);
 			};
 
 			const result = await plugin.pickTargetFile();
@@ -547,7 +643,7 @@ describe("PropertyPorter", () => {
 });
 
 describe("SuggestFilesModal", () => {
-	it("filters suggestions by query", () => {
+	it("lists all candidate files", () => {
 		const files = [
 			new obsidianMock.TFile("a.md"),
 			new obsidianMock.TFile("notes/b.md"),
@@ -558,42 +654,29 @@ describe("SuggestFilesModal", () => {
 			() => {}
 		);
 
-		expect(modal.getSuggestions("a")).toEqual([files[0]]);
-		expect(modal.getSuggestions("notes")).toEqual([files[1]]);
-		expect(modal.getSuggestions("")).toEqual(files);
+		expect(modal.getItems()).toEqual(files);
 	});
 
-	it("renders suggestion with basename and path", () => {
+	it("uses the file path as the suggestion text", () => {
 		const file = new obsidianMock.TFile("folder/note.md");
 		const modal = new SuggestFilesModal(new obsidianMock.App(), [], vi.fn());
-		const el = document.createElement("div");
-		(el as any).createEl = vi
-			.fn()
-			.mockReturnValue(document.createElement("div"));
 
-		modal.renderSuggestion(file, el as any);
-
-		expect((el as any).createEl).toHaveBeenCalledWith("div", {
-			text: file.basename,
-		});
-		expect((el as any).createEl).toHaveBeenCalledWith("small", {
-			text: file.path,
-		});
+		expect(modal.getItemText(file)).toBe(file.path);
 	});
 
-		it("invokes callback when suggestion is chosen", () => {
-			const file = new obsidianMock.TFile("x.md");
-			const onSelect = vi.fn();
-			const modal = new SuggestFilesModal(
-				new obsidianMock.App(),
-				[file],
-				onSelect
-			);
+	it("invokes callback when suggestion is chosen", () => {
+		const file = new obsidianMock.TFile("x.md");
+		const onSelect = vi.fn();
+		const modal = new SuggestFilesModal(
+			new obsidianMock.App(),
+			[file],
+			onSelect
+		);
 
-			modal.onChooseSuggestion(file);
+		modal.onChooseItem(file);
 
-			expect(onSelect).toHaveBeenCalledWith(file);
-		});
+		expect(onSelect).toHaveBeenCalledWith(file);
+	});
 });
 
 describe("MultiSelectSuggestModal", () => {

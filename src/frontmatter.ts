@@ -1,6 +1,13 @@
+// Obsidian's getAllTags() returns tags with a leading "#" (e.g. "#foo/bar"),
+// but clipboard/known-tag comparisons expect the bare form. Centralized here
+// so the picker and frontmatter merging strip it the same way.
+export function stripHashTag(tag: string): string {
+	return tag.replace(/^#/, "");
+}
+
 export function normalizeArrayItems(arr: unknown[]): unknown[] {
 	return arr.map((item) =>
-		typeof item === "string" ? item.replace(/^#/, "") : item
+		typeof item === "string" ? stripHashTag(item) : item
 	);
 }
 
