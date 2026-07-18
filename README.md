@@ -55,6 +55,21 @@ All three paste modes (Overwrite, Skip existing, Merge) are implemented for **ev
 | Nested Object (mapping) | YAML dictionary under a parent key. Not editable in Obsidian's Properties UI, but valid YAML and parsed by plugins like Dataview. | `location:`<br>`  city: Seattle`<br>`  lat: 47.6` | Yes — all copy/paste commands and all three modes. | Clipboard replaces destination. | Destination kept. | Merged field by field; nested keys present in both are combined recursively. |
 | Array of Objects | List whose items are mappings. Valid YAML but no native Properties UI support. | `tasks:`<br>`  - name: "Research"`<br>`    complete: true` | Yes — all copy/paste commands and all three modes. | Clipboard replaces destination. | Destination kept. | Treated as a list: if the destination is also an array, the two are unioned (deduplicated); if the destination is any other type, the clipboard array replaces it. No per-item object merging is performed. |
 
+#### Select interface availability by property type
+
+The only item-level "select" interface is **Select tags to paste**, which opens a searchable picker to build up a list one item at a time. It is implemented **only for the `tags` property** and only when **Only include** is set to exactly `tags` (otherwise it shows a notice and exits). All other property types are copied and pasted as a whole value — there is no per-item picker for them.
+
+| Data Structure / Property Type | Select interface implemented? | Notes |
+| --- | --- | --- |
+| Text (string) | No | Copied/pasted as a whole value. |
+| Number | No | Copied/pasted as a whole value. |
+| Checkbox (boolean) | No | Copied/pasted as a whole value. |
+| Date | No | Copied/pasted as a whole value. |
+| Date & Time | No | Copied/pasted as a whole value. |
+| List (array) | Partial — `tags` only | Implemented for the `tags` property (item-by-item picker). Other list properties such as `aliases` are copied/pasted as a whole value; the select interface is not available for them. |
+| Nested Object (mapping) | No | Copied/pasted as a whole value. |
+| Array of Objects | No | Copied/pasted as a whole value. |
+
 ## Terminology
 
 Precise wording matters here because "property" and "tag" mean different things:
