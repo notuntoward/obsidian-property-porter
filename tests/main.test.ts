@@ -834,6 +834,48 @@ describe("MultiSelectSuggestModal", () => {
 		expect(onSubmit).not.toHaveBeenCalled();
 	});
 
+	it("Enter with an unknown tag adds it verbatim", () => {
+		const onSubmit = vi.fn();
+		const modal = new MultiSelectSuggestModal(
+			new obsidianMock.App(),
+			["alpha", "beta"],
+			"",
+			onSubmit,
+			() => {}
+		);
+		modal.onOpen();
+		modal.inputEl.value = "brand-new-tag";
+		modal.inputEl.dispatchEvent(new Event("input"));
+		modal.inputEl.dispatchEvent(
+			new KeyboardEvent("keydown", { key: "Enter" })
+		);
+
+		expect(modal.getSelectedValues()).toEqual(["brand-new-tag"]);
+		expect(onSubmit).not.toHaveBeenCalled();
+	});
+
+	it("shows a create-new-tag row when the query matches nothing", () => {
+		const modal = new MultiSelectSuggestModal(
+			new obsidianMock.App(),
+			["alpha", "beta"],
+			"",
+			() => {},
+			() => {}
+		);
+		modal.onOpen();
+		modal.inputEl.value = "zzz";
+		modal.inputEl.dispatchEvent(new Event("input"));
+
+		const createRow = modal.contentEl.querySelector(".pp-create-item");
+		expect(createRow).not.toBeNull();
+		expect(createRow.textContent).toBe("Create new tag: zzz");
+
+		createRow.dispatchEvent(
+			new MouseEvent("mousedown", { bubbles: true, cancelable: true })
+		);
+		expect(modal.getSelectedValues()).toEqual(["zzz"]);
+	});
+
 	it("Enter with empty input and no selection does nothing", () => {
 		const onSubmit = vi.fn();
 		const modal = new MultiSelectSuggestModal(

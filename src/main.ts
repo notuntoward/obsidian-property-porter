@@ -546,6 +546,23 @@ export class MultiSelectSuggestModal extends Modal {
 				this.renderList();
 			});
 		});
+
+		// When the query doesn't match any known tag, surface a row that lets
+		// the user create the tag verbatim. Enter already adds the typed text
+		// in this case; this makes the affordance visible.
+		const typed = this.query.trim();
+		if (typed !== "" && this.filtered.length === 0) {
+			const createItem = this.listEl.createDiv({
+				cls: "pp-multi-select-item pp-create-item",
+			});
+			createItem.createSpan({
+				text: `Create new tag: ${this.prefix}${typed}`,
+			});
+			createItem.addEventListener("mousedown", (e) => {
+				e.preventDefault();
+				this.addValue(typed);
+			});
+		}
 	}
 
 	private handleKeydown(e: KeyboardEvent): void {
@@ -570,12 +587,18 @@ export class MultiSelectSuggestModal extends Modal {
 		}
 		if (e.key === "Enter") {
 			e.preventDefault();
-			if ((this.inputEl?.value ?? "").trim() === "") {
+			const typed = (this.inputEl?.value ?? "").trim();
+			if (typed === "") {
 				if (this.selected.length > 0) this.submit();
 				return;
 			}
+			// When the typed text matches a suggestion, prefer the exact
+			// (properly-cased) value; otherwise add the tag verbatim so users
+			// can enter tags that don't yet exist anywhere in the vault.
 			if (this.filtered.length > 0) {
 				this.addValue(this.filtered[this.activeIndex]);
+			} else {
+				this.addValue(typed);
 			}
 			return;
 		}
