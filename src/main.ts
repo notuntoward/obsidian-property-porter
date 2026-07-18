@@ -5,8 +5,10 @@ import {
 	Setting,
 	TFile,
 	Notice,
-	SuggestModal,
+	FuzzySuggestModal,
 	Modal,
+	FileView,
+	WorkspaceTabs,
 	getAllTags,
 } from "obsidian";
 import {
@@ -15,6 +17,7 @@ import {
 	isEmptyPropertyValue,
 	countPropertyValue,
 	parseCommaList,
+	stripHashTag,
 	type PasteMode,
 } from "./frontmatter";
 
@@ -71,6 +74,12 @@ export default class PropertyPorter extends Plugin {
 			id: "paste-into-active",
 			name: "Paste properties into active note",
 			callback: () => this.pasteIntoActive(),
+		});
+
+		this.addCommand({
+			id: "paste-into-active-tab-group",
+			name: "Paste properties into the active tab group",
+			callback: () => this.pasteIntoActiveTabGroup(),
 		});
 
 		this.addCommand({
@@ -198,6 +207,70 @@ export default class PropertyPorter extends Plugin {
 		await this.pasteProperties(active);
 	}
 
+	// Returns the markdown files open in the same tab group (stack of tabs)
+	// as the active leaf. Resolves the active leaf's parent `WorkspaceTabs`
+	// and collects every leaf in that group whose view is a `FileView`,
+	// matching how Obsidian groups tabs. Falls back to the active window's
+	// root for pop-out windows where the parent isn't a `WorkspaceTabs`.
+	getActiveTabGroupFiles(): TFile[] {
+		const activeLeaf = this.app.workspace.activeLeaf;
+		if (!activeLeaf) return [];
+
+		const files: TFile[] = [];
+		const seen = new Set<string>();
+
+		const activeParent = activeLeaf.parent;
+		if (activeParent instanceof WorkspaceTabs) {
+			this.app.workspace.iterateAllLeaves((leaf) => {
+				if (leaf.parent !== activeParent) return;
+				if (!(leaf.view instanceof FileView)) return;
+				const file = leaf.view.file;
+				if (file && !seen.has(file.path)) {
+					seen.add(file.path);
+					files.push(file);
+				}
+			});
+		} else {
+			const activeWindowRoot = activeLeaf.getRoot();
+			this.app.workspace.iterateAllLeaves((leaf) => {
+				if (leaf.getRoot() !== activeWindowRoot) return;
+				if (!(leaf.view instanceof FileView)) return;
+				const file = leaf.view.file;
+				if (file && !seen.has(file.path)) {
+					seen.add(file.path);
+					files.push(file);
+				}
+			});
+		}
+		return files;
+	}
+
+	async pasteIntoActiveTabGroup(): Promise<void> {
+		if (!this.hasClipboardContent()) {
+			new Notice("Property Porter: Clipboard is empty");
+			return;
+		}
+
+		const files = this.getActiveTabGroupFiles();
+		if (files.length === 0) {
+			new Notice("Property Porter: No markdown files in the active tab group");
+			return;
+		}
+
+		for (const file of files) {
+			await this.pasteProperties(file);
+		}
+		new Notice(
+			`Property Porter: Pasted properties into ${files.length} note${
+				files.length === 1 ? "" : "s"
+			}`
+		);
+
+		if (this.settings.autoClear) {
+			this.clearClipboard();
+		}
+	}
+
 	async pickTargetFile(): Promise<TFile | null> {
 		return new Promise((resolve) => {
 			const files = this.app.vault.getMarkdownFiles().filter(
@@ -228,7 +301,7 @@ export default class PropertyPorter extends Plugin {
 			const tags = getAllTags(cache);
 			if (!tags) continue;
 			for (const tag of tags) {
-				const trimmed = tag.replace(/^#/, "");
+				const trimmed = stripHashTag(tag);
 				if (trimmed.length > 0) seen.add(trimmed);
 			}
 		}
@@ -323,22 +396,20 @@ export default class PropertyPorter extends Plugin {
 	}
 }
 
-export class SuggestFilesModal extends SuggestModal<TFile> {
+export class SuggestFilesModal extends FuzzySuggestModal<TFile> {
 	constructor(app: App, private readonly files: TFile[], private readonly onSelect: (file: TFile) => void) {
 		super(app);
 	}
 
-	getSuggestions(query: string): TFile[] {
-		const q = query.toLowerCase();
-		return this.files.filter((f) => f.path.toLowerCase().includes(q));
+	getItems(): TFile[] {
+		return this.files;
 	}
 
-	renderSuggestion(file: TFile, el: HTMLElement): void {
-		el.createEl("div", { text: file.basename });
-		el.createEl("small", { text: file.path });
+	getItemText(file: TFile): string {
+		return file.path;
 	}
 
-	onChooseSuggestion(file: TFile): void {
+	onChooseItem(file: TFile): void {
 		this.onSelect(file);
 	}
 }

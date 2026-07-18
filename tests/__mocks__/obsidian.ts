@@ -263,6 +263,35 @@ export class SuggestModal<T> extends Modal {
 	selectActiveSuggestion(_evt?: MouseEvent | KeyboardEvent): void {}
 }
 
+export class FuzzySuggestModal<T> extends SuggestModal<T> {
+	constructor(app: any) {
+		super(app);
+	}
+
+	getItems(): T[] {
+		return [];
+	}
+	getItemText(_item: T): string {
+		return String(_item);
+	}
+	renderSuggestion(_value: T, _el: HTMLElement): void {}
+	onChooseItem(_item: T, _evt?: MouseEvent | KeyboardEvent): void {}
+}
+
+export class WorkspaceTabs {
+	id: any;
+	constructor(id: any = "default") {
+		this.id = id;
+	}
+}
+
+export class FileView {
+	file: any;
+	constructor(file: any) {
+		this.file = file;
+	}
+}
+
 export class Component {
 	load(): void {}
 	onload(): void {}
