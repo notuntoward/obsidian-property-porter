@@ -8,7 +8,7 @@ Copy some or all YAML frontmatter properties from one note and paste them into a
 
 ## Why use Property Porter?
 
-Keeping frontmatter consistent across a vault is tedious and error-prone. When you want several notes to share the same `tags`, `status`, `project`, or other properties, you normally open each file, scroll to the top, and hand-edit YAML — easy to typo, easy to forget one note, and awkward when the property is a long list. Property Porter solves that: it gives you a clipboard for frontmatter properties, so you can copy properties from one note (or from a whole tab group, or from a tag picker) and paste them onto other notes in a single command. It is built for exactly the workflow Obsidian's default "copy/paste" can't do — moving and merging *metadata*, not text.
+Keeping frontmatter consistent across a vault is tedious and error-prone. When you want several notes to share the same `tags`, `status`, `project`, or other properties, you normally operate file-by-file, opening each, and either scroll through to the top to hand-edit YAML, or click and type through the properties sidebar — easy to typo, easy to forget one note, and awkward when the property is a long list. Property Porter simplifies this: it gives you a clipboard for frontmatter properties, so you can copy properties from one note (or from a whole tab group, or from a property picker) and paste them onto other notes in a single command. It is built for exactly the workflow Obsidian's default "copy/paste" can't do — moving and merging *metadata*, not text.
 
 ## Usage
 
