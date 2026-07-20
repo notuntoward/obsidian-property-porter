@@ -8,7 +8,8 @@ import {
 	FuzzySuggestModal,
 	Modal,
 	FileView,
-	WorkspaceTabs,
+	WorkspaceLeaf,
+	WorkspaceParent,
 	getAllTags,
 } from "obsidian";
 import {
@@ -46,6 +47,37 @@ function stripPosition(
 	const copy = { ...fm };
 	delete copy.position;
 	return copy;
+}
+
+// ---------------------------------------------------------------------------
+// Canonical workspace model (inspired by next-tab-group)
+//
+// Every editor leaf is represented as a location that knows both its real
+// native window and its parent group. Tab groups are always built from leaves
+// that share both, so a group's identity is conceptually (window, parent).
+// ---------------------------------------------------------------------------
+
+interface LeafLocation {
+	leaf: WorkspaceLeaf;
+	window: Window | undefined;
+	group: WorkspaceParent | null;
+}
+
+interface TabGroupInfo {
+	group: WorkspaceParent;
+	leaves: WorkspaceLeaf[];
+	window: Window | undefined;
+}
+
+interface WindowInfo {
+	window: Window | undefined;
+	groups: TabGroupInfo[];
+}
+
+interface WorkspaceNavigationModel {
+	locations: LeafLocation[];
+	groups: TabGroupInfo[];
+	windows: WindowInfo[];
 }
 
 export default class PropertyPorter extends Plugin {
@@ -257,41 +289,138 @@ export default class PropertyPorter extends Plugin {
 		await this.pasteProperties(active);
 	}
 
-	// Returns the markdown files open in the same tab group (stack of tabs)
-	// as the active leaf. Resolves the active leaf's parent `WorkspaceTabs`
-	// and collects every leaf in that group whose view is a `FileView`,
-	// matching how Obsidian groups tabs. Falls back to the active window's
-	// root for pop-out windows where the parent isn't a `WorkspaceTabs`.
+	// ---------------------------------------------------------------------------
+	// Canonical workspace model helpers (inspired by next-tab-group)
+	// ---------------------------------------------------------------------------
+
+	private isSidebarLeaf(leaf: WorkspaceLeaf): boolean {
+		const root = leaf.getRoot();
+		const ws = this.app.workspace as unknown as {
+			leftSplit?: unknown;
+			rightSplit?: unknown;
+		};
+		return root === ws.leftSplit || root === ws.rightSplit;
+	}
+
+	private getEditorLeafLocations(): LeafLocation[] {
+		const locations: LeafLocation[] = [];
+
+		this.app.workspace.iterateAllLeaves((leaf) => {
+			if (this.isSidebarLeaf(leaf)) return;
+
+			locations.push({
+				leaf,
+				window: leaf.getContainer()?.win,
+				group: leaf.parent ?? null,
+			});
+		});
+
+		return locations;
+	}
+
+	private buildTabGroupInfos(
+		locations: LeafLocation[],
+		activeLeaf: WorkspaceLeaf | null,
+	): TabGroupInfo[] {
+		const byWindow = new Map<
+			Window | undefined,
+			Map<WorkspaceParent, WorkspaceLeaf[]>
+		>();
+
+		for (const location of locations) {
+			if (!location.group) continue;
+
+			let groupsInWindow = byWindow.get(location.window);
+			if (!groupsInWindow) {
+				groupsInWindow = new Map<WorkspaceParent, WorkspaceLeaf[]>();
+				byWindow.set(location.window, groupsInWindow);
+			}
+
+			const leaves = groupsInWindow.get(location.group);
+			if (leaves) {
+				leaves.push(location.leaf);
+			} else {
+				groupsInWindow.set(location.group, [location.leaf]);
+			}
+		}
+
+		const infos: TabGroupInfo[] = [];
+
+		for (const [groupWindow, groupsInWindow] of byWindow) {
+			for (const [group, leaves] of groupsInWindow) {
+				if (leaves.length === 0) continue;
+
+				infos.push({
+					group,
+					leaves,
+					window: groupWindow,
+				});
+			}
+		}
+
+		return infos;
+	}
+
+	private buildWindowInfos(groups: TabGroupInfo[]): WindowInfo[] {
+		const byWindow = new Map<Window | undefined, TabGroupInfo[]>();
+
+		for (const group of groups) {
+			const windowGroups = byWindow.get(group.window);
+			if (windowGroups) {
+				windowGroups.push(group);
+			} else {
+				byWindow.set(group.window, [group]);
+			}
+		}
+
+		const infos: WindowInfo[] = [];
+		for (const [win, groups] of byWindow) {
+			infos.push({ window: win, groups });
+		}
+
+		return infos;
+	}
+
+	private buildNavigationModel(
+		activeLeaf: WorkspaceLeaf | null,
+	): WorkspaceNavigationModel {
+		const locations = this.getEditorLeafLocations();
+		const groups = this.buildTabGroupInfos(locations, activeLeaf);
+		const windows = this.buildWindowInfos(groups);
+
+		return { locations, groups, windows };
+	}
+
+	// Returns the markdown files open in the same canonical tab group
+	// (window + parent) as the active leaf, excluding sidebar leaves.
+	// Pop-out windows are handled automatically because the group identity
+	// is (native window, WorkspaceParent), not just the parent object.
 	getActiveTabGroupFiles(): TFile[] {
 		const activeLeaf = this.app.workspace.activeLeaf;
 		if (!activeLeaf) return [];
 
+		const model = this.buildNavigationModel(activeLeaf);
+		const activeWindow = activeLeaf.getContainer()?.win;
+		const activeParent = activeLeaf.parent;
+
+		const activeGroup = model.groups.find(
+			(g) => g.window === activeWindow && g.group === activeParent,
+		);
+
+		if (!activeGroup) return [];
+
 		const files: TFile[] = [];
 		const seen = new Set<string>();
 
-		const activeParent = activeLeaf.parent;
-		if (activeParent instanceof WorkspaceTabs) {
-			this.app.workspace.iterateAllLeaves((leaf) => {
-				if (leaf.parent !== activeParent) return;
-				if (!(leaf.view instanceof FileView)) return;
-				const file = leaf.view.file;
-				if (file && !seen.has(file.path)) {
-					seen.add(file.path);
-					files.push(file);
-				}
-			});
-		} else {
-			const activeWindowRoot = activeLeaf.getRoot();
-			this.app.workspace.iterateAllLeaves((leaf) => {
-				if (leaf.getRoot() !== activeWindowRoot) return;
-				if (!(leaf.view instanceof FileView)) return;
-				const file = leaf.view.file;
-				if (file && !seen.has(file.path)) {
-					seen.add(file.path);
-					files.push(file);
-				}
-			});
+		for (const leaf of activeGroup.leaves) {
+			if (!(leaf.view instanceof FileView)) continue;
+			const file = leaf.view.file;
+			if (file && !seen.has(file.path)) {
+				seen.add(file.path);
+				files.push(file);
+			}
 		}
+
 		return files;
 	}
 

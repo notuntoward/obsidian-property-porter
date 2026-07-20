@@ -31,6 +31,7 @@ function createApp(options: any = {}) {
 			parent: group,
 			view: new obsidianMock.FileView(leaf.file),
 			getRoot: () => group,
+			getContainer: () => ({ win: globalThis.window }),
 		};
 	});
 
