@@ -247,8 +247,21 @@ export class Modal {
 }
 
 export class SuggestModal<T> extends Modal {
+	scope: { register(modifiers: string[], key: string, fn: (evt: Event) => boolean): void };
+	chooser: { selectedItem: number; values: T[]; setSelectedItem(index: number, scrollIntoView: boolean): void };
+	inputEl: HTMLInputElement;
+
 	constructor(app: any) {
 		super(app);
+		this.inputEl = document.createElement("input");
+		this.scope = {
+			register: vi.fn(),
+		};
+		this.chooser = {
+			selectedItem: 0,
+			values: [],
+			setSelectedItem: vi.fn(),
+		};
 	}
 
 	setPlaceholder(_placeholder: string): void {}
