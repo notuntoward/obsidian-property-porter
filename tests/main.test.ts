@@ -3,6 +3,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import * as obsidianMock from "obsidian";
+import { registerEmacsMotionKeys, fuzzyMatch } from "../src/utils/modal";
 import PropertyPorter, {
 	SuggestFilesModal,
 	PropertyPorterSettingTab,
@@ -778,6 +779,208 @@ describe("SuggestFilesModal", () => {
 
 		expect(onSelect).toHaveBeenCalledWith(file);
 	});
+
+	it("registers Emacs motion keys on open", () => {
+		const file = new obsidianMock.TFile("x.md");
+		const modal = new SuggestFilesModal(
+			new obsidianMock.App(),
+			[file],
+			() => {}
+		);
+
+		modal.onOpen();
+
+		expect(modal.scope.register).toHaveBeenCalled();
+		const calls = modal.scope.register.mock.calls;
+		const keys = calls.map((c) => c[1]);
+		expect(keys).toContain("N");
+		expect(keys).toContain("P");
+		expect(keys).toContain("A");
+		expect(keys).toContain("E");
+		expect(keys).toContain("F");
+		expect(keys).toContain("B");
+	});
+});
+
+describe("registerEmacsMotionKeys", () => {
+	function createMockModal() {
+		const inputEl = document.createElement("input");
+		const scope = {
+			register: vi.fn(),
+		};
+		const chooser = {
+			selectedItem: 0,
+			values: ["a", "b", "c"],
+			setSelectedItem: vi.fn(),
+		};
+		return { inputEl, scope, chooser };
+	}
+
+	it("registers Ctrl+N to move selection down", () => {
+		const { inputEl, scope, chooser } = createMockModal();
+		const modal = { inputEl, scope, chooser } as unknown as obsidianMock.SuggestModal<unknown>;
+
+		registerEmacsMotionKeys(modal);
+
+		const ctrlNCall = scope.register.mock.calls.find(
+			(c) => c[0][0] === "Ctrl" && c[1] === "N",
+		);
+		expect(ctrlNCall).toBeDefined();
+		ctrlNCall[2](new KeyboardEvent("keydown"));
+		expect(chooser.setSelectedItem).toHaveBeenCalledWith(1, true);
+	});
+
+	it("registers Ctrl+P to move selection up", () => {
+		const { inputEl, scope, chooser } = createMockModal();
+		chooser.selectedItem = 1;
+		const modal = { inputEl, scope, chooser } as unknown as obsidianMock.SuggestModal<unknown>;
+
+		registerEmacsMotionKeys(modal);
+
+		const ctrlPCall = scope.register.mock.calls.find(
+			(c) => c[0][0] === "Ctrl" && c[1] === "P",
+		);
+		expect(ctrlPCall).toBeDefined();
+		ctrlPCall[2](new KeyboardEvent("keydown"));
+		expect(chooser.setSelectedItem).toHaveBeenCalledWith(0, true);
+	});
+
+	it("does not move selection down past the last item", () => {
+		const { inputEl, scope, chooser } = createMockModal();
+		chooser.selectedItem = 2;
+		chooser.values = ["a", "b", "c"];
+		const modal = { inputEl, scope, chooser } as unknown as obsidianMock.SuggestModal<unknown>;
+
+		registerEmacsMotionKeys(modal);
+
+		const ctrlNCall = scope.register.mock.calls.find(
+			(c) => c[0][0] === "Ctrl" && c[1] === "N",
+		);
+		ctrlNCall[2](new KeyboardEvent("keydown"));
+		expect(chooser.setSelectedItem).not.toHaveBeenCalled();
+	});
+
+	it("does not move selection up past the first item", () => {
+		const { inputEl, scope, chooser } = createMockModal();
+		chooser.selectedItem = 0;
+		const modal = { inputEl, scope, chooser } as unknown as obsidianMock.SuggestModal<unknown>;
+
+		registerEmacsMotionKeys(modal);
+
+		const ctrlPCall = scope.register.mock.calls.find(
+			(c) => c[0][0] === "Ctrl" && c[1] === "P",
+		);
+		ctrlPCall[2](new KeyboardEvent("keydown"));
+		expect(chooser.setSelectedItem).not.toHaveBeenCalled();
+	});
+
+	it("registers Ctrl+A to move cursor to start of input", () => {
+		const { inputEl, scope } = createMockModal();
+		inputEl.value = "hello";
+		inputEl.setSelectionRange(5, 5);
+		const modal = { inputEl, scope } as unknown as obsidianMock.SuggestModal<unknown>;
+
+		registerEmacsMotionKeys(modal);
+
+		const ctrlACall = scope.register.mock.calls.find(
+			(c) => c[0][0] === "Ctrl" && c[1] === "A",
+		);
+		ctrlACall[2](new KeyboardEvent("keydown"));
+		expect(inputEl.selectionStart).toBe(0);
+		expect(inputEl.selectionEnd).toBe(0);
+	});
+
+	it("registers Ctrl+E to move cursor to end of input", () => {
+		const { inputEl, scope } = createMockModal();
+		inputEl.value = "hello";
+		inputEl.setSelectionRange(0, 0);
+		const modal = { inputEl, scope } as unknown as obsidianMock.SuggestModal<unknown>;
+
+		registerEmacsMotionKeys(modal);
+
+		const ctrlECall = scope.register.mock.calls.find(
+			(c) => c[0][0] === "Ctrl" && c[1] === "E",
+		);
+		ctrlECall[2](new KeyboardEvent("keydown"));
+		expect(inputEl.selectionStart).toBe(5);
+		expect(inputEl.selectionEnd).toBe(5);
+	});
+
+	it("registers Ctrl+F to move cursor right", () => {
+		const { inputEl, scope } = createMockModal();
+		inputEl.value = "hello";
+		inputEl.setSelectionRange(0, 0);
+		const modal = { inputEl, scope } as unknown as obsidianMock.SuggestModal<unknown>;
+
+		registerEmacsMotionKeys(modal);
+
+		const ctrlFCall = scope.register.mock.calls.find(
+			(c) => c[0][0] === "Ctrl" && c[1] === "F",
+		);
+		ctrlFCall[2](new KeyboardEvent("keydown"));
+		expect(inputEl.selectionStart).toBe(1);
+		expect(inputEl.selectionEnd).toBe(1);
+	});
+
+	it("registers Ctrl+B to move cursor left", () => {
+		const { inputEl, scope } = createMockModal();
+		inputEl.value = "hello";
+		inputEl.setSelectionRange(3, 3);
+		const modal = { inputEl, scope } as unknown as obsidianMock.SuggestModal<unknown>;
+
+		registerEmacsMotionKeys(modal);
+
+		const ctrlBCall = scope.register.mock.calls.find(
+			(c) => c[0][0] === "Ctrl" && c[1] === "B",
+		);
+		ctrlBCall[2](new KeyboardEvent("keydown"));
+		expect(inputEl.selectionStart).toBe(2);
+		expect(inputEl.selectionEnd).toBe(2);
+	});
+});
+
+describe("fuzzyMatch", () => {
+	it("returns null when query characters are not in order", () => {
+		expect(fuzzyMatch("xyz", "alpha")).toBeNull();
+	});
+
+	it("returns a score with matches when all query chars match in order", () => {
+		const result = fuzzyMatch("tg", "tags");
+		expect(result).not.toBeNull();
+		expect(result!.score).toBeGreaterThan(0);
+		expect(result!.matches).toBeDefined();
+	});
+
+	it("returns a higher score for consecutive matches than scattered ones", () => {
+		const consecutive = fuzzyMatch("ph", "alpha");
+		const scattered = fuzzyMatch("ph", "xiphophone");
+		expect(consecutive).not.toBeNull();
+		expect(scattered).not.toBeNull();
+		expect(consecutive!.score).toBeGreaterThan(scattered!.score);
+	});
+
+	it("returns a higher score for matches at word starts", () => {
+		const wordStart = fuzzyMatch("a", "alpha-beta");
+		const midWord = fuzzyMatch("b", "alpha-beta");
+		expect(wordStart!.score).toBeGreaterThan(midWord!.score);
+	});
+
+	it("returns score 0 with empty matches for an empty query", () => {
+		const result = fuzzyMatch("", "anything");
+		expect(result).not.toBeNull();
+		expect(result!.score).toBe(0);
+		expect(result!.matches).toEqual([]);
+	});
+
+	it("returns null for an empty target with a non-empty query", () => {
+		expect(fuzzyMatch("a", "")).toBeNull();
+	});
+
+	it("prefers shorter targets (lower length penalty)", () => {
+		const short = fuzzyMatch("a", "alpha");
+		const long = fuzzyMatch("a", "alpha-beta-gamma");
+		expect(short!.score).toBeGreaterThan(long!.score);
+	});
 });
 
 describe("MultiSelectSuggestModal", () => {
@@ -819,7 +1022,7 @@ describe("MultiSelectSuggestModal", () => {
 		expect(items[0].textContent).toBe("gamma");
 	});
 
-	it("ranks exact match first, then prefix matches, then substring matches", () => {
+	it("ranks exact match first, then fuzzy matches by score", () => {
 		const modal = new MultiSelectSuggestModal(
 			new obsidianMock.App(),
 			["King-County", "Seattle", "a", "ai-generated", "archive"],
@@ -835,11 +1038,12 @@ describe("MultiSelectSuggestModal", () => {
 		const items = Array.from(
 			modal.contentEl.querySelectorAll(".pp-multi-select-item")
 		).map((el: any) => el.textContent);
-		// "a" is an exact match and must rank first, even though "Seattle"
-		// contains "a" and would otherwise sort earlier alphabetically.
-		// "King-County" has no "a" in it at all and is correctly excluded.
+		// "a" is an exact match and must rank first. "King-County"
+		// has no "a" in it at all and is correctly excluded.
+		// With fuzzy matching, shorter targets score higher, so
+		// "archive" ranks above "ai-generated".
 		expect(items[0]).toBe("a");
-		expect(items).toEqual(["a", "ai-generated", "archive", "Seattle"]);
+		expect(items).toEqual(["a", "archive", "ai-generated", "Seattle"]);
 	});
 
 	it("Enter selects the exact match, not an earlier substring match", () => {
@@ -1207,6 +1411,121 @@ describe("MultiSelectSuggestModal", () => {
 		modal.submit();
 		expect(onSubmit).toHaveBeenCalledWith(["alpha"]);
 		expect(onCancel).not.toHaveBeenCalled();
+	});
+
+	it("Ctrl+N moves selection down like ArrowDown", () => {
+		const modal = new MultiSelectSuggestModal(
+			new obsidianMock.App(),
+			["alpha", "beta", "gamma"],
+			"",
+			() => {},
+			() => {}
+		);
+		modal.onOpen();
+		modal.inputEl.value = "";
+
+		modal.handleKeydown(
+			new KeyboardEvent("keydown", { key: "n", ctrlKey: true }),
+		);
+
+		expect(modal.activeIndex).toBe(1);
+	});
+
+	it("Ctrl+P moves selection up like ArrowUp", () => {
+		const modal = new MultiSelectSuggestModal(
+			new obsidianMock.App(),
+			["alpha", "beta", "gamma"],
+			"",
+			() => {},
+			() => {}
+		);
+		modal.onOpen();
+		modal.inputEl.value = "";
+		modal.activeIndex = 1;
+
+		modal.handleKeydown(
+			new KeyboardEvent("keydown", { key: "p", ctrlKey: true }),
+		);
+
+		expect(modal.activeIndex).toBe(0);
+	});
+
+	it("Ctrl+N does not move past the last item", () => {
+		const modal = new MultiSelectSuggestModal(
+			new obsidianMock.App(),
+			["alpha", "beta", "gamma"],
+			"",
+			() => {},
+			() => {}
+		);
+		modal.onOpen();
+		modal.inputEl.value = "";
+		modal.activeIndex = 2;
+
+		modal.handleKeydown(
+			new KeyboardEvent("keydown", { key: "n", ctrlKey: true }),
+		);
+
+		expect(modal.activeIndex).toBe(2);
+	});
+
+	it("Ctrl+P does not move past the first item", () => {
+		const modal = new MultiSelectSuggestModal(
+			new obsidianMock.App(),
+			["alpha", "beta", "gamma"],
+			"",
+			() => {},
+			() => {}
+		);
+		modal.onOpen();
+		modal.inputEl.value = "";
+		modal.activeIndex = 0;
+
+		modal.handleKeydown(
+			new KeyboardEvent("keydown", { key: "p", ctrlKey: true }),
+		);
+
+		expect(modal.activeIndex).toBe(0);
+	});
+
+	it("Ctrl+A moves cursor to beginning of input", () => {
+		const modal = new MultiSelectSuggestModal(
+			new obsidianMock.App(),
+			["alpha"],
+			"",
+			() => {},
+			() => {}
+		);
+		modal.onOpen();
+		modal.inputEl.value = "test";
+		modal.inputEl.setSelectionRange(4, 4);
+
+		modal.handleKeydown(
+			new KeyboardEvent("keydown", { key: "a", ctrlKey: true }),
+		);
+
+		expect(modal.inputEl.selectionStart).toBe(0);
+		expect(modal.inputEl.selectionEnd).toBe(0);
+	});
+
+	it("Ctrl+E moves cursor to end of input", () => {
+		const modal = new MultiSelectSuggestModal(
+			new obsidianMock.App(),
+			["alpha"],
+			"",
+			() => {},
+			() => {}
+		);
+		modal.onOpen();
+		modal.inputEl.value = "test";
+		modal.inputEl.setSelectionRange(0, 0);
+
+		modal.handleKeydown(
+			new KeyboardEvent("keydown", { key: "e", ctrlKey: true }),
+		);
+
+		expect(modal.inputEl.selectionStart).toBe(4);
+		expect(modal.inputEl.selectionEnd).toBe(4);
 	});
 });
 

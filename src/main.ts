@@ -10,6 +10,7 @@ import {
 	FileView,
 	WorkspaceLeaf,
 	WorkspaceParent,
+	FuzzyMatch,
 	getAllTags,
 } from "obsidian";
 import {
@@ -22,6 +23,7 @@ import {
 	stripHashTag,
 	type PasteMode,
 } from "./frontmatter";
+import { registerEmacsMotionKeys, fuzzyMatch, renderHighlightedText } from "./utils/modal";
 
 interface PropertyPorterSettings {
 	onlyInclude: string;
@@ -588,6 +590,17 @@ export class SuggestFilesModal extends FuzzySuggestModal<TFile> {
 		return file.path;
 	}
 
+	renderSuggestion(match: FuzzyMatch<TFile>, el: HTMLElement): void {
+		el.empty();
+		el.addClass("pp-nav-row");
+		renderHighlightedText(el, this.getItemText(match.item), match.match.matches);
+	}
+
+	onOpen(): void {
+		super.onOpen();
+		registerEmacsMotionKeys(this);
+	}
+
 	onChooseItem(file: TFile): void {
 		this.onSelect(file);
 	}
@@ -598,7 +611,7 @@ export class MultiSelectSuggestModal extends Modal {
 	private submitted = false;
 	private query = "";
 	private activeIndex = 0;
-	private filtered: string[] = [];
+	private filtered: { value: string; matches: number[][] }[] = [];
 
 	private chipsContainerEl: HTMLElement | null = null;
 	private inputEl: HTMLInputElement | null = null;
@@ -680,26 +693,22 @@ export class MultiSelectSuggestModal extends Modal {
 		if (!this.submitted) this.onCancel();
 	}
 
-	private getFiltered(query: string): string[] {
-		const q = query.trim().toLowerCase();
+	private getFiltered(query: string): { value: string; matches: number[][] }[] {
+		const q = query.trim();
 		const pool = this.values.filter((v) => !this.selected.includes(v));
-		if (q === "") return pool.slice(0, 100);
+		if (q === "") return pool.map((v) => ({ value: v, matches: [] }));
 
-		const ranked: { value: string; rank: number }[] = [];
+		const ranked: { value: string; matches: number[][]; score: number }[] = [];
 		for (const value of pool) {
-			const lower = value.toLowerCase();
-			let rank: number;
-			if (lower === q) rank = 0;
-			else if (lower.startsWith(q)) rank = 1;
-			else if (lower.includes(q)) rank = 2;
-			else continue;
-			ranked.push({ value, rank });
+			const result = fuzzyMatch(q, value);
+			if (result === null) continue;
+			ranked.push({ value, matches: result.matches, score: result.score });
 		}
 		ranked.sort((a, b) => {
-			if (a.rank !== b.rank) return a.rank - b.rank;
+			if (a.score !== b.score) return b.score - a.score;
 			return a.value.toLowerCase().localeCompare(b.value.toLowerCase());
 		});
-		return ranked.map((r) => r.value).slice(0, 100);
+		return ranked.map((r) => ({ value: r.value, matches: r.matches }));
 	}
 
 	private renderList(): void {
@@ -709,15 +718,16 @@ export class MultiSelectSuggestModal extends Modal {
 			this.activeIndex = Math.max(0, this.filtered.length - 1);
 		}
 		this.listEl.empty();
-		this.filtered.forEach((value, index) => {
+		this.filtered.forEach((entry, index) => {
 			const item = this.listEl!.createDiv({
 				cls: "pp-multi-select-item",
 			});
 			if (index === this.activeIndex) item.addClass("is-active");
-			item.createSpan({ text: `${this.prefix}${value}` });
+			const label = item.createDiv({ cls: "pp-multi-select-label" });
+			renderHighlightedText(label, `${this.prefix}${entry.value}`, entry.matches);
 			item.addEventListener("mousedown", (e) => {
 				e.preventDefault();
-				this.addValue(value);
+				this.addValue(entry.value);
 			});
 			item.addEventListener("mouseenter", () => {
 				if (this.activeIndex === index) return;
@@ -745,7 +755,7 @@ export class MultiSelectSuggestModal extends Modal {
 	}
 
 	private handleKeydown(e: KeyboardEvent): void {
-		if (e.key === "ArrowDown") {
+		if (e.key === "ArrowDown" || (e.ctrlKey && e.key === "n")) {
 			e.preventDefault();
 			if (this.filtered.length > 0) {
 				this.activeIndex = Math.min(
@@ -756,11 +766,30 @@ export class MultiSelectSuggestModal extends Modal {
 			}
 			return;
 		}
-		if (e.key === "ArrowUp") {
+		if (e.key === "ArrowUp" || (e.ctrlKey && e.key === "p")) {
 			e.preventDefault();
 			if (this.filtered.length > 0) {
 				this.activeIndex = Math.max(this.activeIndex - 1, 0);
 				this.renderList();
+			}
+			return;
+		}
+		if (e.ctrlKey && e.key === "a") {
+			e.preventDefault();
+			if (this.inputEl) {
+				this.inputEl.focus();
+				this.inputEl.setSelectionRange(0, 0);
+			}
+			return;
+		}
+		if (e.ctrlKey && e.key === "e") {
+			e.preventDefault();
+			if (this.inputEl) {
+				this.inputEl.focus();
+				this.inputEl.setSelectionRange(
+					this.inputEl.value.length,
+					this.inputEl.value.length,
+				);
 			}
 			return;
 		}
@@ -775,7 +804,7 @@ export class MultiSelectSuggestModal extends Modal {
 			// (properly-cased) value; otherwise add the tag verbatim so users
 			// can enter tags that don't yet exist anywhere in the vault.
 			if (this.filtered.length > 0) {
-				this.addValue(this.filtered[this.activeIndex]);
+				this.addValue(this.filtered[this.activeIndex].value);
 			} else {
 				this.addValue(typed);
 			}
