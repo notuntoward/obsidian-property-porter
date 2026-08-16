@@ -12,6 +12,7 @@ import {
 	WorkspaceParent,
 	FuzzyMatch,
 	getAllTags,
+	type SettingDefinitionItem,
 } from "obsidian";
 import {
 	filterFrontmatter,
@@ -916,66 +917,48 @@ export class PropertyPorterSettingTab extends PluginSettingTab {
 		super(app, plugin);
 	}
 
-	display(): void {
-		const { containerEl } = this;
-		containerEl.empty();
-
-		new Setting(containerEl)
-			.setName("Only include")
-			.setDesc(
-				"Comma-separated list of properties to copy. Mutually exclusive with Exclude keys."
-			)
-			.addText((text) => {
-				text
-					.setPlaceholder("tags, status")
-					.setValue(this.plugin.settings.onlyInclude)
-					.onChange(async (value) => {
-						this.plugin.settings.onlyInclude = value;
-						await this.plugin.saveSettings();
-					});
-			});
-
-		new Setting(containerEl)
-			.setName("Exclude keys")
-			.setDesc(
-				"Comma-separated list of properties to ignore. Disabled when Only include is populated."
-			)
-			.addText((text) => {
-				text
-					.setPlaceholder("aliases, created date, modified date")
-					.setValue(this.plugin.settings.excludeKeys)
-					.setDisabled(this.plugin.settings.onlyInclude.trim().length > 0)
-					.onChange(async (value) => {
-						this.plugin.settings.excludeKeys = value;
-						await this.plugin.saveSettings();
-					});
-			});
-
-		new Setting(containerEl)
-			.setName("Paste mode")
-			.setDesc("How copied properties merge into the destination note.")
-			.addDropdown((dropdown) => {
-				dropdown
-					.addOption("overwrite", "Overwrite")
-					.addOption("skip", "Skip existing")
-					.addOption("merge", "Merge")
-					.setValue(this.plugin.settings.pasteMode)
-					.onChange(async (value: PropertyPorterSettings["pasteMode"]) => {
-						this.plugin.settings.pasteMode = value;
-						await this.plugin.saveSettings();
-					});
-			});
-
-		new Setting(containerEl)
-			.setName("Auto-clear clipboard after successful paste")
-			.setDesc("Automatically clear copied properties after pasting.")
-			.addToggle((toggle) => {
-				toggle
-					.setValue(this.plugin.settings.autoClear)
-					.onChange(async (value) => {
-						this.plugin.settings.autoClear = value;
-						await this.plugin.saveSettings();
-					});
-			});
+	getSettingDefinitions(): SettingDefinitionItem[] {
+		return [
+			{
+				name: "Only include",
+				desc: "Comma-separated list of properties to copy. Mutually exclusive with Exclude keys.",
+				control: {
+					type: "text",
+					key: "onlyInclude",
+					placeholder: "tags, status",
+				},
+			},
+			{
+				name: "Exclude keys",
+				desc: "Comma-separated list of properties to ignore. Disabled when Only include is populated.",
+				control: {
+					type: "text",
+					key: "excludeKeys",
+					placeholder: "aliases, created date, modified date",
+					disabled: () => this.plugin.settings.onlyInclude.trim().length > 0,
+				},
+			},
+			{
+				name: "Paste mode",
+				desc: "How copied properties merge into the destination note.",
+				control: {
+					type: "dropdown",
+					key: "pasteMode",
+					options: {
+						overwrite: "Overwrite",
+						skip: "Skip existing",
+						merge: "Merge",
+					},
+				},
+			},
+			{
+				name: "Auto-clear clipboard after successful paste",
+				desc: "Automatically clear copied properties after pasting.",
+				control: {
+					type: "toggle",
+					key: "autoClear",
+				},
+			},
+		];
 	}
 }
