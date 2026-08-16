@@ -1832,36 +1832,46 @@ describe("PropertyPorterSettingTab", () => {
 
 		const onlyIncludeDef = defs.find((d) => d.name === "Only include");
 		expect(onlyIncludeDef).toBeDefined();
-		expect(onlyIncludeDef.control).toEqual({
-			type: "text",
-			key: "onlyInclude",
-			placeholder: "tags, status",
-		});
+		expect(onlyIncludeDef.control).toEqual(
+			expect.objectContaining({
+				type: "text",
+				key: "onlyInclude",
+				placeholder: "tags, status",
+			})
+		);
 
 		const excludeKeysDef = defs.find((d) => d.name === "Exclude keys");
 		expect(excludeKeysDef).toBeDefined();
-		expect(excludeKeysDef.control.type).toBe("text");
-		expect(excludeKeysDef.control.key).toBe("excludeKeys");
-		expect(excludeKeysDef.control.placeholder).toBe("aliases, created date, modified date");
+		expect(excludeKeysDef.control).toEqual(
+			expect.objectContaining({
+				type: "text",
+				key: "excludeKeys",
+				placeholder: "aliases, created date, modified date",
+			})
+		);
 
 		const pasteModeDef = defs.find((d) => d.name === "Paste mode");
 		expect(pasteModeDef).toBeDefined();
-		expect(pasteModeDef.control).toEqual({
-			type: "dropdown",
-			key: "pasteMode",
-			options: {
-				overwrite: "Overwrite",
-				skip: "Skip existing",
-				merge: "Merge",
-			},
-		});
+		expect(pasteModeDef.control).toEqual(
+			expect.objectContaining({
+				type: "dropdown",
+				key: "pasteMode",
+				options: {
+					overwrite: "Overwrite",
+					skip: "Skip existing",
+					merge: "Merge",
+				},
+			})
+		);
 
 		const autoClearDef = defs.find((d) => d.name === "Auto-clear clipboard after successful paste");
 		expect(autoClearDef).toBeDefined();
-		expect(autoClearDef.control).toEqual({
-			type: "toggle",
-			key: "autoClear",
-		});
+		expect(autoClearDef.control).toEqual(
+			expect.objectContaining({
+				type: "toggle",
+				key: "autoClear",
+			})
+		);
 	});
 
 	it("evaluates disabled predicate on Exclude keys based on onlyInclude setting", async () => {

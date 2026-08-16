@@ -917,6 +917,10 @@ export class PropertyPorterSettingTab extends PluginSettingTab {
 		super(app, plugin);
 	}
 
+	private isExcludeKeysDisabled(): boolean {
+		return this.plugin.settings.onlyInclude.trim().length > 0;
+	}
+
 	getSettingDefinitions(): SettingDefinitionItem<keyof PropertyPorterSettings>[] {
 		return [
 			{
@@ -935,7 +939,7 @@ export class PropertyPorterSettingTab extends PluginSettingTab {
 					type: "text",
 					key: "excludeKeys" satisfies keyof PropertyPorterSettings,
 					placeholder: "aliases, created date, modified date",
-					disabled: () => this.plugin.settings.onlyInclude.trim().length > 0,
+					disabled: () => this.isExcludeKeysDisabled(),
 				},
 			},
 			{
