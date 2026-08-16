@@ -1818,64 +1818,78 @@ describe("selectTagsToPaste", () => {
 
 describe("PropertyPorterSettingTab", () => {
 	beforeEach(() => {
-		obsidianMock.Setting.clearInstances();
 		vi.restoreAllMocks();
 	});
 
-	it("displays settings and propagates changes", async () => {
+	it("returns setting definitions with expected bindings and controls", async () => {
 		const { plugin } = createPlugin();
 		await plugin.onload();
-		const saveSettings = vi.spyOn(plugin, "saveSettings");
 
 		const tab = new PropertyPorterSettingTab(plugin.app, plugin);
-		tab.containerEl = document.createElement("div");
-		(tab.containerEl as any).empty = vi.fn();
-		tab.display();
+		const defs = tab.getSettingDefinitions();
 
-		const onlyInclude = obsidianMock.Setting.instances.find(
-			(s) => s.name === "Only include"
-		);
-		(onlyInclude as any).components.text.onChangeFn("tags, status");
-		expect(plugin.settings.onlyInclude).toBe("tags, status");
-		expect(saveSettings).toHaveBeenCalled();
+		expect(defs).toHaveLength(4);
 
-		const exclude = obsidianMock.Setting.instances.find(
-			(s) => s.name === "Exclude keys"
+		const onlyIncludeDef = defs.find((d) => d.name === "Only include");
+		expect(onlyIncludeDef).toBeDefined();
+		expect(onlyIncludeDef.control).toEqual(
+			expect.objectContaining({
+				type: "text",
+				key: "onlyInclude",
+				placeholder: "tags, status",
+			})
 		);
-		expect((exclude as any).components.text.disabled).toBe(true);
 
-		const pasteMode = obsidianMock.Setting.instances.find(
-			(s) => s.name === "Paste mode"
+		const excludeKeysDef = defs.find((d) => d.name === "Exclude keys");
+		expect(excludeKeysDef).toBeDefined();
+		expect(excludeKeysDef.control).toEqual(
+			expect.objectContaining({
+				type: "text",
+				key: "excludeKeys",
+				placeholder: "aliases, created date, modified date",
+			})
 		);
-		(pasteMode as any).components.dropdown.onChangeFn("overwrite");
-		expect(plugin.settings.pasteMode).toBe("overwrite");
 
-		const autoClear = obsidianMock.Setting.instances.find(
-			(s) =>
-				s.name ===
-				"Auto-clear clipboard after successful paste"
+		const pasteModeDef = defs.find((d) => d.name === "Paste mode");
+		expect(pasteModeDef).toBeDefined();
+		expect(pasteModeDef.control).toEqual(
+			expect.objectContaining({
+				type: "dropdown",
+				key: "pasteMode",
+				options: {
+					overwrite: "Overwrite",
+					skip: "Skip existing",
+					merge: "Merge",
+				},
+			})
 		);
-		(autoClear as any).components.toggle.onChangeFn(true);
-		expect(plugin.settings.autoClear).toBe(true);
+
+		const autoClearDef = defs.find((d) => d.name === "Auto-clear clipboard after successful paste");
+		expect(autoClearDef).toBeDefined();
+		expect(autoClearDef.control).toEqual(
+			expect.objectContaining({
+				type: "toggle",
+				key: "autoClear",
+			})
+		);
 	});
 
-	it("updates Exclude keys when enabled", async () => {
+	it("evaluates disabled predicate on Exclude keys based on onlyInclude setting", async () => {
 		const { plugin } = createPlugin();
 		await plugin.onload();
-		plugin.settings.onlyInclude = "";
 
 		const tab = new PropertyPorterSettingTab(plugin.app, plugin);
-		tab.containerEl = document.createElement("div");
-		(tab.containerEl as any).empty = vi.fn();
-		tab.display();
 
-		const exclude = obsidianMock.Setting.instances.find(
-			(s) => s.name === "Exclude keys"
-		);
-		expect((exclude as any).components.text.disabled).toBe(false);
+		plugin.settings.onlyInclude = "tags, status";
+		let defs = tab.getSettingDefinitions();
+		let excludeKeysDef = defs.find((d) => d.name === "Exclude keys");
+		expect(typeof excludeKeysDef.control.disabled).toBe("function");
+		expect(excludeKeysDef.control.disabled()).toBe(true);
 
-		(exclude as any).components.text.onChangeFn("aliases");
-		expect(plugin.settings.excludeKeys).toBe("aliases");
+		plugin.settings.onlyInclude = "   ";
+		defs = tab.getSettingDefinitions();
+		excludeKeysDef = defs.find((d) => d.name === "Exclude keys");
+		expect(excludeKeysDef.control.disabled()).toBe(false);
 	});
 });
 
