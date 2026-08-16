@@ -917,14 +917,14 @@ export class PropertyPorterSettingTab extends PluginSettingTab {
 		super(app, plugin);
 	}
 
-	getSettingDefinitions(): SettingDefinitionItem[] {
+	getSettingDefinitions(): SettingDefinitionItem<keyof PropertyPorterSettings>[] {
 		return [
 			{
 				name: "Only include",
 				desc: "Comma-separated list of properties to copy. Mutually exclusive with Exclude keys.",
 				control: {
 					type: "text",
-					key: "onlyInclude",
+					key: "onlyInclude" satisfies keyof PropertyPorterSettings,
 					placeholder: "tags, status",
 				},
 			},
@@ -933,7 +933,7 @@ export class PropertyPorterSettingTab extends PluginSettingTab {
 				desc: "Comma-separated list of properties to ignore. Disabled when Only include is populated.",
 				control: {
 					type: "text",
-					key: "excludeKeys",
+					key: "excludeKeys" satisfies keyof PropertyPorterSettings,
 					placeholder: "aliases, created date, modified date",
 					disabled: () => this.plugin.settings.onlyInclude.trim().length > 0,
 				},
@@ -943,7 +943,7 @@ export class PropertyPorterSettingTab extends PluginSettingTab {
 				desc: "How copied properties merge into the destination note.",
 				control: {
 					type: "dropdown",
-					key: "pasteMode",
+					key: "pasteMode" satisfies keyof PropertyPorterSettings,
 					options: {
 						overwrite: "Overwrite",
 						skip: "Skip existing",
@@ -956,7 +956,7 @@ export class PropertyPorterSettingTab extends PluginSettingTab {
 				desc: "Automatically clear copied properties after pasting.",
 				control: {
 					type: "toggle",
-					key: "autoClear",
+					key: "autoClear" satisfies keyof PropertyPorterSettings,
 				},
 			},
 		];
