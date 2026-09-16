@@ -1,4 +1,4 @@
-﻿// @vitest-environment jsdom
+// @vitest-environment jsdom
 // @ts-nocheck
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -8,6 +8,9 @@ import PropertyPorter, {
 	SuggestFilesModal,
 	PropertyPorterSettingTab,
 	MultiSelectSuggestModal,
+	NOTICE_NO_PROPERTIES_TO_PASTE,
+	NOTICE_CLEARED_COPIED_TAGS,
+	NOTICE_TIMEOUT_MS,
 } from "../src/main";
 
 function createApp(options: any = {}) {
@@ -434,7 +437,10 @@ describe("PropertyPorter", () => {
 
 			await plugin.pasteProperties(new obsidianMock.TFile("dest.md"));
 
-			expect(spy).toHaveBeenCalledWith("Property Porter: Clipboard is empty");
+			expect(spy).toHaveBeenCalledWith(
+				NOTICE_NO_PROPERTIES_TO_PASTE,
+				NOTICE_TIMEOUT_MS
+			);
 		});
 
 		it("shows notice when clipboard has a key but its value is effectively empty, and does not touch the target", async () => {
@@ -449,7 +455,10 @@ describe("PropertyPorter", () => {
 
 			await plugin.pasteProperties(target);
 
-			expect(spy).toHaveBeenCalledWith("Property Porter: Clipboard is empty");
+			expect(spy).toHaveBeenCalledWith(
+				NOTICE_NO_PROPERTIES_TO_PASTE,
+				NOTICE_TIMEOUT_MS
+			);
 			expect(spy).not.toHaveBeenCalledWith(
 				expect.stringContaining("Pasted properties into")
 			);
@@ -567,7 +576,8 @@ describe("PropertyPorter", () => {
 			await plugin.pasteIntoActiveTabGroup();
 
 			expect(spy).toHaveBeenCalledWith(
-				"Property Porter: Clipboard is empty"
+				NOTICE_NO_PROPERTIES_TO_PASTE,
+				NOTICE_TIMEOUT_MS
 			);
 		});
 
@@ -1663,7 +1673,7 @@ describe("selectTagsToPaste", () => {
 
 		expect(plugin.clipboard).toEqual({ tags: [] });
 		expect(spy).toHaveBeenCalledWith(
-			"Property Porter: No tags selected. Cleared tags from clipboard."
+			NOTICE_CLEARED_COPIED_TAGS
 		);
 	});
 

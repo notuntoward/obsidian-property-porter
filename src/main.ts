@@ -40,6 +40,12 @@ const DEFAULT_SETTINGS: PropertyPorterSettings = {
 	autoClear: false,
 };
 
+export const NOTICE_TIMEOUT_MS = 7000;
+export const NOTICE_NO_PROPERTIES_TO_PASTE =
+	'Property Porter: No properties copied. Use "Copy properties" (not system clipboard).';
+export const NOTICE_CLEARED_COPIED_TAGS =
+	"Property Porter: No tags selected. Cleared copied tags.";
+
 // Obsidian injects a positional cache object (`position`) into frontmatter
 // read from metadataCache/processFrontMatter; strip it before copy/paste so
 // we never write it back and corrupt the destination file's internal
@@ -258,7 +264,7 @@ export default class PropertyPorter extends Plugin {
 
 	async pasteProperties(targetFile?: TFile | null): Promise<void> {
 		if (!this.hasClipboardContent()) {
-			new Notice("Property Porter: Clipboard is empty");
+			new Notice(NOTICE_NO_PROPERTIES_TO_PASTE, NOTICE_TIMEOUT_MS);
 			return;
 		}
 
@@ -429,7 +435,7 @@ export default class PropertyPorter extends Plugin {
 
 	async pasteIntoActiveTabGroup(): Promise<void> {
 		if (!this.hasClipboardContent()) {
-			new Notice("Property Porter: Clipboard is empty");
+			new Notice(NOTICE_NO_PROPERTIES_TO_PASTE, NOTICE_TIMEOUT_MS);
 			return;
 		}
 
@@ -542,7 +548,7 @@ export default class PropertyPorter extends Plugin {
 		this.clipboard = { tags: selected };
 		this.updateStatusBar();
 		if (selected.length === 0) {
-			new Notice("Property Porter: No tags selected. Cleared tags from clipboard.");
+			new Notice(NOTICE_CLEARED_COPIED_TAGS);
 			return;
 		}
 		new Notice(
