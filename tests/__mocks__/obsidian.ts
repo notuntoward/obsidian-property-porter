@@ -376,3 +376,24 @@ export function getAllTags(cache: any): string[] | null {
 
 	return tags.size > 0 ? Array.from(tags) : null;
 }
+
+export function prepareFuzzySearch(
+	query: string,
+): (text: string) => { score: number; matches: number[][] } | null {
+	const tokens = query.toLowerCase().split(/\s+/).filter(Boolean);
+	return (text: string) => {
+		const lower = text.toLowerCase();
+		const matches: number[][] = [];
+		for (const token of tokens) {
+			let from = 0;
+			for (const ch of token) {
+				const at = lower.indexOf(ch, from);
+				if (at < 0) return null;
+				matches.push([at, at + 1]);
+				from = at + 1;
+			}
+		}
+		matches.sort((a, b) => a[0] - b[0]);
+		return { score: -text.length, matches };
+	};
+}

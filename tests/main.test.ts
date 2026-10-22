@@ -6,6 +6,7 @@ import * as obsidianMock from "obsidian";
 import { registerEmacsMotionKeys, fuzzyMatch } from "../src/utils/modal";
 import PropertyPorter, {
 	SuggestFilesModal,
+	FileSuggestModal,
 	PropertyPorterSettingTab,
 	MultiSelectSuggestModal,
 	NOTICE_NO_PROPERTIES_TO_PASTE,
@@ -156,7 +157,7 @@ describe("PropertyPorter", () => {
 			expect(selectTagsToPaste).toHaveBeenCalled();
 		});
 
-		it("registers the clear command with a discoverable 'Clear properties' name", async () => {
+		it("registers the clear command with 'Clear properties clipboard' name", async () => {
 			const { plugin } = createPlugin();
 			const addCommand = vi.spyOn(plugin, "addCommand");
 			await plugin.onload();
@@ -164,7 +165,7 @@ describe("PropertyPorter", () => {
 			const call = addCommand.mock.calls.find(
 				(c) => c[0].id === "clear-clipboard"
 			);
-			expect(call?.[0].name).toBe("Clear properties");
+			expect(call?.[0].name).toBe("Clear properties clipboard");
 		});
 
 		it("registers the tag-picker command with an accurate 'Select tags to paste' name, not the misleading 'properties' wording", async () => {
@@ -382,7 +383,7 @@ describe("PropertyPorter", () => {
 			await plugin.onload();
 			fileCache[source.path] = { frontmatter: { status: "from-source" } };
 			plugin.settings.onlyInclude = "status";
-			obsidianMock.FuzzySuggestModal.prototype.open = function (this: any) {
+			obsidianMock.SuggestModal.prototype.open = function (this: any) {
 				this.onChooseItem(source);
 			};
 			const spy = vi.spyOn(obsidianMock, "Notice");
@@ -531,7 +532,7 @@ describe("PropertyPorter", () => {
 			});
 			await plugin.onload();
 			plugin.clipboard = { tags: ["a"] };
-			obsidianMock.FuzzySuggestModal.prototype.open = function (this: any) {
+			obsidianMock.SuggestModal.prototype.open = function (this: any) {
 				this.onChooseItem(other);
 			};
 
@@ -715,7 +716,7 @@ describe("PropertyPorter", () => {
 				activeFile: active,
 				markdownFiles: [active, other],
 			});
-			obsidianMock.FuzzySuggestModal.prototype.open = function (this: any) {
+			obsidianMock.SuggestModal.prototype.open = function (this: any) {
 				this.onChooseItem(other);
 			};
 
@@ -754,13 +755,13 @@ describe("PropertyPorter", () => {
 	});
 });
 
-describe("SuggestFilesModal", () => {
+describe("FileSuggestModal", () => {
 	it("lists all candidate files", () => {
 		const files = [
 			new obsidianMock.TFile("a.md"),
 			new obsidianMock.TFile("notes/b.md"),
 		];
-		const modal = new SuggestFilesModal(
+		const modal = new FileSuggestModal(
 			new obsidianMock.App(),
 			files,
 			() => {}
@@ -771,7 +772,7 @@ describe("SuggestFilesModal", () => {
 
 	it("uses the file path as the suggestion text", () => {
 		const file = new obsidianMock.TFile("folder/note.md");
-		const modal = new SuggestFilesModal(new obsidianMock.App(), [], vi.fn());
+		const modal = new FileSuggestModal(new obsidianMock.App(), [], vi.fn());
 
 		expect(modal.getItemText(file)).toBe(file.path);
 	});
@@ -779,7 +780,7 @@ describe("SuggestFilesModal", () => {
 	it("invokes callback when suggestion is chosen", () => {
 		const file = new obsidianMock.TFile("x.md");
 		const onSelect = vi.fn();
-		const modal = new SuggestFilesModal(
+		const modal = new FileSuggestModal(
 			new obsidianMock.App(),
 			[file],
 			onSelect
@@ -792,7 +793,7 @@ describe("SuggestFilesModal", () => {
 
 	it("registers Emacs motion keys on open", () => {
 		const file = new obsidianMock.TFile("x.md");
-		const modal = new SuggestFilesModal(
+		const modal = new FileSuggestModal(
 			new obsidianMock.App(),
 			[file],
 			() => {}
@@ -809,6 +810,21 @@ describe("SuggestFilesModal", () => {
 		expect(keys).toContain("E");
 		expect(keys).toContain("F");
 		expect(keys).toContain("B");
+	});
+
+	it("prioritizes note basename over folder path when suggesting files", () => {
+		const file1 = new obsidianMock.TFile("archive/meeting/unrelated.md");
+		const file2 = new obsidianMock.TFile("work/meeting.md");
+		const modal = new FileSuggestModal(
+			new obsidianMock.App(),
+			[file1, file2],
+			vi.fn()
+		);
+
+		const suggestions = modal.getSuggestions("meeting");
+		expect(suggestions.length).toBe(2);
+		expect(suggestions[0].item).toBe(file2);
+		expect(suggestions[1].item).toBe(file1);
 	});
 });
 
@@ -837,7 +853,23 @@ describe("registerEmacsMotionKeys", () => {
 		);
 		expect(ctrlNCall).toBeDefined();
 		ctrlNCall[2](new KeyboardEvent("keydown"));
-		expect(chooser.setSelectedItem).toHaveBeenCalledWith(1, true);
+		expect(chooser.setSelectedItem).toHaveBeenCalledWith(1);
+	});
+
+	it("falls back to assigning selectedItem safely if chooser.setSelectedItem throws", () => {
+		const { inputEl, scope, chooser } = createMockModal();
+		chooser.setSelectedItem = vi.fn().mockImplementation(() => {
+			throw new TypeError("t.instanceOf is not a function");
+		});
+		const modal = { inputEl, scope, chooser } as unknown as obsidianMock.SuggestModal<unknown>;
+
+		registerEmacsMotionKeys(modal);
+
+		const ctrlNCall = scope.register.mock.calls.find(
+			(c) => c[0][0] === "Ctrl" && c[1] === "N",
+		);
+		expect(() => ctrlNCall[2](new KeyboardEvent("keydown"))).not.toThrow();
+		expect(chooser.selectedItem).toBe(1);
 	});
 
 	it("registers Ctrl+P to move selection up", () => {
@@ -852,7 +884,7 @@ describe("registerEmacsMotionKeys", () => {
 		);
 		expect(ctrlPCall).toBeDefined();
 		ctrlPCall[2](new KeyboardEvent("keydown"));
-		expect(chooser.setSelectedItem).toHaveBeenCalledWith(0, true);
+		expect(chooser.setSelectedItem).toHaveBeenCalledWith(0);
 	});
 
 	it("does not move selection down past the last item", () => {
