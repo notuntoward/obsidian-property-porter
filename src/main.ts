@@ -5,12 +5,10 @@ import {
 	Setting,
 	TFile,
 	Notice,
-	FuzzySuggestModal,
 	Modal,
 	FileView,
 	WorkspaceLeaf,
 	WorkspaceParent,
-	FuzzyMatch,
 	getAllTags,
 	type SettingDefinitionItem,
 } from "obsidian";
@@ -24,7 +22,14 @@ import {
 	stripHashTag,
 	type PasteMode,
 } from "./frontmatter";
-import { registerEmacsMotionKeys, fuzzyMatch, renderHighlightedText } from "./utils/modal";
+import {
+	buildNavigationModel,
+	type NavigationModel,
+	type TabGroup,
+	type LeafLocation,
+} from "commons/workspace";
+import { setTimeoutIn, ownerWindow } from "commons/windows";
+import { FileSuggestModal, registerEmacsMotionKeys, fuzzyMatch, renderHighlightedText } from "./utils/modal";
 
 interface PropertyPorterSettings {
 	onlyInclude: string;
@@ -56,37 +61,6 @@ function stripPosition(
 	const copy = { ...fm };
 	delete copy.position;
 	return copy;
-}
-
-// ---------------------------------------------------------------------------
-// Canonical workspace model (inspired by next-tab-group)
-//
-// Every editor leaf is represented as a location that knows both its real
-// native window and its parent group. Tab groups are always built from leaves
-// that share both, so a group's identity is conceptually (window, parent).
-// ---------------------------------------------------------------------------
-
-interface LeafLocation {
-	leaf: WorkspaceLeaf;
-	window: Window | undefined;
-	group: WorkspaceParent | null;
-}
-
-interface TabGroupInfo {
-	group: WorkspaceParent;
-	leaves: WorkspaceLeaf[];
-	window: Window | undefined;
-}
-
-interface WindowInfo {
-	window: Window | undefined;
-	groups: TabGroupInfo[];
-}
-
-interface WorkspaceNavigationModel {
-	locations: LeafLocation[];
-	groups: TabGroupInfo[];
-	windows: WindowInfo[];
 }
 
 export default class PropertyPorter extends Plugin {
@@ -138,7 +112,7 @@ export default class PropertyPorter extends Plugin {
 
 		this.addCommand({
 			id: "clear-clipboard",
-			name: "Clear properties",
+			name: "Clear properties clipboard",
 			callback: () => this.clearClipboard(),
 		});
 
@@ -298,106 +272,10 @@ export default class PropertyPorter extends Plugin {
 		await this.pasteProperties(active);
 	}
 
-	// ---------------------------------------------------------------------------
-	// Canonical workspace model helpers (inspired by next-tab-group)
-	// ---------------------------------------------------------------------------
-
-	private isSidebarLeaf(leaf: WorkspaceLeaf): boolean {
-		const root = leaf.getRoot();
-		const ws = this.app.workspace as unknown as {
-			leftSplit?: unknown;
-			rightSplit?: unknown;
-		};
-		return root === ws.leftSplit || root === ws.rightSplit;
-	}
-
-	private getEditorLeafLocations(): LeafLocation[] {
-		const locations: LeafLocation[] = [];
-
-		this.app.workspace.iterateAllLeaves((leaf) => {
-			if (this.isSidebarLeaf(leaf)) return;
-
-			locations.push({
-				leaf,
-				window: leaf.getContainer()?.win,
-				group: leaf.parent ?? null,
-			});
-		});
-
-		return locations;
-	}
-
-	private buildTabGroupInfos(
-		locations: LeafLocation[],
-		activeLeaf: WorkspaceLeaf | null,
-	): TabGroupInfo[] {
-		const byWindow = new Map<
-			Window | undefined,
-			Map<WorkspaceParent, WorkspaceLeaf[]>
-		>();
-
-		for (const location of locations) {
-			if (!location.group) continue;
-
-			let groupsInWindow = byWindow.get(location.window);
-			if (!groupsInWindow) {
-				groupsInWindow = new Map<WorkspaceParent, WorkspaceLeaf[]>();
-				byWindow.set(location.window, groupsInWindow);
-			}
-
-			const leaves = groupsInWindow.get(location.group);
-			if (leaves) {
-				leaves.push(location.leaf);
-			} else {
-				groupsInWindow.set(location.group, [location.leaf]);
-			}
-		}
-
-		const infos: TabGroupInfo[] = [];
-
-		for (const [groupWindow, groupsInWindow] of byWindow) {
-			for (const [group, leaves] of groupsInWindow) {
-				if (leaves.length === 0) continue;
-
-				infos.push({
-					group,
-					leaves,
-					window: groupWindow,
-				});
-			}
-		}
-
-		return infos;
-	}
-
-	private buildWindowInfos(groups: TabGroupInfo[]): WindowInfo[] {
-		const byWindow = new Map<Window | undefined, TabGroupInfo[]>();
-
-		for (const group of groups) {
-			const windowGroups = byWindow.get(group.window);
-			if (windowGroups) {
-				windowGroups.push(group);
-			} else {
-				byWindow.set(group.window, [group]);
-			}
-		}
-
-		const infos: WindowInfo[] = [];
-		for (const [win, groups] of byWindow) {
-			infos.push({ window: win, groups });
-		}
-
-		return infos;
-	}
-
-	private buildNavigationModel(
-		activeLeaf: WorkspaceLeaf | null,
-	): WorkspaceNavigationModel {
-		const locations = this.getEditorLeafLocations();
-		const groups = this.buildTabGroupInfos(locations, activeLeaf);
-		const windows = this.buildWindowInfos(groups);
-
-		return { locations, groups, windows };
+		buildNavigationModel(
+		activeLeaf: WorkspaceLeaf | null = null,
+	): NavigationModel {
+		return buildNavigationModel(this.app, activeLeaf);
 	}
 
 	// Returns the markdown files open in the same canonical tab group
@@ -408,7 +286,7 @@ export default class PropertyPorter extends Plugin {
 		const activeLeaf = this.app.workspace.activeLeaf;
 		if (!activeLeaf) return [];
 
-		const model = this.buildNavigationModel(activeLeaf);
+		const model = buildNavigationModel(this.app, activeLeaf);
 		const activeWindow = activeLeaf.getContainer()?.win;
 		const activeParent = activeLeaf.parent;
 
@@ -470,7 +348,7 @@ export default class PropertyPorter extends Plugin {
 				return;
 			}
 
-			new SuggestFilesModal(this.app, files, (file) => {
+			new FileSuggestModal(this.app, files, (file) => {
 				resolve(file);
 			}).open();
 		});
@@ -584,34 +462,7 @@ export default class PropertyPorter extends Plugin {
 	}
 }
 
-export class SuggestFilesModal extends FuzzySuggestModal<TFile> {
-	constructor(app: App, private readonly files: TFile[], private readonly onSelect: (file: TFile) => void) {
-		super(app);
-	}
-
-	getItems(): TFile[] {
-		return this.files;
-	}
-
-	getItemText(file: TFile): string {
-		return file.path;
-	}
-
-	renderSuggestion(match: FuzzyMatch<TFile>, el: HTMLElement): void {
-		el.empty();
-		el.addClass("pp-nav-row");
-		renderHighlightedText(el, this.getItemText(match.item), match.match.matches);
-	}
-
-	onOpen(): void {
-		super.onOpen();
-		registerEmacsMotionKeys(this);
-	}
-
-	onChooseItem(file: TFile): void {
-		this.onSelect(file);
-	}
-}
+export { FileSuggestModal, FileSuggestModal as SuggestFilesModal };
 
 export class MultiSelectSuggestModal extends Modal {
 	private readonly selected: string[] = [];
@@ -692,7 +543,8 @@ export class MultiSelectSuggestModal extends Modal {
 		this.renderList();
 		this.updateHint();
 
-		window.setTimeout(() => this.inputEl?.focus(), 0);
+		const win = ownerWindow(contentEl) ?? window;
+		setTimeoutIn(win, () => this.inputEl?.focus(), 0);
 	}
 
 	onClose(): void {

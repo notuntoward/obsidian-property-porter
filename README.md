@@ -21,7 +21,7 @@ Property Porter provides eight commands:
 - **Paste properties into active note** — pastes directly into whichever file is active.
 - **Paste properties into the active tab group** — pastes the clipboard into every note open in the current tab group.
 - **Select tags to paste** — opens a searchable picker over every tag used anywhere in the vault so you can build up a `tags` list to paste, without needing an active note with those exact tags already on it. Requires **Only include** to be set to exactly `tags`. The picker is seeded with whatever tags are already in the clipboard, so you can keep adding across multiple runs; use "Clear all" or Ctrl/Cmd+Backspace to empty it, or the × on any tag to drop just that one. Type to filter, Enter to add the highlighted tag (or to add a brand-new tag typed verbatim when it matches nothing), Enter again on an empty search box (or "Finish selection") to commit. Esc cancels without changing the clipboard.
-- **Clear properties** — empties the internal clipboard.
+- **Clear properties clipboard** — empties the internal clipboard.
 
 Commands other than **Select tags to paste** always *replace* the clipboard outright; they don't merge with whatever was copied/selected before.
 
