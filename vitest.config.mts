@@ -11,6 +11,7 @@ export default defineConfig({
       'commons/workspace': path.resolve(import.meta.dirname, '../obsidian-commons/src/workspace/index.ts'),
       'commons/windows': path.resolve(import.meta.dirname, '../obsidian-commons/src/windows/index.ts'),
       'commons/modal': path.resolve(import.meta.dirname, '../obsidian-commons/src/modal/index.ts'),
+      'commons/properties': path.resolve(import.meta.dirname, '../obsidian-commons/src/properties/index.ts'),
       'commons/search': path.resolve(import.meta.dirname, '../obsidian-commons/src/search/index.ts'),
       'commons/geometry': path.resolve(import.meta.dirname, '../obsidian-commons/src/geometry/index.ts'),
       'commons/os': path.resolve(import.meta.dirname, '../obsidian-commons/src/os/index.ts'),

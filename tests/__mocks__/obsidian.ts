@@ -1,3 +1,5 @@
+export { AbstractInputSuggest } from 'commons/testing';
+
 // Minimal mock of the type-only `obsidian` package so that unit tests can
 // resolve `import { ... } from "obsidian"` without the real Obsidian runtime.
 // Extend these stubs as your tests need them.
