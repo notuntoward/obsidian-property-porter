@@ -6,6 +6,9 @@ import {
 	normalizeTag,
 	rankCandidates,
 	ValuePicker,
+	datetimePickerOptions,
+	type FrontmatterValueSources,
+	type ValuePickerOptions,
 	type VaultMetadataCatalog,
 } from "commons/properties";
 import { setTimeoutIn, ownerWindow } from "commons/windows";
@@ -30,7 +33,7 @@ export interface ConflictCardContext {
 	/** Note the clipboard value was copied from, when known. */
 	clipboardOrigin?: string;
 	/** Notes and occurrence counts for each candidate value. */
-	valueSources?: Record<string, Record<string, { note: string; count: number }[]>>;
+	valueSources?: FrontmatterValueSources;
 }
 
 export interface SelectPropertiesModalOptions {
@@ -59,18 +62,6 @@ function duplicateNoticeText(
 			return `${note} had ${propertyName} ${occurrences} with the same value; it will be pasted once.`;
 		})
 		.join(" ");
-}
-
-function getDateTimeOffset(value: string): string {
-	return value.match(/(Z|[+-]\d{2}:\d{2})$/i)?.[1] ?? "";
-}
-
-function preserveDateTimeOffset(value: string, offset: string): string {
-	return getDateTimeOffset(value) ? value : `${value}${offset}`;
-}
-
-function formatDateTimeInput(value: string): string {
-	return value.replace(/(Z|[+-]\d{2}:\d{2})$/i, "");
 }
 
 function selectedValueStyle(propertyName: string): "plain" | "tag" {
@@ -374,16 +365,14 @@ export class SelectPropertiesModal extends Modal {
 	private renderScalarBody(state: PropertyCardState, cardEl: HTMLElement): void {
 		const propertyType = getPropertyType(this.catalog, state.name, state.candidates);
 		const isDateProperty = propertyType === "date" || propertyType === "datetime";
-		const dateTimeOffset = { value: getDateTimeOffset(state.selected[0] ?? state.candidates[0] ?? "") };
+		const datetimeOptions =
+			propertyType === "datetime"
+				? datetimePickerOptions(state.selected[0] ?? state.candidates[0] ?? "")
+				: undefined;
 		const datePickerOptions =
 			propertyType === "date"
 				? { inputType: "date" as const }
-				: propertyType === "datetime"
-					? {
-							inputType: "datetime-local" as const,
-							parseInputValue: (value: string) => preserveDateTimeOffset(value, dateTimeOffset.value),
-						}
-					: {};
+				: datetimeOptions ?? {};
 		if (state.hasConflict) {
 			cardEl.createDiv({
 				cls: "pp-property-warning",
@@ -406,27 +395,16 @@ export class SelectPropertiesModal extends Modal {
 					return;
 				}
 				state.picker = new ValuePicker(this.app, pickerHost, {
-					suggestions: getPropertySuggestions(this.catalog, state.name),
-					knownValues: state.candidates,
+					...this.buildPickerOptions(state, "conflict-other"),
 					value: "",
 					multiple: false,
 					showSingleValueChip: !isDateProperty,
 					selectedValueStyle: selectedValueStyle(state.name),
-					suppressNewBadge: isDateProperty,
-					confirmNewEntries: state.isList,
 					...datePickerOptions,
-					...(propertyType === "datetime" ? { formatInputValue: formatDateTimeInput } : {}),
 					allowCreate: true,
-					kind: "value",
-					context: state.name,
-					classPrefix: "pp",
-					getCreateLabel: (value) => `Add "${value}" as a new ${state.name} value…`,
-					placeholder: `Choose or type ${state.name}…`,
-					ariaLabel: `${state.name} value`,
 					onChange: (values) => {
 						state.selected = values.slice(0, 1);
-						dateTimeOffset.value =
-							getDateTimeOffset(state.selected[0] ?? "") || dateTimeOffset.value;
+						datetimeOptions?.formatInputValue(state.selected[0] ?? "");
 						this.updateControls();
 					},
 				});
@@ -459,7 +437,7 @@ export class SelectPropertiesModal extends Modal {
 					if (!radio.checked) return;
 					if (state.selected.length === 1 && state.selected[0] === candidate && !pickerHost?.hidden) return;
 					state.selected = [candidate];
-					dateTimeOffset.value = getDateTimeOffset(candidate);
+					datetimeOptions?.formatInputValue(candidate);
 					if (pickerHost) pickerHost.hidden = true;
 					this.updateControls();
 				};
@@ -480,8 +458,7 @@ export class SelectPropertiesModal extends Modal {
 			const selectOther = (): void => {
 				if (!otherRadio.checked) return;
 				if (state.selected.length === 0 && pickerHost && !pickerHost.hidden) return;
-				dateTimeOffset.value =
-					getDateTimeOffset(state.selected[0] ?? "") || dateTimeOffset.value;
+				datetimeOptions?.formatInputValue(state.selected[0] ?? "");
 				state.selected = [];
 				ensurePicker();
 				this.updateControls();
@@ -493,48 +470,66 @@ export class SelectPropertiesModal extends Modal {
 
 		const pickerHost = cardEl.createDiv({ cls: "pp-property-picker-host" });
 		state.picker = new ValuePicker(this.app, pickerHost, {
-			suggestions: getPropertySuggestions(this.catalog, state.name),
-			knownValues: state.candidates,
+			...this.buildPickerOptions(state, "scalar"),
 			value: state.selected[0] ?? "",
 			multiple: false,
 			showSingleValueChip: true,
 			selectedValueStyle: selectedValueStyle(state.name),
-			suppressNewBadge: isDateProperty,
-			confirmNewEntries: state.isList,
 			...datePickerOptions,
 			allowCreate: true,
-			kind: "value",
-			context: state.name,
-			classPrefix: "pp",
-			getCreateLabel: (value) => `Add "${value}" as a new ${state.name} value…`,
-			placeholder: `Choose or type ${state.name}…`,
-			ariaLabel: `${state.name} value`,
 			onChange: (values) => {
 				state.selected = values.slice(0, 1);
-				dateTimeOffset.value = getDateTimeOffset(state.selected[0] ?? "") || dateTimeOffset.value;
+				datetimeOptions?.formatInputValue(state.selected[0] ?? "");
 				this.updateControls();
 			},
 		});
+	}
+
+	private buildPickerOptions(
+		state: PropertyCardState,
+		kind: "scalar" | "conflict-other" | "list",
+	): Pick<
+		ValuePickerOptions,
+		| "suggestions"
+		| "knownValues"
+		| "kind"
+		| "context"
+		| "classPrefix"
+		| "placeholder"
+		| "ariaLabel"
+		| "getCreateLabel"
+		| "suppressNewBadge"
+		| "confirmNewEntries"
+	> {
+		const propertyType =
+			kind === "list" ? undefined : getPropertyType(this.catalog, state.name, state.candidates);
+		const isDateProperty = propertyType === "date" || propertyType === "datetime";
+		const isListPicker = kind === "list";
+		return {
+			suggestions: getPropertySuggestions(this.catalog, state.name),
+			knownValues: state.candidates,
+			kind: "value",
+			context: state.name,
+			classPrefix: "pp",
+			placeholder: isListPicker ? `Add ${state.name}…` : `Choose or type ${state.name}…`,
+			ariaLabel: `${state.name} ${isListPicker ? "values" : "value"}`,
+			getCreateLabel: (value) => `Add "${value}" as a new ${state.name} value…`,
+			suppressNewBadge: kind === "list" ? undefined : isDateProperty,
+			confirmNewEntries: isListPicker ? undefined : state.isList,
+		};
 	}
 
 	private renderListBody(state: PropertyCardState, cardEl: HTMLElement): void {
 		const isTagProp = selectedValueStyle(state.name) === "tag";
 		const pickerHost = cardEl.createDiv({ cls: "pp-property-picker-host" });
 		state.picker = new ValuePicker(this.app, pickerHost, {
-			suggestions: getPropertySuggestions(this.catalog, state.name),
-			knownValues: state.candidates,
+			...this.buildPickerOptions(state, "list"),
 			value: state.selected,
 			multiple: true,
 			selectedValueStyle: isTagProp ? "tag" : "plain",
 			focusInputAfterRemove: false,
 			allowCreate: true,
-			kind: "value",
-			context: state.name,
-			classPrefix: "pp",
-			getCreateLabel: (value) => `Add "${value}" as a new ${state.name} value…`,
 			normalizeValue: isTagProp ? normalizeTag : undefined,
-			placeholder: `Add ${state.name}…`,
-			ariaLabel: `${state.name} values`,
 			onChange: (values) => {
 				state.selected = values;
 				this.updateControls();

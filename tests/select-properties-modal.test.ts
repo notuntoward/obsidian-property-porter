@@ -544,6 +544,40 @@ describe("SelectPropertiesModal", () => {
 		expect(picker.inputEl.value).toBe("2026-10-26T11:30");
 	});
 
+	it("uses the newly selected candidate offset when editing another datetime value", () => {
+		const { app } = createApp();
+		const catalog = createMockCatalog();
+		catalog.properties.push({
+			name: "modified_date",
+			kinds: ["string"],
+			values: ["2026-10-24T10:00:00-07:00", "2026-10-25T10:00:00+02:00"],
+		});
+		const modal = new SelectPropertiesModal(
+			app as any,
+			catalog,
+			{
+				modified_date: [
+					"2026-10-24T10:00:00-07:00",
+					"2026-10-25T10:00:00+02:00",
+				],
+			},
+			vi.fn(),
+			vi.fn()
+		);
+		modal.onOpen();
+		const radios = modal.contentEl.querySelectorAll<HTMLInputElement>(".pp-conflict-option input");
+		radios[0]!.click();
+		radios[2]!.click();
+
+		const picker = modal.propertyStates.get("modified_date")!.picker!;
+		picker.inputEl.value = "2026-10-26T11:30";
+		picker.inputEl.dispatchEvent(new Event("change"));
+
+		expect(modal.propertyStates.get("modified_date")?.selected).toEqual([
+			"2026-10-26T11:30+02:00",
+		]);
+	});
+
 	it("shows only selected list values and removes them without opening suggestions", () => {
 		const { app } = createApp();
 		const catalog = createMockCatalog();

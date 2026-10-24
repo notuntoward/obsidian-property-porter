@@ -15,9 +15,6 @@ import {
 	filterFrontmatter,
 	mergeFrontmatter,
 	unionFrontmatter,
-	collectValueSources,
-	mergeValueSources,
-	mergeValueSourcesByMaximumCount,
 	isEmptyPropertyValue,
 	countPropertyValue,
 	parseCommaList,
@@ -28,7 +25,6 @@ import {
 	applyDuplicateResolution,
 	formatRawValue,
 	type PasteMode,
-	type FrontmatterValueSources,
 	type RawFrontmatter,
 	type DuplicateResolution,
 } from "./frontmatter";
@@ -44,6 +40,10 @@ import {
 	isListProperty,
 	normalizeTag,
 	ValuePicker,
+	collectValueSources,
+	mergeValueSources,
+	mergeValueSourcesByMaximumCount,
+	type FrontmatterValueSources,
 } from "commons/properties";
 import { FileSuggestModal } from "commons/modal";
 import {

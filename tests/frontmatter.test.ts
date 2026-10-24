@@ -6,10 +6,8 @@ import {
 	mergeArrays,
 	deepMerge,
 	mergeFrontmatter,
-	collectValueSources,
 	findOverlappingPropertyFilters,
 	removeOverlappingExcludedProperties,
-	mergeValueSourcesByMaximumCount,
 	isEmptyPropertyValue,
 	countPropertyValue,
 	parseCommaList,
@@ -256,35 +254,9 @@ describe("filterFrontmatter", () => {
 });
 
 describe("unionFrontmatter", () => {
-	it("counts each normalized tag occurrence before list values are merged", () => {
+	it("deduplicates repeated list values when parsing frontmatter", () => {
 		const parsed = parseRawFrontmatter("---\ntags:\n  - a\n  - a\n  - b\n---\n");
 		expect(parsed.map.tags).toEqual(["a", "b"]);
-		expect(collectValueSources([{ note: "Note-06", frontmatter: { tags: ["a", "a", "b"] } }])).toEqual({
-			tags: {
-				a: [{ note: "Note-06", count: 2 }],
-				b: [{ note: "Note-06", count: 1 }],
-			},
-		});
-	});
-
-	it("merges clipboard and target provenance without double-counting the same note", () => {
-		const clipboardSources = collectValueSources([
-			{ note: "source", frontmatter: { tags: ["a", "a", "b"] } },
-		]);
-		const targetSources = collectValueSources([
-			{ note: "source", frontmatter: { tags: ["a", "a", "b"] } },
-			{ note: "other", frontmatter: { tags: ["a"] } },
-		]);
-
-		expect(mergeValueSourcesByMaximumCount(clipboardSources, targetSources)).toEqual({
-			tags: {
-				a: [
-					{ note: "source", count: 2 },
-					{ note: "other", count: 1 },
-				],
-				b: [{ note: "source", count: 1 }],
-			},
-		});
 	});
 
 	it("unions list properties across inputs", () => {
