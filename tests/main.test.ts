@@ -121,7 +121,7 @@ describe("PropertyPorter", () => {
 
 			expect(loadSettings).toHaveBeenCalled();
 			expect(plugin.statusBarItem).toBeDefined();
-			expect(addCommand).toHaveBeenCalledTimes(8);
+			expect(addCommand).toHaveBeenCalledTimes(9);
 			expect(addSettingTab).toHaveBeenCalledWith(expect.any(PropertyPorterSettingTab));
 		});
 
@@ -155,6 +155,19 @@ describe("PropertyPorter", () => {
 			const selectTagsToPaste = vi.spyOn(plugin, "selectTagsToPaste").mockResolvedValue();
 			await run("select-tags-to-paste");
 			expect(selectTagsToPaste).toHaveBeenCalled();
+
+			const selectPropertiesToPaste = vi.spyOn(plugin, "selectPropertiesToPaste").mockResolvedValue();
+			await run("select-properties-to-paste");
+			expect(selectPropertiesToPaste).toHaveBeenCalled();
+		});
+
+		it("registers the select-properties-to-paste command with 'Select properties to paste' name", async () => {
+			const { plugin } = createPlugin();
+			const addCommand = vi.spyOn(plugin, "addCommand");
+			await plugin.onload();
+
+			const call = addCommand.mock.calls.find((c) => c[0].id === "select-properties-to-paste");
+			expect(call?.[0].name).toBe("Select properties to paste");
 		});
 
 		it("registers the clear command with 'Clear properties clipboard' name", async () => {
@@ -1101,18 +1114,19 @@ describe("selectTagsToPaste", () => {
 		expect(tags).toEqual(["a", "archive", "King-County", "Seattle"]);
 	});
 
-	it("warns and does nothing when onlyInclude is not exactly 'tags'", async () => {
+	it("opens and selects tags even when onlyInclude is configured for other properties", async () => {
 		const { plugin } = createPlugin();
 		await plugin.onload();
-		plugin.settings.onlyInclude = "status";
-		const spy = vi.spyOn(obsidianMock, "Notice");
+		plugin.settings.onlyInclude = "status, title";
+
+		obsidianMock.Modal.prototype.open = function (this: any) {
+			this.onOpen();
+			this.addValue("urgent");
+			this.submit();
+		};
 
 		await plugin.selectTagsToPaste();
-
-		expect(spy).toHaveBeenCalledWith(
-			expect.stringContaining("'Only include' to be exactly 'tags'")
-		);
-		expect(plugin.clipboard).toEqual({});
+		expect(plugin.clipboard).toEqual({ tags: ["urgent"] });
 	});
 
 	it("sets clipboard from selected tags and shows notice", async () => {
@@ -1316,13 +1330,22 @@ describe("PropertyPorterSettingTab", () => {
 
 		const tab = new PropertyPorterSettingTab(plugin.app, plugin);
 		const defs = tab.getSettingDefinitions();
-		expect(defs).toHaveLength(4);
+		expect(defs).toHaveLength(2);
+		expect(defs[0]).toMatchObject({
+			type: "group",
+			heading: "Property filters (non-tag commands)",
+		});
+		expect(defs[1]).toMatchObject({
+			type: "group",
+			heading: "Paste behavior",
+		});
 
-		const includeDef = defs.find((definition) => definition.name === "Only include");
-		const excludeDef = defs.find((definition) => definition.name === "Exclude keys");
+		const items = defs.flatMap((d: any) => (d.items ? d.items : [d]));
+		const includeDef = items.find((definition) => definition.name === "Only include");
+		const excludeDef = items.find((definition) => definition.name === "Exclude keys");
 		expect(includeDef.render).toBeTypeOf("function");
 		expect(excludeDef.render).toBeTypeOf("function");
-		expect(defs.find((definition) => definition.name === "Paste mode").control.options).toEqual(
+		expect(items.find((definition) => definition.name === "Paste mode").control.options).toEqual(
 			{
 				overwrite: "Overwrite",
 				skip: "Skip existing",
@@ -1355,13 +1378,14 @@ describe("PropertyPorterSettingTab", () => {
 
 		const tab = new PropertyPorterSettingTab(plugin.app, plugin);
 		const defs = tab.getSettingDefinitions();
+		const items = defs.flatMap((d: any) => (d.items ? d.items : [d]));
 		const includeControl = obsidianMock.decorateEl(document.createElement("div"));
 		const excludeControl = obsidianMock.decorateEl(document.createElement("div"));
-		defs.find((definition) => definition.name === "Only include").render(
+		items.find((definition) => definition.name === "Only include").render(
 			{ controlEl: includeControl },
 			{} as any
 		);
-		defs.find((definition) => definition.name === "Exclude keys").render(
+		items.find((definition) => definition.name === "Exclude keys").render(
 			{ controlEl: excludeControl },
 			{} as any
 		);
