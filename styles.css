@@ -44,3 +44,120 @@
 .pp-property-picker-fieldset:disabled {
 	opacity: 0.55;
 }
+
+.pp-select-properties-modal {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        max-height: 80vh;
+}
+
+.pp-properties-list {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        overflow-y: auto;
+        max-height: 55vh;
+        padding-right: 4px;
+}
+
+.pp-property-card {
+        border: 1px solid var(--background-modifier-border);
+        border-radius: var(--radius-m);
+        padding: 10px 12px;
+        background: var(--background-secondary);
+}
+
+.pp-property-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 8px;
+}
+
+.pp-property-title-group {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+}
+
+.pp-property-name {
+        font-weight: var(--font-semibold);
+        color: var(--text-normal);
+}
+
+.pp-property-badge {
+        font-size: var(--font-ui-smaller);
+        padding: 2px 6px;
+        border-radius: var(--radius-s);
+        background: var(--background-modifier-form-field);
+        color: var(--text-muted);
+}
+
+.pp-property-badge.is-list {
+        color: var(--text-accent);
+}
+
+.pp-property-remove-btn {
+        font-size: var(--font-ui-smaller);
+        padding: 2px 8px;
+        height: auto;
+}
+
+.pp-property-warning {
+        color: var(--text-warning);
+        font-size: var(--font-ui-small);
+        margin-bottom: 6px;
+}
+
+.pp-options-container {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-bottom: 8px;
+}
+
+.pp-option-pill {
+        font-size: var(--font-ui-small);
+        padding: 2px 8px;
+        border-radius: var(--radius-s);
+        border: 1px solid var(--background-modifier-border);
+        background: var(--background-primary);
+        color: var(--text-normal);
+        cursor: pointer;
+}
+
+.pp-option-pill:hover {
+        background: var(--background-modifier-hover);
+}
+
+.pp-option-pill.is-selected {
+        background: var(--interactive-accent);
+        color: var(--text-on-accent);
+        border-color: var(--interactive-accent);
+}
+
+.pp-list-actions {
+        display: flex;
+        gap: 6px;
+        margin-bottom: 6px;
+}
+
+.pp-list-action-btn {
+        font-size: var(--font-ui-smaller);
+        padding: 2px 8px;
+        height: auto;
+}
+
+.pp-property-picker-host {
+        width: 100%;
+}
+
+.pp-search-container {
+        width: 100%;
+        margin-bottom: 4px;
+}
+
+.pp-search-input {
+        width: 100%;
+}

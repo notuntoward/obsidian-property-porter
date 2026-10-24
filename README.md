@@ -12,7 +12,7 @@ Keeping frontmatter consistent across a vault is tedious and error-prone. When y
 
 ## Usage
 
-Property Porter provides eight commands:
+Property Porter provides nine commands:
 
 - **Copy properties from active note** — saves the properties matching **Only include**/**Exclude keys** from the active file into an internal clipboard, replacing whatever was there before. The status bar shows `PP: N`, where `N` is the total number of individual values copied (each list item counts separately; e.g. three tags shows `PP: 3`).
 - **Copy properties from another note** — opens the same file picker as **Paste properties into another note** so you can choose which note to copy from, then collects its properties the same way as the active-note command.
@@ -20,17 +20,29 @@ Property Porter provides eight commands:
 - **Paste properties into another note** — opens a file picker so you can choose which file to paste into.
 - **Paste properties into active note** — pastes directly into whichever file is active.
 - **Paste properties into the active tab group** — pastes the clipboard into every note open in the current tab group.
-- **Select tags to paste** — opens a searchable picker over every tag used anywhere in the vault so you can build up a `tags` list to paste, without needing an active note with those exact tags already on it. Requires **Only include** to be set to exactly `tags`. The picker is seeded with whatever tags are already in the clipboard, so you can keep adding across multiple runs; use "Clear all" or Ctrl/Cmd+Backspace to empty it, or the × on any tag to drop just that one. Type to filter, Enter to add the highlighted tag (or to add a brand-new tag typed verbatim when it matches nothing), Enter again on an empty search box (or "Finish selection") to commit. Esc cancels without changing the clipboard.
+- **Select properties to paste** — opens an interactive modal to select and configure properties to paste. When notes have multiple possible values for a list property (e.g. `tags`, `aliases`, or custom lists), the interface makes it easy to select one, several, or all of them via "Select all", "Clear", and candidate toggle pills. When notes with a scalar property are merged and have conflicting values (e.g. different `status` values), the conflicting options are presented and you must select only one. You can also search/add any property from the vault catalog or remove properties with the remove button.
+- **Select tags to paste** — opens a searchable picker over every tag used anywhere in the vault so you can build up a `tags` list to paste, without needing an active note with those exact tags already on it. This command always operates on tags and tags only, paying no attention to the **Only include** or **Exclude keys** settings. The picker is seeded with whatever tags are already in the clipboard, so you can keep adding across multiple runs; use "Clear all" or Ctrl/Cmd+Backspace to empty it, or the × on any tag to drop just that one. Type to filter, Enter to add the highlighted tag (or to add a brand-new tag typed verbatim when it matches nothing), Enter again on an empty search box (or "Finish selection") to commit. Esc cancels without changing the clipboard.
 - **Clear properties clipboard** — empties the internal clipboard.
 
-Commands other than **Select tags to paste** always *replace* the clipboard outright; they don't merge with whatever was copied/selected before.
+Commands other than **Select properties to paste** and **Select tags to paste** always *replace* the clipboard outright; they don't merge with whatever was copied/selected before.
 
 ## Settings
 
+Settings are organized into groups:
+
+### Property filters (non-tag commands)
+
+These filters apply to general property copy and paste commands. Tag commands (**Select tags to paste**) always operate strictly on tags and ignore these filters.
+
 | Setting | Default | Description |
 |---------|---------|-------------|
-| **Only include** | `tags` | Comma-separated whitelist of properties to copy. When populated, **Exclude keys** is ignored. |
-| **Exclude keys** | `aliases, created date, modified date` | Comma-separated properties to ignore. Automatically disabled when **Only include** is populated. |
+| **Only include** | `tags` | Comma-separated whitelist of properties to copy (applies only to non-tag commands). When populated, **Exclude keys** is ignored. |
+| **Exclude keys** | `aliases, created date, modified date` | Comma-separated properties to ignore (applies only to non-tag commands). Automatically disabled when **Only include** is populated. |
+
+### Paste behavior
+
+| Setting | Default | Description |
+|---------|---------|-------------|
 | **Paste mode** | `Merge` | How copied properties merge into the destination note. |
 | **Auto-clear clipboard after successful paste** | `Off` | Automatically clear copied properties after pasting. |
 
@@ -57,28 +69,30 @@ All three paste modes (Overwrite, Skip existing, Merge) are implemented for **ev
 
 #### Select interface availability by property type
 
-The only item-level "select" interface is **Select tags to paste**, which opens a searchable picker to build up a list one item at a time. It is implemented **only for the `tags` property** and only when **Only include** is set to exactly `tags` (otherwise it shows a notice and exits). All other property types are copied and pasted as a whole value — there is no per-item picker for them.
+The **Select properties to paste** command opens an interactive modal to select, add, and configure properties to paste. When notes have multiple possible values for a list property, you can select one or all of them. When notes have conflicting scalar values, the conflicting options are displayed and you must choose one.
+
+In addition, **Select tags to paste** provides a dedicated, fast tag picker that operates exclusively on tags and ignores non-tag filter settings.
 
 | Data Structure / Property Type | Select interface implemented? | Notes |
 | --- | --- | --- |
-| Text (string) | No | Copied/pasted as a whole value. |
-| Number | No | Copied/pasted as a whole value. |
-| Checkbox (boolean) | No | Copied/pasted as a whole value. |
-| Date | No | Copied/pasted as a whole value. |
-| Date & Time | No | Copied/pasted as a whole value. |
-| List (array) | Partial — `tags` only | Implemented for the `tags` property (item-by-item picker). Other list properties such as `aliases` are copied/pasted as a whole value; the select interface is not available for them. |
-| Nested Object (mapping) | No | Copied/pasted as a whole value. |
-| Array of Objects | No | Copied/pasted as a whole value. |
+| Text (string) | Yes | Selectable via **Select properties to paste**. When merging conflicting scalar values, options are presented and exactly one must be chosen. |
+| Number | Yes | Selectable via **Select properties to paste**. When merging conflicting numbers, options are presented and exactly one must be chosen. |
+| Checkbox (boolean) | Yes | Selectable via **Select properties to paste**. |
+| Date | Yes | Selectable via **Select properties to paste**. |
+| Date & Time | Yes | Selectable via **Select properties to paste**. |
+| List (array) | Yes | Selectable via **Select properties to paste** (with "Select all", "Clear", and candidate pills). In addition, `tags` can also be selected via the dedicated **Select tags to paste** command. |
+| Nested Object (mapping) | Whole value | Copied/pasted as a whole value. |
+| Array of Objects | Whole value | Copied/pasted as a whole value. |
 
 ## Terminology
 
 Precise wording matters here because "property" and "tag" mean different things:
 
-- **Property** — a YAML frontmatter *key*, e.g. `tags`, `status`, `aliases`. The **Only include** and **Exclude keys** settings operate on properties.
+- **Property** — a YAML frontmatter *key*, e.g. `tags`, `status`, `aliases`. The **Only include** and **Exclude keys** settings operate on properties for non-tag commands.
 - **Property value** — whatever is stored under a property key. For `tags`, that's a list; for `status`, that might be a single string.
 - **Item** — one element of a *list-type* property's value. Each tag in `tags: [a, b, c]` is an item of the `tags` property — an item is never itself a "property".
 
-Currently, only the `tags` property has a dedicated item picker (**Select tags to paste**, above); every other property is copied or pasted as a whole value via **Copy properties**/**Paste properties**.
+Both the `tags` property and general frontmatter properties can be interactively configured before pasting via **Select tags to paste** and **Select properties to paste**.
 
 ## Install
 

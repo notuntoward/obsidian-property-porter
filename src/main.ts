@@ -34,6 +34,7 @@ import {
 	ValuePicker,
 } from "commons/properties";
 import { FileSuggestModal } from "./utils/modal";
+import { SelectPropertiesModal } from "./select-properties-modal";
 
 interface PropertyPorterSettings {
 	onlyInclude: string;
@@ -53,6 +54,7 @@ export const NOTICE_TIMEOUT_MS = 7000;
 export const NOTICE_NO_PROPERTIES_TO_PASTE =
 	'Property Porter: No properties copied. Use "Copy properties" (not system clipboard).';
 export const NOTICE_CLEARED_COPIED_TAGS = "Property Porter: No tags selected. Cleared copied tags.";
+export const NOTICE_CLEARED_COPIED_PROPERTIES = "Property Porter: No properties selected. Cleared copied properties.";
 
 // Obsidian injects a positional cache object (`position`) into frontmatter
 // read from metadataCache/processFrontMatter; strip it before copy/paste so
@@ -115,6 +117,12 @@ export default class PropertyPorter extends Plugin {
 			id: "clear-clipboard",
 			name: "Clear properties clipboard",
 			callback: () => this.clearClipboard(),
+		});
+
+		this.addCommand({
+			id: "select-properties-to-paste",
+			name: "Select properties to paste",
+			callback: () => this.selectPropertiesToPaste(),
 		});
 
 		this.addCommand({
@@ -360,16 +368,6 @@ export default class PropertyPorter extends Plugin {
 	}
 
 	async selectTagsToPaste(): Promise<void> {
-		const onlyList = parseCommaList(this.settings.onlyInclude);
-		const isTagsOnly = onlyList.length === 1 && onlyList[0].toLowerCase() === "tags";
-
-		if (!isTagsOnly) {
-			new Notice(
-				"Property Porter: 'Select tags to paste' requires 'Only include' to be exactly 'tags' in settings"
-			);
-			return;
-		}
-
 		const knownTags = this.getKnownTagsForPicking();
 		const existingTags = this.getClipboardTags();
 		const result = await new Promise<{
@@ -407,6 +405,53 @@ export default class PropertyPorter extends Plugin {
 		);
 	}
 
+	async selectPropertiesToPaste(): Promise<void> {
+		const catalog = collectVaultMetadata(this.app);
+		const tabFiles = this.getActiveTabGroupFiles();
+		let initialProperties: Record<string, unknown> = {};
+
+		if (tabFiles.length > 1) {
+			const collected = tabFiles
+				.map((f) => this.getFilteredSourceFrontmatter(f))
+				.filter((fm): fm is Record<string, unknown> => fm !== null);
+			initialProperties = unionFrontmatter(collected, { gatherConflicts: true });
+		} else if (this.hasClipboardContent()) {
+			initialProperties = { ...this.clipboard };
+		} else {
+			const active = this.getActiveFile();
+			if (active) {
+				const fm = this.getFilteredSourceFrontmatter(active);
+				if (fm) initialProperties = { ...fm };
+			}
+		}
+
+		const result = await new Promise<{
+			properties: Record<string, unknown>;
+			cancelled: boolean;
+		}>((resolve) => {
+			new SelectPropertiesModal(
+				this.app,
+				catalog,
+				initialProperties,
+				(selected) => resolve({ properties: selected, cancelled: false }),
+				() => resolve({ properties: {}, cancelled: true })
+			).open();
+		});
+
+		if (result.cancelled) return;
+
+		this.clipboard = result.properties;
+		this.updateStatusBar();
+		const count = this.countClipboardValues();
+		if (count === 0) {
+			new Notice(NOTICE_CLEARED_COPIED_PROPERTIES);
+			return;
+		}
+		new Notice(
+			`Property Porter: ${count} propert${count === 1 ? "y" : "ies"} ready to paste`
+		);
+	}
+
 	mergeFrontmatter(
 		source: Record<string, unknown>,
 		destination: Record<string, unknown>
@@ -433,7 +478,7 @@ export default class PropertyPorter extends Plugin {
 	}
 }
 
-export { FileSuggestModal, FileSuggestModal as SuggestFilesModal };
+export { FileSuggestModal, FileSuggestModal as SuggestFilesModal, SelectPropertiesModal };
 
 export class MultiSelectSuggestModal extends Modal {
 	private picker: ValuePicker | null = null;
@@ -596,8 +641,8 @@ export class PropertyPorterSettingTab extends PluginSettingTab {
 			return {
 				name: isIncludePicker ? "Only include" : "Exclude keys",
 				desc: isIncludePicker
-					? "Properties to copy. Mutually exclusive with Exclude keys."
-					: "Properties to ignore. Disabled when Only include is populated.",
+					? "Properties to copy (only for non-tag commands). Mutually exclusive with Exclude keys."
+					: "Properties to ignore (only for non-tag commands). Disabled when Only include is populated.",
 				render: (setting: Setting) => {
 					let pickerHost: HTMLElement = setting.controlEl;
 					let fieldset: HTMLFieldSetElement | null = null;
@@ -641,28 +686,40 @@ export class PropertyPorterSettingTab extends PluginSettingTab {
 		};
 
 		return [
-			propertyPickerDefinition("onlyInclude"),
-			propertyPickerDefinition("excludeKeys"),
 			{
-				name: "Paste mode",
-				desc: "How copied properties merge into the destination note.",
-				control: {
-					type: "dropdown",
-					key: "pasteMode" satisfies keyof PropertyPorterSettings,
-					options: {
-						overwrite: "Overwrite",
-						skip: "Skip existing",
-						merge: "Merge",
-					},
-				},
+				type: "group",
+				heading: "Property filters (non-tag commands)",
+				items: [
+					propertyPickerDefinition("onlyInclude"),
+					propertyPickerDefinition("excludeKeys"),
+				],
 			},
 			{
-				name: "Auto-clear clipboard after successful paste",
-				desc: "Automatically clear copied properties after pasting.",
-				control: {
-					type: "toggle",
-					key: "autoClear" satisfies keyof PropertyPorterSettings,
-				},
+				type: "group",
+				heading: "Paste behavior",
+				items: [
+					{
+						name: "Paste mode",
+						desc: "How copied properties merge into the destination note.",
+						control: {
+							type: "dropdown",
+							key: "pasteMode" satisfies keyof PropertyPorterSettings,
+							options: {
+								overwrite: "Overwrite",
+								skip: "Skip existing",
+								merge: "Merge",
+							},
+						},
+					},
+					{
+						name: "Auto-clear clipboard after successful paste",
+						desc: "Automatically clear copied properties after pasting.",
+						control: {
+							type: "toggle",
+							key: "autoClear" satisfies keyof PropertyPorterSettings,
+						},
+					},
+				],
 			},
 		];
 	}

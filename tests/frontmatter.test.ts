@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
 	filterFrontmatter,
+	unionFrontmatter,
 	mergeArrays,
 	deepMerge,
 	mergeFrontmatter,
@@ -218,5 +219,50 @@ describe("filterFrontmatter", () => {
 
 	it("returns empty object when fm is empty", () => {
 		expect(filterFrontmatter({}, "tags", "aliases")).toEqual({});
+	});
+});
+
+describe("unionFrontmatter", () => {
+	it("unions list properties across inputs", () => {
+		const r = unionFrontmatter([
+			{ tags: ["a", "b"] },
+			{ tags: ["b", "c"] },
+		]);
+		expect(r).toEqual({ tags: ["a", "b", "c"] });
+	});
+
+	it("preserves identical scalar values as scalar", () => {
+		const r = unionFrontmatter([
+			{ status: "draft" },
+			{ status: "draft" },
+		]);
+		expect(r).toEqual({ status: "draft" });
+	});
+
+	it("keeps first scalar by default when conflicting values exist", () => {
+		const r = unionFrontmatter([
+			{ status: "draft" },
+			{ status: "published" },
+		]);
+		expect(r).toEqual({ status: "draft" });
+	});
+
+	it("gathers conflicting scalar values into an array of candidate values when gatherConflicts is true", () => {
+		const r = unionFrontmatter(
+			[
+				{ status: "draft" },
+				{ status: "published" },
+			],
+			{ gatherConflicts: true }
+		);
+		expect(r).toEqual({ status: ["draft", "published"] });
+	});
+
+	it("ignores empty property values", () => {
+		const r = unionFrontmatter([
+			{ status: "draft", tags: [] },
+			{ tags: ["work"] },
+		]);
+		expect(r).toEqual({ status: "draft", tags: ["work"] });
 	});
 });
