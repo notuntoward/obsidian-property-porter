@@ -7,6 +7,7 @@ import PropertyPorter, {
 	SelectPropertiesModal,
 	NOTICE_CLEARED_COPIED_PROPERTIES,
 } from "../src/main";
+import { parseRawFrontmatter } from "../src/frontmatter";
 import type { VaultMetadataCatalog } from "commons/properties";
 
 function createMockCatalog(): VaultMetadataCatalog {
@@ -27,6 +28,7 @@ function createApp(options: any = {}) {
 	const activeFile = options.activeFile ?? null;
 	const markdownFiles = options.markdownFiles ?? [];
 	const fileCache: Record<string, any> = options.fileCache ?? {};
+	const fileContents: Record<string, string> = options.fileContents ?? {};
 
 	const groupMap = new Map<string, any>();
 	const leaves: any[] = (options.leaves ?? []).map((leaf: any) => {
@@ -55,17 +57,27 @@ function createApp(options: any = {}) {
 		metadataCache: {
 			getFileCache: (file: obsidianMock.TFile) => fileCache[file.path] ?? null,
 		},
-		vault: { getMarkdownFiles: () => markdownFiles },
+		vault: {
+			getMarkdownFiles: () => markdownFiles,
+			cachedRead: async (file: obsidianMock.TFile) => fileContents[file.path] ?? "",
+			modify: async (file: obsidianMock.TFile, data: string) => {
+				fileContents[file.path] = data;
+			},
+		},
 		fileManager: {
 			processFrontMatter: async (file: obsidianMock.TFile, processor: (fm: any) => void) => {
-				const existing = fileCache[file.path]?.frontmatter ?? {};
+				// Like the real app, the "existing" frontmatter comes from the
+				// file's raw text when the cache has nothing for it.
+				const existing =
+					fileCache[file.path]?.frontmatter ??
+					parseRawFrontmatter(fileContents[file.path] ?? "").map;
 				const fm = { ...existing };
 				processor(fm);
 				fileCache[file.path] = { frontmatter: fm };
 			},
 		},
 	});
-	return { app, activeFile, markdownFiles, fileCache };
+	return { app, activeFile, markdownFiles, fileCache, fileContents };
 }
 
 function createPlugin(options: any = {}) {
@@ -246,10 +258,66 @@ describe("SelectPropertiesModal", () => {
 		expect(onSubmit).not.toHaveBeenCalled();
 		expect(onCancel).toHaveBeenCalled();
 	});
+
+	it("names the note when a property appears more than once in one note", () => {
+		const { app } = createApp();
+		const catalog = createMockCatalog();
+		const onSubmit = vi.fn();
+		const modal = new SelectPropertiesModal(
+			app as any,
+			catalog,
+			{ modified_date: ["2026-10-13T16:58:17", "2026-10-13T15:45:00"] },
+			onSubmit,
+			vi.fn(),
+			{ modified_date: { duplicateIn: ["note-six"] } }
+		);
+		modal.onOpen();
+
+		const card = Array.from(modal.contentEl.querySelectorAll(".pp-property-card")).find(
+			(c) => c.querySelector(".pp-property-name")?.textContent === "modified_date"
+		)!;
+		expect(card.querySelector(".pp-property-warning")?.textContent).toContain(
+			"note-six has more than one modified_date value: select the one to keep"
+		);
+		const pills = card.querySelectorAll<HTMLButtonElement>(".pp-option-pill");
+		expect(pills.length).toBe(2);
+		pills[1].click();
+
+		modal.contentEl.querySelector<HTMLButtonElement>(".pp-finish-button")!.click();
+		expect(onSubmit).toHaveBeenCalledWith({ modified_date: "2026-10-13T15:45:00" });
+	});
+
+	it("treats duplicate list values such as tags as a pick-one conflict", () => {
+		const { app } = createApp();
+		const catalog = createMockCatalog();
+		const onSubmit = vi.fn();
+		const modal = new SelectPropertiesModal(
+			app as any,
+			catalog,
+			{ tags: ["a, b", "c"] },
+			onSubmit,
+			vi.fn(),
+			{ tags: { duplicateIn: ["note-six"] } }
+		);
+		modal.onOpen();
+
+		const card = Array.from(modal.contentEl.querySelectorAll(".pp-property-card")).find(
+			(c) => c.querySelector(".pp-property-name")?.textContent === "tags"
+		)!;
+		expect(card.querySelector(".pp-property-warning")?.textContent).toContain(
+			"note-six has more than one tags value"
+		);
+		const pills = card.querySelectorAll<HTMLButtonElement>(".pp-option-pill");
+		expect(pills.length).toBe(2);
+		pills[0].click();
+
+		modal.contentEl.querySelector<HTMLButtonElement>(".pp-finish-button")!.click();
+		expect(onSubmit).toHaveBeenCalledWith({ tags: ["a, b"] });
+	});
 });
 
 describe("PropertyPorter.selectPropertiesToPaste", () => {
-	it("merges properties across active tab group notes with conflict gathering", async () => {
+	it("resolves tab-group copy conflicts through the modal", async () => {
 		const f1 = new obsidianMock.TFile("a.md");
 		const f2 = new obsidianMock.TFile("b.md");
 		const { plugin, fileCache } = createPlugin({
@@ -270,7 +338,9 @@ describe("PropertyPorter.selectPropertiesToPaste", () => {
 			const statusCard = Array.from(this.contentEl.querySelectorAll(".pp-property-card")).find(
 				(c: any) => c.querySelector(".pp-property-name")?.textContent === "status"
 			) as HTMLElement;
-			expect(statusCard.querySelector(".pp-property-warning")?.textContent).toContain("Conflicting values");
+			expect(statusCard.querySelector(".pp-property-warning")?.textContent).toContain(
+				"Conflicting values across a, b: select one"
+			);
 
 			const pills = statusCard.querySelectorAll<HTMLButtonElement>(".pp-option-pill");
 			expect(pills.length).toBe(2);
@@ -281,12 +351,43 @@ describe("PropertyPorter.selectPropertiesToPaste", () => {
 			this.contentEl.querySelector(".pp-finish-button").click();
 		};
 
-		await plugin.selectPropertiesToPaste();
+		await plugin.copyPropertiesFromActiveTabGroup();
 
 		expect(plugin.clipboard).toEqual({
 			status: "published",
 			tags: ["dev", "notes"],
 		});
+	});
+
+	it("edits the clipboard contents even when several notes are open in the tab group", async () => {
+		const f1 = new obsidianMock.TFile("a.md");
+		const f2 = new obsidianMock.TFile("b.md");
+		const { plugin, fileCache } = createPlugin({
+			markdownFiles: [f1, f2],
+			leaves: [
+				{ file: f1, group: "g1" },
+				{ file: f2, group: "g1" },
+			],
+		});
+		await plugin.onload();
+		plugin.settings.onlyInclude = ""; // include all
+		fileCache[f1.path] = { frontmatter: { status: "draft", tags: ["dev"] } };
+		fileCache[f2.path] = { frontmatter: { status: "published", tags: ["notes"] } };
+		plugin.clipboard = { kept: "value" };
+
+		obsidianMock.Modal.prototype.open = function (this: any) {
+			this.onOpen();
+			const names = Array.from(
+				this.contentEl.querySelectorAll(".pp-property-name")
+			).map((n: any) => n.textContent);
+			expect(names).toContain("kept");
+			expect(names).not.toContain("status");
+			this.contentEl.querySelector(".pp-finish-button").click();
+		};
+
+		await plugin.selectPropertiesToPaste();
+
+		expect(plugin.clipboard).toEqual({ kept: "value" });
 	});
 
 	it("pastes selected properties into another note", async () => {
@@ -300,6 +401,12 @@ describe("PropertyPorter.selectPropertiesToPaste", () => {
 		plugin.settings.onlyInclude = "";
 		fileCache[active.path] = { frontmatter: { title: "Original Title", tags: ["t1"] } };
 		fileCache[target.path] = { frontmatter: {} };
+
+		await plugin.copyProperties();
+		expect(plugin.clipboard).toEqual({
+			title: "Original Title",
+			tags: ["t1"],
+		});
 
 		obsidianMock.Modal.prototype.open = function (this: any) {
 			this.onOpen();

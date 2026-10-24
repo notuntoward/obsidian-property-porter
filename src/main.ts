@@ -17,7 +17,12 @@ import {
 	isEmptyPropertyValue,
 	countPropertyValue,
 	parseCommaList,
+	parseRawFrontmatter,
+	applyDuplicateResolution,
+	formatRawValue,
 	type PasteMode,
+	type RawFrontmatter,
+	type DuplicateResolution,
 } from "./frontmatter";
 import {
 	buildNavigationModel,
@@ -28,11 +33,42 @@ import { setTimeoutIn, ownerWindow } from "commons/windows";
 import {
 	collectVaultMetadata,
 	getPropertySuggestions,
+	isListProperty,
 	normalizeTag,
 	ValuePicker,
 } from "commons/properties";
 import { FileSuggestModal } from "./utils/modal";
-import { SelectPropertiesModal } from "./select-properties-modal";
+import { SelectPropertiesModal, type ConflictCardContext } from "./select-properties-modal";
+
+export class SourceRepairPermissionModal extends Modal {
+	private answered = false;
+
+	constructor(app: App, private readonly files: TFile[], private readonly answer: (allow: boolean) => void) {
+		super(app);
+	}
+
+	onOpen(): void {
+		this.titleEl.setText("Repair duplicate properties in source notes?");
+		this.contentEl.createEl("p", {
+			text: "Your chosen values will be copied either way. Allow Property Porter to rewrite these source notes, keeping only your chosen occurrences and removing any properties you cleared?",
+		});
+		const list = this.contentEl.createEl("ul");
+		for (const file of this.files) list.createEl("li", { text: file.path });
+		for (const [label, allow] of [["Copy only", false], ["Repair notes and copy", true]] as const) {
+			const button = this.contentEl.createEl("button", { text: label });
+			button.addEventListener("click", () => {
+				this.answered = true;
+				this.answer(allow);
+				this.close();
+			});
+		}
+	}
+
+	onClose(): void {
+		if (!this.answered) this.answer(false);
+		this.contentEl.empty();
+	}
+}
 
 interface PropertyPorterSettings {
 	onlyInclude: string;
@@ -65,6 +101,9 @@ function stripPosition(fm: Record<string, unknown>): Record<string, unknown> {
 export default class PropertyPorter extends Plugin {
 	settings: PropertyPorterSettings = DEFAULT_SETTINGS;
 	clipboard: Record<string, unknown> = {};
+	/** Name of the note (or notes) the clipboard was copied from, so paste
+	 * conflicts can say where the clipboard value came from. */
+	clipboardOrigin: string | null = null;
 	statusBarItem: HTMLElement;
 
 	async onload(): Promise<void> {
@@ -191,10 +230,123 @@ export default class PropertyPorter extends Plugin {
 		new Notice(`Property Porter: ${count} propert${count === 1 ? "y" : "ies"} copied`);
 	}
 
+	// Reads the raw text of a file. Duplicate-key detection cannot use the
+	// metadata cache because Obsidian can return no frontmatter at all for a
+	// note with duplicated keys.
+	private async readRawFileContent(file: TFile): Promise<string> {
+		try {
+			return (await this.app.vault.cachedRead?.(file)) ?? "";
+		} catch (error) {
+			new Notice(
+				`Property Porter: could not read ${file.basename} to check for duplicate properties (${String(error)})`
+			);
+			return "";
+		}
+	}
+
+	// Detects within-note duplicate property keys in the given files and
+	// resolves them through the conflict modal, one note at a time so each
+	// note's duplicates keep their own resolution. Nothing is written here:
+	// the rewrites are staged and returned as `commit`, which the caller must
+	// only invoke once the whole operation has succeeded — canceling any
+	// later dialog leaves every note untouched. Returns null when no note has
+	// duplicates; `cancelled: true` means a dialog was dismissed, aborting the
+	// operation with nothing written.
+	private async resolveDuplicateKeys(files: TFile[], askBeforeRepair = false): Promise<{
+		cancelled: boolean;
+		/** Post-repair frontmatter per note that had duplicates. */
+		fullByFile: Map<TFile, Record<string, unknown>>;
+		/** Applies the staged note rewrites. Call only on success. */
+		commit: () => Promise<void>;
+	} | null> {
+		const staged: Array<{ file: TFile; content: string }> = [];
+		const fullByFile = new Map<TFile, Record<string, unknown>>();
+
+		for (const file of files) {
+			const content = await this.readRawFileContent(file);
+			const parsed = parseRawFrontmatter(content);
+			if (parsed.duplicates.length === 0) continue;
+
+			const conflicts: Record<string, unknown[]> = {};
+			const context: Record<string, ConflictCardContext> = {};
+			const origins: Record<string, Array<{ display: string; value: unknown }>> = {};
+
+			for (const dup of parsed.duplicates) {
+				const displays = dup.values.map((value) => {
+					const display = formatRawValue(value);
+					const ambiguous = dup.values.some((other) =>
+						formatRawValue(other) === display && JSON.stringify(other) !== JSON.stringify(value)
+					);
+					return ambiguous ? `${display} (${Array.isArray(value) ? "list" : typeof value})` : display;
+				});
+				const candidates = conflicts[dup.key] ?? [];
+				origins[dup.key] = origins[dup.key] ?? [];
+				for (let i = 0; i < displays.length; i++) {
+					if (!candidates.includes(displays[i])) {
+						candidates.push(displays[i]);
+						origins[dup.key].push({ display: displays[i], value: dup.values[i] });
+					}
+				}
+				conflicts[dup.key] = candidates;
+				context[dup.key] = { duplicateIn: [file.basename] };
+			}
+
+			const result = await this.openPropertySelectionModal({ ...conflicts }, context);
+			if (result.cancelled) return { cancelled: true, fullByFile: new Map(), commit: async () => {} };
+
+			const keep: Record<string, unknown> = {};
+			const remove: string[] = [];
+			const decisions: DuplicateResolution[] = [];
+			for (const key of Object.keys(conflicts)) {
+				if (!(key in result.properties)) {
+					// Cleared: remove the property from the note entirely.
+					remove.push(key);
+					decisions.push({ key, remove: true });
+					continue;
+				}
+				const chosen = result.properties[key];
+				const display = Array.isArray(chosen) ? chosen.join(", ") : String(chosen);
+				const match = origins[key]?.find((origin) => origin.display === display);
+				const value = match ? structuredClone(match.value) : display;
+				keep[key] = value;
+				decisions.push({ key, keep: value });
+			}
+
+			staged.push({ file, content: applyDuplicateResolution(content, decisions) });
+			const full: Record<string, unknown> = { ...parsed.map, ...keep };
+			for (const key of remove) delete full[key];
+			fullByFile.set(file, full);
+		}
+
+		if (staged.length === 0) return null;
+
+		const commit = async (): Promise<void> => {
+			if (askBeforeRepair && !(await this.confirmSourceRepair(staged.map(({ file }) => file)))) return;
+			for (const { file, content } of staged) {
+				await this.app.vault.modify(file, content);
+			}
+		};
+		return { cancelled: false, fullByFile, commit };
+	}
+
+	confirmSourceRepair(files: TFile[]): Promise<boolean> {
+		return new Promise((resolve) => {
+			new SourceRepairPermissionModal(this.app, files, resolve).open();
+		});
+	}
+
 	async copyProperties(): Promise<void> {
-		const fm = this.getFilteredSourceFrontmatter();
-		if (!fm) return;
-		this.applyClipboard(fm);
+		const source = this.getActiveFile();
+		if (!source) {
+			new Notice("Property Porter: No active file");
+			return;
+		}
+		const duplicates = await this.resolveDuplicateKeys([source], true);
+		if (duplicates?.cancelled) return;
+		const full = duplicates?.fullByFile.get(source) ?? this.getParsedFrontmatter(source);
+		await duplicates?.commit();
+		this.clipboardOrigin = source.basename;
+		this.applyClipboard(filterFrontmatter(full, this.settings.onlyInclude, this.settings.excludeKeys));
 	}
 
 	// Copies properties from a note the user picks via the same file selector
@@ -203,9 +355,12 @@ export default class PropertyPorter extends Plugin {
 	async copyPropertiesFrom(): Promise<void> {
 		const file = await this.pickTargetFile();
 		if (!file) return;
-		const fm = this.getFilteredSourceFrontmatter(file);
-		if (!fm) return;
-		this.applyClipboard(fm);
+		const duplicates = await this.resolveDuplicateKeys([file], true);
+		if (duplicates?.cancelled) return;
+		const full = duplicates?.fullByFile.get(file) ?? this.getParsedFrontmatter(file);
+		await duplicates?.commit();
+		this.clipboardOrigin = file.basename;
+		this.applyClipboard(filterFrontmatter(full, this.settings.onlyInclude, this.settings.excludeKeys));
 	}
 
 	// Collects properties from every note in the active tab group, reusing the
@@ -219,16 +374,38 @@ export default class PropertyPorter extends Plugin {
 			return;
 		}
 
-		const collected = files
-			.map((file) => this.getFilteredSourceFrontmatter(file))
-			.filter((fm): fm is Record<string, unknown> => fm !== null);
-		if (collected.length === 0) return;
+		const duplicates = await this.resolveDuplicateKeys(files, true);
+		if (duplicates?.cancelled) return; // leave every note and the clipboard untouched
 
-		this.applyClipboard(unionFrontmatter(collected));
+		const fulls: Record<string, unknown>[] = [];
+		const collected = files.map((file) => {
+			const full = duplicates?.fullByFile.get(file) ?? this.getParsedFrontmatter(file);
+			fulls.push(full);
+			return filterFrontmatter(full, this.settings.onlyInclude, this.settings.excludeKeys);
+		});
+
+		// Gather scalar collisions across the group and resolve them in one
+		// place before anything reaches the clipboard. When no key conflicts,
+		// the union is copied silently, as before.
+		const union = unionFrontmatter(collected, { gatherConflicts: true });
+		const conflicts = this.extractScalarConflicts(union);
+		if (Object.keys(conflicts).length > 0) {
+			const context = this.buildCrossNoteConflictContext(files, fulls, conflicts);
+			const resolved = await this.resolveConflicts({ ...union }, conflicts, context);
+			if (resolved === null) return; // cancelled: notes stay unrepaired, clipboard untouched
+			await duplicates?.commit();
+			this.clipboardOrigin = files.map((file) => file.basename).join(", ");
+			this.applyClipboard(resolved);
+			return;
+		}
+		await duplicates?.commit();
+		this.clipboardOrigin = files.map((file) => file.basename).join(", ");
+		this.applyClipboard(union);
 	}
 
 	clearClipboard(): void {
 		this.clipboard = {};
+		this.clipboardOrigin = null;
 		this.updateStatusBar();
 	}
 
@@ -245,17 +422,40 @@ export default class PropertyPorter extends Plugin {
 		const file = targetFile ?? (await this.pickTargetFile());
 		if (!file) return;
 
-		await this.writeProperties(file);
+		// Duplicate keys in the target are conflicts in every paste mode:
+		// resolve them before pasting. The repair is only written once the
+		// whole paste has succeeded.
+		const duplicates = await this.resolveDuplicateKeys([file]);
+		if (duplicates?.cancelled) return;
+		const repaired = duplicates?.fullByFile.get(file);
+		const overrides = repaired ? new Map([[file, repaired]]) : undefined;
+
+		// A merge-mode scalar collision is ambiguous: ask once before writing.
+		// Overwrite and skip modes already encode the user's choice.
+		const payload = structuredClone(this.clipboard);
+		const { conflicts, context } = this.gatherPasteConflicts([file], overrides);
+		if (Object.keys(conflicts).length > 0) {
+			const resolved = await this.resolveConflicts(payload, conflicts, context);
+			if (resolved === null) return; // cancelled: target stays untouched
+			await duplicates?.commit();
+			await this.writeProperties(file, resolved);
+		} else {
+			await duplicates?.commit();
+			await this.writeProperties(file, payload);
+		}
 		new Notice(`Property Porter: Pasted properties into ${file.basename}`);
 	}
 
 	// Writes the clipboard into one file. Each call gets its own deep copy so
 	// pasted notes never share array/object references with the clipboard or
 	// with each other.
-	private async writeProperties(file: TFile): Promise<void> {
-		const payload = structuredClone(this.clipboard);
+	private async writeProperties(
+		file: TFile,
+		payload: Record<string, unknown> = this.clipboard
+	): Promise<void> {
+		const data = structuredClone(payload);
 		await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
-			const merged = this.mergeFrontmatter(payload, stripPosition(frontmatter));
+			const merged = this.mergeFrontmatter(data, stripPosition(frontmatter));
 			for (const [key, value] of Object.entries(merged)) {
 				frontmatter[key] = value;
 			}
@@ -314,8 +514,30 @@ export default class PropertyPorter extends Plugin {
 			return;
 		}
 
+		// Resolve every conflict in the group once, in one place, and apply
+		// the same resolution to every note. Duplicate keys in any target are
+		// conflicts in every paste mode: resolve them before pasting. Repairs
+		// are only written once the whole paste has succeeded.
+		const duplicates = await this.resolveDuplicateKeys(files);
+		if (duplicates?.cancelled) return;
+		const overrides = duplicates
+			? new Map(
+					files
+						.map((file) => [file, duplicates.fullByFile.get(file)] as const)
+						.filter((entry): entry is [TFile, Record<string, unknown>] => Boolean(entry[1]))
+				)
+			: undefined;
+
+		const { conflicts, context } = this.gatherPasteConflicts(files, overrides);
+		let payload: Record<string, unknown> | null = structuredClone(this.clipboard);
+		if (Object.keys(conflicts).length > 0) {
+			payload = await this.resolveConflicts(payload, conflicts, context);
+			if (payload === null) return; // cancelled: nothing is written, notes stay unrepaired
+		}
+
+		await duplicates?.commit();
 		for (const file of files) {
-			await this.writeProperties(file);
+			await this.writeProperties(file, payload);
 		}
 		new Notice(
 			`Property Porter: Pasted properties into ${files.length} note${
@@ -381,6 +603,7 @@ export default class PropertyPorter extends Plugin {
 		// selection (e.g. "Clear all" then "Finish selection (0)").
 		const selected = result.items;
 		this.clipboard = { tags: selected };
+		this.clipboardOrigin = null;
 		this.updateStatusBar();
 		if (selected.length === 0) {
 			new Notice(NOTICE_CLEARED_COPIED_TAGS);
@@ -393,38 +616,138 @@ export default class PropertyPorter extends Plugin {
 		);
 	}
 
-	async selectPropertiesToPaste(): Promise<void> {
+	// Opens the shared property-selection modal seeded with `initial`.
+	// A scalar seeded with an array of candidates renders as a conflict the
+	// user must resolve. Returns the edited selection, or `cancelled: true`
+	// when the modal is dismissed without finishing.
+	async openPropertySelectionModal(
+		initial: Record<string, unknown>,
+		conflictContext: Record<string, ConflictCardContext> = {}
+	): Promise<{ properties: Record<string, unknown>; cancelled: boolean }> {
 		const catalog = collectVaultMetadata(this.app);
-		const tabFiles = this.getActiveTabGroupFiles();
-		let initialProperties: Record<string, unknown> = {};
-
-		if (tabFiles.length > 1) {
-			const collected = tabFiles
-				.map((f) => this.getFilteredSourceFrontmatter(f))
-				.filter((fm): fm is Record<string, unknown> => fm !== null);
-			initialProperties = unionFrontmatter(collected, { gatherConflicts: true });
-		} else if (this.hasClipboardContent()) {
-			initialProperties = { ...this.clipboard };
-		} else {
-			const active = this.getActiveFile();
-			if (active) {
-				const fm = this.getFilteredSourceFrontmatter(active);
-				if (fm) initialProperties = { ...fm };
-			}
-		}
-
-		const result = await new Promise<{
-			properties: Record<string, unknown>;
-			cancelled: boolean;
-		}>((resolve) => {
+		return new Promise((resolve) => {
 			new SelectPropertiesModal(
 				this.app,
 				catalog,
-				initialProperties,
+				initial,
 				(selected) => resolve({ properties: selected, cancelled: false }),
-				() => resolve({ properties: {}, cancelled: true })
+				() => resolve({ properties: {}, cancelled: true }),
+				conflictContext
 			).open();
 		});
+	}
+
+	// Extracts the scalar keys whose conflicting values were gathered into
+	// candidate arrays by `unionFrontmatter(..., { gatherConflicts: true })`.
+	private extractScalarConflicts(union: Record<string, unknown>): Record<string, unknown[]> {
+		const catalog = collectVaultMetadata(this.app);
+		const conflicts: Record<string, unknown[]> = {};
+		for (const [key, value] of Object.entries(union)) {
+			if (Array.isArray(value) && !isListProperty(catalog, key)) {
+				conflicts[key] = value;
+			}
+		}
+		return conflicts;
+	}
+
+	// Builds the conflict-card context for a tab-group copy: for each
+	// conflicting key, the notes that actually carry that key.
+	private buildCrossNoteConflictContext(
+		files: TFile[],
+		fulls: Record<string, unknown>[],
+		conflicts: Record<string, unknown[]>
+	): Record<string, ConflictCardContext> {
+		const context: Record<string, ConflictCardContext> = {};
+		for (const key of Object.keys(conflicts)) {
+			const notes: string[] = [];
+			files.forEach((file, index) => {
+				const value = fulls[index]?.[key];
+				if (
+					value !== null &&
+					value !== undefined &&
+					!Array.isArray(value) &&
+					!isEmptyPropertyValue(value)
+				) {
+					notes.push(file.basename);
+				}
+			});
+			if (notes.length > 0) context[key] = { conflictNotes: notes };
+		}
+		return context;
+	}
+
+	// Detects scalar collisions between the clipboard and the given target
+	// notes. Only "merge" paste mode is ambiguous enough to ask; "overwrite"
+	// and "skip" already encode the user's choice. For each conflicting key
+	// the candidates are the clipboard value plus every distinct target value.
+	// `overrides` replace a target's cached frontmatter (used after a
+	// duplicate-key repair, which the metadata cache may not reflect yet).
+	private gatherPasteConflicts(
+		files: TFile[],
+		overrides?: Map<TFile, Record<string, unknown>>
+	): { conflicts: Record<string, unknown[]>; context: Record<string, ConflictCardContext> } {
+		const conflicts: Record<string, unknown[]> = {};
+		const context: Record<string, ConflictCardContext> = {};
+		if (this.settings.pasteMode !== "merge") return { conflicts, context };
+
+		const catalog = collectVaultMetadata(this.app);
+		for (const file of files) {
+			const target = overrides?.get(file) ?? this.getParsedFrontmatter(file);
+			for (const [key, clipValue] of Object.entries(this.clipboard)) {
+				if (isEmptyPropertyValue(clipValue) || Array.isArray(clipValue)) continue;
+				if (isListProperty(catalog, key)) continue;
+
+				const targetValue = target[key];
+				if (
+					targetValue === null ||
+					targetValue === undefined ||
+					isEmptyPropertyValue(targetValue) ||
+					Array.isArray(targetValue)
+				)
+					continue;
+
+				const clipStr = String(clipValue).trim();
+				const targetStr = String(targetValue).trim();
+				if (clipStr === targetStr) continue;
+
+				const candidates = conflicts[key] ?? [clipStr];
+				if (!candidates.includes(targetStr)) candidates.push(targetStr);
+				conflicts[key] = candidates;
+
+				const ctx =
+					context[key] ??
+					{ clipboardOrigin: this.clipboardOrigin ?? undefined, conflictNotes: [] };
+				if (!ctx.conflictNotes?.includes(file.basename)) ctx.conflictNotes?.push(file.basename);
+				context[key] = ctx;
+			}
+		}
+		return { conflicts, context };
+	}
+
+	// Lets the user resolve `conflicts` in the shared modal and folds the
+	// resolution into `payload` (mutated in place). A conflicting key the
+	// user cleared is removed from the payload. Returns null when the user
+	// dismisses the modal, aborting the operation that called this.
+	private async resolveConflicts(
+		payload: Record<string, unknown>,
+		conflicts: Record<string, unknown[]>,
+		context: Record<string, ConflictCardContext> = {}
+	): Promise<Record<string, unknown> | null> {
+		const result = await this.openPropertySelectionModal({ ...conflicts }, context);
+		if (result.cancelled) return null;
+		for (const key of Object.keys(conflicts)) {
+			if (key in result.properties) payload[key] = result.properties[key];
+			else delete payload[key];
+		}
+		return payload;
+	}
+
+	// Edits the properties clipboard directly. The modal shows exactly what
+	// is in the clipboard (empty when nothing has been copied yet), so this
+	// doubles as a debugging check on the current clipboard state. Conflict
+	// resolution happens on copy and paste instead, not here.
+	async selectPropertiesToPaste(): Promise<void> {
+		const result = await this.openPropertySelectionModal({ ...this.clipboard });
 
 		if (result.cancelled) return;
 

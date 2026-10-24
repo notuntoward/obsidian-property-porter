@@ -32,7 +32,7 @@ function createPlugin(options: any = {}) {
 				for (const leaf of leaves) cb(leaf);
 			},
 		},
-		metadataCache: {},
+		metadataCache: { getFileCache: () => null },
 		vault: { getMarkdownFiles: () => [] },
 		fileManager: {
 			processFrontMatter: async (

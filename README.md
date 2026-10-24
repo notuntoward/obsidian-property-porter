@@ -20,11 +20,26 @@ Property Porter provides nine commands:
 - **Paste properties into another note** — opens a file picker so you can choose which file to paste into.
 - **Paste properties into active note** — pastes directly into whichever file is active.
 - **Paste properties into the active tab group** — pastes the clipboard into every note open in the current tab group.
-- **Select properties to paste** — opens an interactive modal to select and configure properties to paste. When notes have multiple possible values for a list property (e.g. `tags`, `aliases`, or custom lists), the interface makes it easy to select one, several, or all of them via "Select all", "Clear", and candidate toggle pills. When notes with a scalar property are merged and have conflicting values (e.g. different `status` values), the conflicting options are presented and you must select only one. You can also search/add any property from the vault catalog or remove properties with the remove button.
+- **Select properties to paste** — opens an interactive modal that edits exactly what is in the properties clipboard (empty when nothing has been copied yet). It shows every property currently copied, lets you drop properties or values, add properties from the vault catalog, and edit values, so it doubles as a debugging check on the current clipboard state. List properties (e.g. `tags`, `aliases`, or custom lists) offer "Select all", "Clear", and candidate toggle pills; scalars are edited directly.
 - **Select tags to paste** — opens a searchable picker over every tag used anywhere in the vault so you can build up a `tags` list to paste, without needing an active note with those exact tags already on it. This command always operates on tags and tags only, paying no attention to the **Only include** or **Exclude keys** settings. The picker is seeded with whatever tags are already in the clipboard, so you can keep adding across multiple runs; use "Clear all" or Ctrl/Cmd+Backspace to empty it, or the × on any tag to drop just that one. Type to filter, Enter to add the highlighted tag (or to add a brand-new tag typed verbatim when it matches nothing), Enter again on an empty search box (or "Finish selection") to commit. Esc cancels without changing the clipboard.
 - **Clear properties clipboard** — empties the internal clipboard.
 
 Commands other than **Select properties to paste** and **Select tags to paste** always *replace* the clipboard outright; they don't merge with whatever was copied/selected before.
+
+### Conflict resolution
+
+Scalar collisions are resolved interactively, at the moment they occur, and every conflict names the notes it came from:
+
+- **Copy from the active tab group**: when the same scalar property holds different values across the group's notes (e.g. different `status` values), the conflicting options are presented once — with the notes involved named in the warning — and exactly one must be chosen before anything reaches the clipboard. List properties union silently; agreeing scalars copy silently.
+- **Paste** (merge mode only): when a scalar property in the clipboard collides with a different value already in the target note(s), the options are presented before anything is written, naming the note the clipboard was copied from and the target notes; one resolution is applied to every target. For a tab-group paste, all conflicts in the group are resolved in a single pass. **Overwrite** and **Skip existing** paste modes never ask about value collisions — the mode itself already decides the winner. Cancel the dialog and nothing is written.
+
+#### Duplicate property keys
+
+A note whose frontmatter contains the same property key more than once (e.g. two `modified_date` lines) is treated as a conflict in every property copy and paste command, regardless of paste mode and property filters. Property Porter reads the raw text and names the affected note in the conflict dialog, even if Obsidian's metadata cache returns no frontmatter.
+
+During Copy, your choices determine the clipboard contents. A separate permission prompt lists the affected source files before any rewrite: **Repair notes and copy** removes redundant occurrences, while **Copy only** leaves source files unchanged. Dismissing this permission prompt also copies without rewriting. During Paste, duplicate keys in the target are repaired as part of the paste. Clearing a duplicate property removes it from the resolved values and, if repair is authorized, from the note. Cancelling conflict resolution leaves the notes and clipboard unchanged. Unrelated list items and other note content are not rewritten by the repair.
+
+The **Only include** and **Exclude keys** filters match property names case-insensitively and treat underscores as spaces, so `created_date` is caught by an exclusion of `created date`.
 
 ## Settings
 
@@ -69,7 +84,7 @@ All three paste modes (Overwrite, Skip existing, Merge) are implemented for **ev
 
 #### Select interface availability by property type
 
-The **Select properties to paste** command opens an interactive modal to select, add, and configure properties to paste. When notes have multiple possible values for a list property, you can select one or all of them. When notes have conflicting scalar values, the conflicting options are displayed and you must choose one.
+The **Select properties to paste** command opens an interactive modal that edits the current clipboard contents. When the clipboard's list properties hold multiple values, you can select one or all of them. Conflict resolution happens on copy and paste (see above), not in this editor.
 
 In addition, **Select tags to paste** provides a dedicated, fast tag picker that operates exclusively on tags and ignores non-tag filter settings.
 

@@ -14,9 +14,38 @@ export interface PropertyCardState {
 	candidates: string[];
 	selected: string[];
 	hasConflict: boolean;
+	conflictContext?: ConflictCardContext;
 	cardEl?: HTMLElement;
 	picker?: ValuePicker;
 	updatePills?: () => void;
+}
+
+// Describes where a conflict came from so the card can name the notes
+// involved instead of leaving the user guessing.
+export interface ConflictCardContext {
+	/** Notes the conflicting values came from. */
+	conflictNotes?: string[];
+	/** Note the clipboard value was copied from, when known. */
+	clipboardOrigin?: string;
+	/** Notes that contain more than one occurrence of the property. */
+	duplicateIn?: string[];
+}
+
+// Builds the warning line for a conflict card, naming the notes involved
+// so the user knows where each conflicting value came from.
+function conflictWarningText(state: PropertyCardState): string {
+	const ctx = state.conflictContext;
+	if (ctx?.duplicateIn?.length) {
+		const notes = ctx.duplicateIn.join(", ");
+		return `${notes} ${ctx.duplicateIn.length === 1 ? "has" : "have"} more than one ${state.name} value: select the one to keep`;
+	}
+	if (ctx?.clipboardOrigin && ctx.conflictNotes?.length) {
+		return `Conflicting values between the clipboard (from ${ctx.clipboardOrigin}) and ${ctx.conflictNotes.join(", ")}: select one`;
+	}
+	if (ctx?.conflictNotes?.length) {
+		return `Conflicting values across ${ctx.conflictNotes.join(", ")}: select one`;
+	}
+	return "Conflicting values across notes: select one";
 }
 
 export class PropertyNameSuggest extends AbstractInputSuggest<string> {
@@ -60,7 +89,8 @@ export class SelectPropertiesModal extends Modal {
 		private readonly catalog: VaultMetadataCatalog,
 		initialProperties: Record<string, unknown>,
 		private readonly onSubmit: (selected: Record<string, unknown>) => void,
-		private readonly onCancel: () => void
+		private readonly onCancel: () => void,
+		private readonly conflictContext: Record<string, ConflictCardContext> = {}
 	) {
 		super(app);
 		this.initPropertyStates(initialProperties);
@@ -87,12 +117,17 @@ export class SelectPropertiesModal extends Modal {
 				if (s) candidates = [s];
 			}
 
-			const hasConflict = !isList && candidates.length > 1;
-			const selected = isList
+			const context = this.conflictContext[name];
+			// A within-note duplicate is a conflict even for list properties such
+			// as tags, and even when both occurrences carry the same value: the
+			// user picks which value (or none) should survive.
+			const forceConflict = Boolean(context?.duplicateIn?.length);
+			const hasConflict = forceConflict || (!isList && candidates.length > 1);
+			const selected = isList && !hasConflict
 				? [...candidates]
 				: candidates.length > 0
 					? [candidates[0]]
-					: [];
+				: [];
 
 			this.propertyStates.set(name, {
 				name,
@@ -100,6 +135,7 @@ export class SelectPropertiesModal extends Modal {
 				candidates,
 				selected,
 				hasConflict,
+				conflictContext: context,
 			});
 		}
 	}
@@ -241,7 +277,7 @@ export class SelectPropertiesModal extends Modal {
 			this.removeProperty(state.name);
 		});
 
-		if (state.isList) {
+		if (state.isList && !state.hasConflict) {
 			this.renderListBody(state, cardEl);
 		} else {
 			this.renderScalarBody(state, cardEl);
@@ -254,7 +290,7 @@ export class SelectPropertiesModal extends Modal {
 		if (state.hasConflict) {
 			cardEl.createDiv({
 				cls: "pp-property-warning",
-				text: "Conflicting values across notes: select one",
+				text: conflictWarningText(state),
 			});
 
 			const optionsEl = cardEl.createDiv({ cls: "pp-options-container" });

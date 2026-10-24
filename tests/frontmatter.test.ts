@@ -8,10 +8,20 @@ import {
 	isEmptyPropertyValue,
 	countPropertyValue,
 	parseCommaList,
+	parseRawFrontmatter,
+	applyDuplicateResolution,
+	formatRawValue,
 	type PasteMode,
 } from "../src/frontmatter";
 
 describe("parseCommaList", () => {
+	it("preserves typed identity and Windows line endings when repairing", () => {
+		const text = '---\r\nx: 1\r\nx: "1"\r\nflag: true\r\nflag: "true"\r\n---\r\nBody\r\n';
+		expect(applyDuplicateResolution(text, [
+			{ key: "x", keep: "1" }, { key: "flag", keep: "true" },
+		])).toBe('---\r\nx: "1"\r\nflag: "true"\r\n---\r\nBody\r\n');
+	});
+
 	it("trims whitespace and drops empty entries", () => {
 		expect(parseCommaList(" tags ,  status ,,aliases")).toEqual([
 			"tags",
@@ -264,5 +274,194 @@ describe("unionFrontmatter", () => {
 			{ tags: ["work"] },
 		]);
 		expect(r).toEqual({ status: "draft", tags: ["work"] });
+	});
+});
+
+describe("filterFrontmatter key normalization", () => {
+	it("excludes underscore variants of configured keys", () => {
+		expect(
+			filterFrontmatter(
+				{ created_date: "x", modified_date: "y", tags: ["t"] },
+				"",
+				"created date, modified date"
+			)
+		).toEqual({ tags: ["t"] });
+	});
+
+	it("matches Only include entries case-insensitively and across underscores", () => {
+		expect(
+			filterFrontmatter({ Status: "a", created_date: "x" }, "status, Created Date", "")
+		).toEqual({ Status: "a", created_date: "x" });
+	});
+});
+
+describe("parseRawFrontmatter", () => {
+	it("returns no duplicates for a note with unique keys", () => {
+		const parsed = parseRawFrontmatter("---\ntitle: Note Six\nversion: 2\n---\n\nbody");
+		expect(parsed.map).toEqual({ title: "Note Six", version: 2 });
+		expect(parsed.duplicates).toEqual([]);
+	});
+
+	it("detects duplicate scalar keys and keeps every occurrence with spans", () => {
+		const parsed = parseRawFrontmatter(
+			"---\ntitle: T\nmodified_date: 2026-10-13T16:58:17\nmodified_date: 2026-10-13T15:45:00\n---\n"
+		);
+		expect(parsed.duplicates).toEqual([
+			{
+				key: "modified_date",
+				values: ["2026-10-13T16:58:17", "2026-10-13T15:45:00"],
+				spans: [
+					[2, 2],
+					[3, 3],
+				],
+			},
+		]);
+		// First occurrence wins for the value map; the conflict UI decides.
+		expect(parsed.map.modified_date).toBe("2026-10-13T16:58:17");
+	});
+
+	it("detects duplicate list keys and parses both lists with spans", () => {
+		const parsed = parseRawFrontmatter("---\ntags:\n  - a\n  - b\ntags:\n  - c\n---\n");
+		expect(parsed.duplicates).toEqual([
+			{
+				key: "tags",
+				values: [
+					["a", "b"],
+					["c"],
+				],
+				spans: [
+					[1, 3],
+					[4, 5],
+				],
+			},
+		]);
+	});
+
+	it("flags identical duplicate values as redundant too", () => {
+		const parsed = parseRawFrontmatter("---\nstatus: draft\nstatus: draft\n---\n");
+		expect(parsed.duplicates).toHaveLength(1);
+		expect(parsed.duplicates[0].values).toEqual(["draft", "draft"]);
+		expect(parsed.duplicates[0].key).toBe("status");
+	});
+
+	it("dedupes repeated items inside a single list without flagging a conflict", () => {
+		const parsed = parseRawFrontmatter("---\ntags:\n  - a\n  - b\n  - a\n---\n");
+		expect(parsed.map.tags).toEqual(["a", "b"]);
+		expect(parsed.duplicates).toEqual([]);
+	});
+
+	it("returns empty for content without a frontmatter block", () => {
+		expect(parseRawFrontmatter("just body text\n")).toEqual({ map: {}, duplicates: [] });
+	});
+
+	it("stops at the closing marker so body lines are ignored", () => {
+		const parsed = parseRawFrontmatter("---\ntitle: X\n---\nmodified_date: 1\nmodified_date: 2\n");
+		expect(parsed.duplicates).toEqual([]);
+	});
+
+	it("parses booleans, numbers, and quoted strings", () => {
+		const parsed = parseRawFrontmatter('---\nis_active: true\nversion: 2\ntitle: "Note: Six"\n---\n');
+		expect(parsed.map).toEqual({ is_active: true, version: 2, title: "Note: Six" });
+	});
+
+	it("keeps quoted booleans, leading-zero numbers, and exponent forms as strings", () => {
+		const parsed = parseRawFrontmatter('---\nquoted_false: "false"\nzero_padded: "001"\n---\n');
+		expect(parsed.map).toEqual({ quoted_false: "false", zero_padded: "001" });
+	});
+});
+
+describe("applyDuplicateResolution", () => {
+	const note06 = [
+		"---",
+		"title: Note Six",
+		"is_active: true",
+		"version: 2",
+		"tags:",
+		"  - a",
+		"  - b",
+		"  - c",
+		"modified_date: 2026-10-13T16:58:17",
+		"created_date: 2026-08-19T21:26:00",
+		"modified_date: 2026-10-13T15:45:00",
+		"---",
+		"",
+		"a# heading 1",
+		"",
+		"This note has boolean and number properties.",
+	].join("\n");
+
+	it("keeps only the chosen occurrence and preserves every other line", () => {
+		const resolved = applyDuplicateResolution(note06, [
+			{ key: "modified_date", keep: "2026-10-13T15:45:00" },
+		]);
+		expect(resolved).toBe(
+			[
+				"---",
+				"title: Note Six",
+				"is_active: true",
+				"version: 2",
+				"tags:",
+				"  - a",
+				"  - b",
+				"  - c",
+				"created_date: 2026-08-19T21:26:00",
+				"modified_date: 2026-10-13T15:45:00",
+				"---",
+				"",
+				"a# heading 1",
+				"",
+				"This note has boolean and number properties.",
+			].join("\n")
+		);
+	});
+
+	it("removes the property entirely when the resolution clears it", () => {
+		const resolved = applyDuplicateResolution(note06, [{ key: "modified_date", remove: true }]);
+		expect(resolved).not.toContain("modified_date");
+		expect(resolved).toContain("created_date: 2026-08-19T21:26:00");
+	});
+
+	it("keeps the first occurrence when both duplicates are identical", () => {
+		const resolved = applyDuplicateResolution("---\nstatus: draft\nstatus: draft\n---\n", [
+			{ key: "status", keep: "draft" },
+		]);
+		expect(resolved).toBe("---\nstatus: draft\n---\n");
+	});
+
+	it("keeps only the chosen list occurrence", () => {
+		const resolved = applyDuplicateResolution("---\ntags:\n  - a\n  - b\ntags:\n  - c\n---\n", [
+			{ key: "tags", keep: ["c"] },
+		]);
+		expect(resolved).toBe("---\ntags:\n  - c\n---\n");
+	});
+
+	it("renders a hand-typed value into the first occurrence's place", () => {
+		const resolved = applyDuplicateResolution("---\nstatus: one\nstatus: two\n---\n", [
+			{ key: "status", keep: "custom" },
+		]);
+		expect(resolved).toBe("---\nstatus: custom\n---\n");
+	});
+
+	it("preserves quoted strings and comments elsewhere in the frontmatter", () => {
+		const content = [
+			"---",
+			"# a comment",
+			'title: "Note: Six"',
+			"status: one",
+			"status: two",
+			"---",
+		].join("\n");
+		const resolved = applyDuplicateResolution(content, [{ key: "status", keep: "two" }]);
+		expect(resolved).toBe(
+			["---", "# a comment", 'title: "Note: Six"', "status: two", "---"].join("\n")
+		);
+	});
+});
+
+describe("formatRawValue", () => {
+	it("joins list values and stringifies scalars", () => {
+		expect(formatRawValue(["a", "b"])).toBe("a, b");
+		expect(formatRawValue(2)).toBe("2");
+		expect(formatRawValue(true)).toBe("true");
 	});
 });

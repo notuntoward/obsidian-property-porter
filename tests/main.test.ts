@@ -5,6 +5,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import * as obsidianMock from "obsidian";
 import { registerEmacsMotionKeys } from "../src/utils/modal";
 import PropertyPorter, {
+	SourceRepairPermissionModal,
 	SuggestFilesModal,
 	FileSuggestModal,
 	PropertyPorterSettingTab,
@@ -13,6 +14,7 @@ import PropertyPorter, {
 	NOTICE_CLEARED_COPIED_TAGS,
 	NOTICE_TIMEOUT_MS,
 } from "../src/main";
+import { parseRawFrontmatter } from "../src/frontmatter";
 
 function getInputSuggest(input: HTMLInputElement): any {
 	const suggestClass = obsidianMock.AbstractInputSuggest as any;
@@ -32,6 +34,7 @@ function createApp(options: any = {}) {
 	const activeFile = options.activeFile ?? null;
 	const markdownFiles = options.markdownFiles ?? [];
 	const fileCache: Record<string, any> = options.fileCache ?? {};
+	const fileContents: Record<string, string> = options.fileContents ?? {};
 
 	// Build workspace leaves for the active-tab-group feature. Each entry in
 	// `leaves` is { file, group? }; leaves sharing the same `group` value are
@@ -65,17 +68,27 @@ function createApp(options: any = {}) {
 		metadataCache: {
 			getFileCache: (file: obsidianMock.TFile) => fileCache[file.path] ?? null,
 		},
-		vault: { getMarkdownFiles: () => markdownFiles },
+		vault: {
+			getMarkdownFiles: () => markdownFiles,
+			cachedRead: async (file: obsidianMock.TFile) => fileContents[file.path] ?? "",
+			modify: async (file: obsidianMock.TFile, data: string) => {
+				fileContents[file.path] = data;
+			},
+		},
 		fileManager: {
 			processFrontMatter: async (file: obsidianMock.TFile, processor: (fm: any) => void) => {
-				const existing = fileCache[file.path]?.frontmatter ?? {};
+				// Like the real app, the "existing" frontmatter comes from the
+				// file's raw text when the cache has nothing for it.
+				const existing =
+					fileCache[file.path]?.frontmatter ??
+					parseRawFrontmatter(fileContents[file.path] ?? "").map;
 				const fm = { ...existing };
 				processor(fm);
 				fileCache[file.path] = { frontmatter: fm };
 			},
 		},
 	});
-	return { app, activeFile, markdownFiles, fileCache };
+	return { app, activeFile, markdownFiles, fileCache, fileContents };
 }
 
 function createPlugin(options: any = {}) {
@@ -104,6 +117,7 @@ describe("PropertyPorter", () => {
 		originalSuggestOpen = obsidianMock.SuggestModal.prototype.open;
 		obsidianMock.Setting.clearInstances();
 		vi.restoreAllMocks();
+		vi.spyOn(PropertyPorter.prototype, "confirmSourceRepair").mockResolvedValue(true);
 	});
 
 	afterEach(() => {
@@ -111,6 +125,64 @@ describe("PropertyPorter", () => {
 	});
 
 	describe("lifecycle", () => {
+		it.each([true, false])("requires explicit source repair permission (%s)", async (allow) => {
+			const file = new obsidianMock.TFile("folder/dup.md");
+			const original = '---\nx: 1\nx: "1"\n---\nBody\n';
+			const { plugin, app, fileContents } = createPlugin({
+				activeFile: file, fileContents: { [file.path]: original },
+			});
+			await plugin.onload();
+			plugin.settings.onlyInclude = "";
+			plugin.settings.excludeKeys = "";
+			vi.mocked(plugin.confirmSourceRepair).mockRestore();
+			const modify = vi.spyOn(app.vault, "modify");
+			let dialogs = 0;
+			obsidianMock.Modal.prototype.open = function (this: any) {
+				this.onOpen();
+				dialogs++;
+				expect(modify).not.toHaveBeenCalled();
+				if (this instanceof SourceRepairPermissionModal) {
+					expect(this.contentEl.textContent).toContain(file.path);
+					const label = allow ? "Repair notes and copy" : "Copy only";
+					Array.from(this.contentEl.querySelectorAll("button"))
+						.find((b: any) => b.textContent === label).click();
+				} else {
+					const pills = this.contentEl.querySelectorAll(".pp-option-pill");
+					expect(pills[0].textContent).toBe("1 (number)");
+					expect(pills[1].textContent).toBe("1 (string)");
+					pills[1].click();
+					this.contentEl.querySelector(".pp-finish-button").click();
+				}
+			};
+			await plugin.copyProperties();
+			expect(dialogs).toBe(2);
+			expect(plugin.clipboard).toEqual({ x: "1" });
+			expect(fileContents[file.path]).toBe(allow ? '---\nx: "1"\n---\nBody\n' : original);
+			expect(modify).toHaveBeenCalledTimes(allow ? 1 : 0);
+		});
+
+		it("dismisses source repair permission without writing but still copies", async () => {
+			const file = new obsidianMock.TFile("dup.md");
+			const original = "---\nx: first\nx: second\n---\n";
+			const { plugin, fileContents } = createPlugin({
+				activeFile: file, fileContents: { [file.path]: original },
+			});
+			await plugin.onload();
+			plugin.settings.onlyInclude = "";
+			vi.mocked(plugin.confirmSourceRepair).mockRestore();
+			obsidianMock.Modal.prototype.open = function (this: any) {
+				this.onOpen();
+				if (this instanceof SourceRepairPermissionModal) this.close();
+				else {
+					this.contentEl.querySelectorAll(".pp-option-pill")[1].click();
+					this.contentEl.querySelector(".pp-finish-button").click();
+				}
+			};
+			await plugin.copyProperties();
+			expect(plugin.clipboard).toEqual({ x: "second" });
+			expect(fileContents[file.path]).toBe(original);
+		});
+
 		it("loads settings, status bar, commands and settings tab on load", async () => {
 			const { plugin } = createPlugin();
 			const loadSettings = vi.spyOn(plugin, "loadSettings");
@@ -321,6 +393,198 @@ describe("PropertyPorter", () => {
 			expect(spy).toHaveBeenCalledWith("Property Porter: 2 properties copied");
 		});
 
+		it("resolves duplicate property keys in the source note before copying", async () => {
+			const file = new obsidianMock.TFile("note-six.md");
+			// Obsidian's metadata cache can return no frontmatter at all for a
+			// note with duplicate keys, so the cache is empty here on purpose.
+			const noteText = [
+				"---",
+				"title: Note Six",
+				"tags:",
+				"  - a",
+				"  - b",
+				"modified_date: 2026-10-13T16:58:17",
+				"created_date: 2026-08-19T21:26:00",
+				"modified_date: 2026-10-13T15:45:00",
+				"---",
+				"",
+				"a# heading 1",
+			].join("\n");
+			const { plugin, fileContents } = createPlugin({
+				activeFile: file,
+				markdownFiles: [file],
+				fileContents: { [file.path]: noteText },
+			});
+			await plugin.onload();
+			plugin.settings.onlyInclude = "";
+			plugin.settings.excludeKeys = "";
+
+			let warningText = "";
+			obsidianMock.Modal.prototype.open = function (this: any) {
+				this.onOpen();
+				const card = Array.from(this.contentEl.querySelectorAll(".pp-property-card")).find(
+					(c: any) => c.querySelector(".pp-property-name")?.textContent === "modified_date"
+				) as HTMLElement;
+				warningText = card.querySelector(".pp-property-warning")?.textContent ?? "";
+				const pills = card.querySelectorAll<HTMLButtonElement>(".pp-option-pill");
+				expect(pills.length).toBe(2);
+				pills[1].click(); // keep the later value
+				this.contentEl.querySelector(".pp-finish-button").click();
+			};
+
+			await plugin.copyProperties();
+
+			// The card names the note the duplicate came from.
+			expect(warningText).toContain("note-six has more than one modified_date value");
+			// The note is repaired textually: only the chosen occurrence survives
+			// and every other line is preserved.
+			expect(fileContents[file.path]).toBe(
+				[
+					"---",
+					"title: Note Six",
+					"tags:",
+					"  - a",
+					"  - b",
+					"created_date: 2026-08-19T21:26:00",
+					"modified_date: 2026-10-13T15:45:00",
+					"---",
+					"",
+					"a# heading 1",
+				].join("\n")
+			);
+			// The copy is built from the repaired values, not the empty cache.
+			expect(plugin.clipboard).toEqual({
+				title: "Note Six",
+				tags: ["a", "b"],
+				modified_date: "2026-10-13T15:45:00",
+				created_date: "2026-08-19T21:26:00",
+			});
+			expect(plugin.clipboardOrigin).toBe("note-six");
+		});
+
+		it("leaves the note and clipboard untouched when duplicate resolution is cancelled", async () => {
+			const file = new obsidianMock.TFile("note-six.md");
+			const noteText = "---\ntitle: T\nmodified_date: 1\nmodified_date: 2\n---\n";
+			const { plugin, fileContents } = createPlugin({
+				activeFile: file,
+				markdownFiles: [file],
+				fileContents: { [file.path]: noteText },
+			});
+			await plugin.onload();
+			plugin.settings.onlyInclude = "";
+
+			obsidianMock.Modal.prototype.open = function (this: any) {
+				this.onOpen();
+				this.close(); // dismissed without finishing
+			};
+
+			await plugin.copyProperties();
+
+			expect(plugin.clipboard).toEqual({});
+			expect(fileContents[file.path]).toBe(noteText);
+		});
+
+		it("removes the property from the note and the copy when the duplicate is cleared", async () => {
+			const file = new obsidianMock.TFile("note-six.md");
+			const noteText = "---\ntitle: T\nmodified_date: 1\nmodified_date: 2\n---\n";
+			const { plugin, fileContents } = createPlugin({
+				activeFile: file,
+				markdownFiles: [file],
+				fileContents: { [file.path]: noteText },
+			});
+			await plugin.onload();
+			plugin.settings.onlyInclude = "";
+			plugin.settings.excludeKeys = "";
+
+			obsidianMock.Modal.prototype.open = function (this: any) {
+				this.onOpen();
+				const card = Array.from(this.contentEl.querySelectorAll(".pp-property-card")).find(
+					(c: any) => c.querySelector(".pp-property-name")?.textContent === "modified_date"
+				) as HTMLElement;
+				void card;
+				// Clear the value, then finish: the property is removed.
+				this.clearAll();
+				this.contentEl.querySelector(".pp-finish-button").click();
+			};
+
+			await plugin.copyProperties();
+
+			expect(fileContents[file.path]).toBe("---\ntitle: T\n---\n");
+			expect(plugin.clipboard).toEqual({ title: "T" });
+		});
+
+		it("flags identical duplicate values as a conflict too", async () => {
+			const file = new obsidianMock.TFile("same.md");
+			const noteText = "---\nstatus: draft\nstatus: draft\n---\n";
+			const { plugin } = createPlugin({
+				activeFile: file,
+				markdownFiles: [file],
+				fileContents: { [file.path]: noteText },
+			});
+			await plugin.onload();
+			plugin.settings.onlyInclude = "";
+
+			let warningText = "";
+			obsidianMock.Modal.prototype.open = function (this: any) {
+				this.onOpen();
+				const card = Array.from(this.contentEl.querySelectorAll(".pp-property-card")).find(
+					(c: any) => c.querySelector(".pp-property-name")?.textContent === "status"
+				) as HTMLElement;
+				warningText = card.querySelector(".pp-property-warning")?.textContent ?? "";
+				this.contentEl.querySelector(".pp-finish-button").click();
+			};
+
+			await plugin.copyProperties();
+
+			expect(warningText).toContain("same has more than one status value");
+			expect(plugin.clipboard).toEqual({ status: "draft" });
+		});
+
+		it("resolves each note's duplicates independently in a tab-group copy", async () => {
+			const f1 = new obsidianMock.TFile("one.md");
+			const f2 = new obsidianMock.TFile("two.md");
+			const { plugin, fileContents } = createPlugin({
+				leaves: [
+					{ file: f1, group: "g1" },
+					{ file: f2, group: "g1" },
+				],
+				fileContents: {
+					[f1.path]: "---\nstatus: one-a\nstatus: one-b\n---\n",
+					[f2.path]: "---\nstatus: two-a\nstatus: two-b\n---\n",
+				},
+			});
+			await plugin.onload();
+			plugin.settings.onlyInclude = "";
+			plugin.settings.excludeKeys = "";
+
+			// First modal is note one's duplicate, second is note two's.
+			let modalIndex = 0;
+			obsidianMock.Modal.prototype.open = function (this: any) {
+				this.onOpen();
+				modalIndex++;
+				const card = Array.from(this.contentEl.querySelectorAll(".pp-property-card")).find(
+					(c: any) => c.querySelector(".pp-property-name")?.textContent === "status"
+				) as HTMLElement;
+				// The first two modals resolve each note's duplicates; the third
+				// resolves the union's scalar collision with cross-note wording.
+				if (modalIndex <= 2) {
+					expect(card.querySelector(".pp-property-warning")?.textContent).toContain(
+						modalIndex === 1 ? "one has" : "two has"
+					);
+				}
+				const pills = card.querySelectorAll<HTMLButtonElement>(".pp-option-pill");
+				pills[modalIndex === 1 ? 1 : 0].click();
+				this.contentEl.querySelector(".pp-finish-button").click();
+			};
+
+			await plugin.copyPropertiesFromActiveTabGroup();
+
+			// Each note keeps its own choice; the union resolves the remaining
+			// scalar collision in a third modal.
+			expect(fileContents[f1.path]).toBe("---\nstatus: one-b\n---\n");
+			expect(fileContents[f2.path]).toBe("---\nstatus: two-a\n---\n");
+		});
+
 		it("uses singular wording when exactly one value is copied", async () => {
 			const file = new obsidianMock.TFile("note.md");
 			const { plugin, fileCache } = createPlugin({ activeFile: file });
@@ -520,6 +784,186 @@ describe("PropertyPorter", () => {
 			expect(plugin.clipboard).toEqual({ tags: ["a"] });
 		});
 
+		it("asks to resolve a merge-mode scalar collision before pasting", async () => {
+			const target = new obsidianMock.TFile("dest.md");
+			const { plugin, fileCache } = createPlugin();
+			await plugin.onload();
+			plugin.clipboard = { status: "clip" };
+			fileCache[target.path] = { frontmatter: { status: "target" } };
+			const modal = vi
+				.spyOn(plugin, "openPropertySelectionModal")
+				.mockResolvedValue({ properties: { status: "target" }, cancelled: false });
+
+			await plugin.pasteProperties(target);
+
+			expect(modal).toHaveBeenCalledWith(
+				{ status: ["clip", "target"] },
+				{ status: { clipboardOrigin: undefined, conflictNotes: ["dest"] } }
+			);
+			expect(fileCache[target.path].frontmatter).toEqual({ status: "target" });
+		});
+
+		it("repairs duplicate keys in the paste target before pasting", async () => {
+			const active = new obsidianMock.TFile("active.md");
+			const target = new obsidianMock.TFile("dup.md");
+			// Deliberately leave the metadata cache empty.
+			const { plugin, app, fileCache, fileContents } = createPlugin({
+				activeFile: active,
+				markdownFiles: [active, target],
+				fileContents: {
+					[target.path]: [
+						"---",
+						"status: old",
+						"modified_date: 2026-10-13T16:58:17",
+						"modified_date: 2026-10-13T15:45:00",
+						"---",
+						"",
+					].join("\n"),
+				},
+			});
+			await plugin.onload();
+			plugin.settings.onlyInclude = "";
+			plugin.settings.excludeKeys = "";
+			const originalText = fileContents[target.path];
+			const modify = vi.spyOn(app.vault, "modify");
+			const process = vi.spyOn(app.fileManager, "processFrontMatter");
+			plugin.clipboard = { status: "clip", modified_date: "2026-10-13T16:58:17" };
+			plugin.clipboardOrigin = "active";
+
+			let modalIndex = 0;
+			let secondWarning = "";
+			obsidianMock.Modal.prototype.open = function (this: any) {
+				this.onOpen();
+				modalIndex++;
+				const findCard = (name: string) =>
+					Array.from(this.contentEl.querySelectorAll(".pp-property-card")).find(
+						(c: any) => c.querySelector(".pp-property-name")?.textContent === name
+					) as HTMLElement;
+				if (modalIndex === 1) {
+					// Duplicate-resolution modal: pick the first modified_date.
+					const card = findCard("modified_date");
+					expect(card.querySelector(".pp-property-warning")?.textContent).toContain(
+						"dup has more than one modified_date value"
+					);
+					const pills = card.querySelectorAll<HTMLButtonElement>(".pp-option-pill");
+					pills[0].click();
+				} else {
+					// Merge conflict on status only: the repaired
+					// modified_date matches the clipboard, so it is not a
+					// conflict.
+					const card = findCard("status");
+					secondWarning = card.querySelector(".pp-property-warning")?.textContent ?? "";
+					const pills = card.querySelectorAll<HTMLButtonElement>(".pp-option-pill");
+					expect(pills.length).toBe(2);
+					pills[0].click(); // keep the clipboard value
+				}
+				this.contentEl.querySelector(".pp-finish-button").click();
+			};
+
+			await plugin.pasteProperties(target);
+
+			// The merge conflict names the clipboard origin and the target.
+			expect(secondWarning).toContain("clipboard (from active)");
+			expect(secondWarning).toContain("dup");
+			// The target was repaired and then pasted into.
+			expect(modalIndex).toBe(2);
+			expect(fileContents[target.path]).toBe(
+				originalText.replace("modified_date: 2026-10-13T15:45:00\n", "")
+			);
+			expect(modify.mock.invocationCallOrder[0]).toBeLessThan(process.mock.invocationCallOrder[0]);
+			expect(fileCache[target.path].frontmatter).toEqual({
+				status: "clip",
+				modified_date: "2026-10-13T16:58:17",
+			});
+		});
+
+		it("does not write the staged repair when the merge conflict modal is cancelled", async () => {
+			const active = new obsidianMock.TFile("active.md");
+			const target = new obsidianMock.TFile("dup.md");
+			const noteText = [
+				"---",
+				"status: target",
+				"modified_date: 2026-10-13T16:58:17",
+				"modified_date: 2026-10-13T15:45:00",
+				"---",
+				"",
+			].join("\n");
+			const { plugin, app, fileContents } = createPlugin({
+				activeFile: active,
+				markdownFiles: [active, target],
+				fileContents: { [target.path]: noteText },
+			});
+			const modify = vi.spyOn(app.vault, "modify");
+			const process = vi.spyOn(app.fileManager, "processFrontMatter");
+			await plugin.onload();
+			plugin.settings.onlyInclude = "";
+			plugin.settings.excludeKeys = "";
+			plugin.clipboard = { status: "clip" };
+			plugin.clipboardOrigin = "active";
+
+			let modalIndex = 0;
+			obsidianMock.Modal.prototype.open = function (this: any) {
+				this.onOpen();
+				modalIndex++;
+				if (modalIndex === 1) {
+					// Duplicate-resolution modal succeeds: pick the first modified_date.
+					const card = Array.from(this.contentEl.querySelectorAll(".pp-property-card")).find(
+						(c: any) => c.querySelector(".pp-property-name")?.textContent === "modified_date"
+					) as HTMLElement;
+					const pills = card.querySelectorAll<HTMLButtonElement>(".pp-option-pill");
+					pills[0].click();
+					this.contentEl.querySelector(".pp-finish-button").click();
+				} else {
+					// Merge-conflict modal is cancelled: nothing may be written.
+					expect(this.contentEl.textContent).toContain("Conflicting values");
+					expect(this.contentEl.textContent).toContain("status");
+					this.close();
+				}
+			};
+
+			await plugin.pasteProperties(target);
+
+			// The staged repair was never applied and the clipboard is untouched.
+			expect(modalIndex).toBe(2);
+			expect(modify).not.toHaveBeenCalled();
+			expect(process).not.toHaveBeenCalled();
+			expect(fileContents[target.path]).toBe(noteText);
+			expect(plugin.clipboard).toEqual({ status: "clip" });
+		});
+
+		it("leaves the target untouched when the paste conflict modal is cancelled", async () => {
+			const target = new obsidianMock.TFile("dest.md");
+			const { plugin, fileCache } = createPlugin();
+			await plugin.onload();
+			plugin.clipboard = { status: "clip" };
+			fileCache[target.path] = { frontmatter: { status: "target" } };
+			const modal = vi
+				.spyOn(plugin, "openPropertySelectionModal")
+				.mockResolvedValue({ properties: {}, cancelled: true });
+
+			await plugin.pasteProperties(target);
+
+			expect(fileCache[target.path].frontmatter).toEqual({ status: "target" });
+			expect(plugin.clipboard).toEqual({ status: "clip" });
+		});
+
+		it("does not ask in overwrite mode; the clipboard value wins", async () => {
+			const target = new obsidianMock.TFile("dest.md");
+			const { plugin, fileCache } = createPlugin();
+			await plugin.onload();
+			plugin.settings.pasteMode = "overwrite";
+			plugin.clipboard = { status: "clip" };
+			fileCache[target.path] = { frontmatter: { status: "target" } };
+			const modal = vi
+				.spyOn(plugin, "openPropertySelectionModal")
+				.mockResolvedValue({ properties: {}, cancelled: false });
+
+			await plugin.pasteProperties(target);
+
+			expect(modal).not.toHaveBeenCalled();
+			expect(fileCache[target.path].frontmatter).toEqual({ status: "clip" });
+		});
+
 		it("shows notice when no target files exist", async () => {
 			const { plugin } = createPlugin();
 			await plugin.onload();
@@ -643,6 +1087,33 @@ describe("PropertyPorter", () => {
 			expect(plugin.clipboard).toEqual({ tags: ["a"] });
 		});
 
+		it("resolves paste conflicts once and applies the choice to every note", async () => {
+			const f1 = new obsidianMock.TFile("a.md");
+			const f2 = new obsidianMock.TFile("b.md");
+			const { plugin, fileCache } = createPlugin({
+				leaves: [
+					{ file: f1, group: "g1" },
+					{ file: f2, group: "g1" },
+				],
+			});
+			await plugin.onload();
+			plugin.clipboard = { status: "clip" };
+			fileCache[f1.path] = { frontmatter: { status: "one" } };
+			fileCache[f2.path] = { frontmatter: { status: "two" } };
+			const modal = vi
+				.spyOn(plugin, "openPropertySelectionModal")
+				.mockResolvedValue({ properties: { status: "picked" }, cancelled: false });
+
+			await plugin.pasteIntoActiveTabGroup();
+
+			expect(modal).toHaveBeenCalledWith(
+				{ status: ["clip", "one", "two"] },
+				{ status: { clipboardOrigin: undefined, conflictNotes: ["a", "b"] } }
+			);
+			expect(fileCache[f1.path].frontmatter).toEqual({ status: "picked" });
+			expect(fileCache[f2.path].frontmatter).toEqual({ status: "picked" });
+		});
+
 		it("does not paste into duplicates of the same file in the group", async () => {
 			const f1 = new obsidianMock.TFile("a.md");
 			const { plugin, fileCache } = createPlugin({
@@ -673,7 +1144,7 @@ describe("PropertyPorter", () => {
 			);
 		});
 
-		it("unions list properties across the group and keeps first scalar", async () => {
+		it("unions list properties across the group when scalars agree", async () => {
 			const f1 = new obsidianMock.TFile("a.md");
 			const f2 = new obsidianMock.TFile("b.md");
 			const other = new obsidianMock.TFile("other.md");
@@ -686,17 +1157,65 @@ describe("PropertyPorter", () => {
 			});
 			await plugin.onload();
 			plugin.settings.onlyInclude = "tags, status";
-			fileCache[f1.path] = { frontmatter: { tags: ["x"], status: "one" } };
-			fileCache[f2.path] = { frontmatter: { tags: ["y", "x"], status: "two" } };
+			fileCache[f1.path] = { frontmatter: { tags: ["x"], status: "same" } };
+			fileCache[f2.path] = { frontmatter: { tags: ["y", "x"], status: "same" } };
 
 			await plugin.copyPropertiesFromActiveTabGroup();
 
 			// tags union across the group (f1, f2); "other" is a different group
-			// and must be excluded. status is a scalar, so the first note wins.
+			// and must be excluded. Agreeing scalars copy without a conflict.
 			expect(plugin.clipboard).toEqual({
 				tags: ["x", "y"],
-				status: "one",
+				status: "same",
 			});
+		});
+
+		it("asks once to resolve scalar conflicts across the group", async () => {
+			const f1 = new obsidianMock.TFile("a.md");
+			const f2 = new obsidianMock.TFile("b.md");
+			const { plugin, fileCache } = createPlugin({
+				leaves: [
+					{ file: f1, group: "g1" },
+					{ file: f2, group: "g1" },
+				],
+			});
+			await plugin.onload();
+			plugin.settings.onlyInclude = "tags, status";
+			fileCache[f1.path] = { frontmatter: { tags: ["x"], status: "one" } };
+			fileCache[f2.path] = { frontmatter: { tags: ["y"], status: "two" } };
+			const modal = vi
+				.spyOn(plugin, "openPropertySelectionModal")
+				.mockResolvedValue({ properties: { status: "two" }, cancelled: false });
+
+			await plugin.copyPropertiesFromActiveTabGroup();
+
+			expect(modal).toHaveBeenCalledWith({ status: ["one", "two"] }, {
+				status: { conflictNotes: ["a", "b"] },
+			});
+			expect(plugin.clipboard).toEqual({ tags: ["x", "y"], status: "two" });
+		});
+
+		it("keeps the clipboard when the copy conflict modal is cancelled", async () => {
+			const f1 = new obsidianMock.TFile("a.md");
+			const f2 = new obsidianMock.TFile("b.md");
+			const { plugin, fileCache } = createPlugin({
+				leaves: [
+					{ file: f1, group: "g1" },
+					{ file: f2, group: "g1" },
+				],
+			});
+			await plugin.onload();
+			plugin.settings.onlyInclude = "tags, status";
+			fileCache[f1.path] = { frontmatter: { status: "one" } };
+			fileCache[f2.path] = { frontmatter: { status: "two" } };
+			plugin.clipboard = { keep: "me" };
+			const modal = vi
+				.spyOn(plugin, "openPropertySelectionModal")
+				.mockResolvedValue({ properties: {}, cancelled: true });
+
+			await plugin.copyPropertiesFromActiveTabGroup();
+
+			expect(plugin.clipboard).toEqual({ keep: "me" });
 		});
 
 		it("does not read duplicates of the same file in the group twice", async () => {
