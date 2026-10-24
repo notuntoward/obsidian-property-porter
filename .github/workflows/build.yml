@@ -19,17 +19,33 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      # The plugin resolves the shared library through the local junction
+      # "file:../obsidian-commons" (see obsidian-commons docs/MIGRATING.md),
+      # so CI must check out both repos as siblings. Commons is pinned to a
+      # commit for reproducible builds; update the ref when bumping commons.
+      - name: Checkout plugin
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          path: obsidian-property-porter
+
+      - name: Checkout commons
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: notuntoward/obsidian-commons
+          ref: cc70f5ea4cf7c4f290619a974584b20072d8bf03
+          path: obsidian-commons
 
       - name: Setup Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f76820020 # v4.4.0
         with:
           node-version: 20
           cache: npm
+          cache-dependency-path: obsidian-property-porter/package-lock.json
 
       - name: Install dependencies
         run: npm ci
+        working-directory: obsidian-property-porter
 
       - name: Run ESLint and build
         run: npm run build
+        working-directory: obsidian-property-porter
