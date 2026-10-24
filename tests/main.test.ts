@@ -38,7 +38,7 @@ function createApp(options: any = {}) {
 
 	// Build workspace leaves for the active-tab-group feature. Each entry in
 	// `leaves` is { file, group? }; leaves sharing the same `group` value are
-	// considered part of the same tab group. The active leaf is leaves[0].
+	// considered part of the same tab group. The active leaf defaults to leaves[0].
 	// Leaves in the same group share a single WorkspaceTabs instance so the
 	// `leaf.parent === activeParent` identity check works like real Obsidian.
 	const groupMap = new Map<string, any>();
@@ -60,7 +60,7 @@ function createApp(options: any = {}) {
 	const app = new obsidianMock.App({
 		workspace: {
 			getActiveFile: () => activeFile,
-			activeLeaf: leaves[0] ?? null,
+			activeLeaf: options.activeLeaf !== undefined ? options.activeLeaf : leaves[0] ?? null,
 			iterateAllLeaves: (cb: (leaf: any) => void) => {
 				for (const leaf of leaves) cb(leaf);
 			},
@@ -172,7 +172,7 @@ describe("PropertyPorter", () => {
 				expect(modify).not.toHaveBeenCalled();
 				if (this instanceof SourceRepairPermissionModal) {
 					expect(this.contentEl.textContent).toContain(file.path);
-					const label = allow ? "Repair notes and copy" : "Copy only";
+					const label = allow ? "Repair note and copy" : "Copy only";
 					Array.from(this.contentEl.querySelectorAll("button"))
 						.find((b: any) => b.textContent === label).click();
 				} else {
@@ -190,6 +190,19 @@ describe("PropertyPorter", () => {
 			expect(plugin.clipboard).toEqual({ x: "1" });
 			expect(fileContents[file.path]).toBe(allow ? '---\nx: "1"\n---\nBody\n' : original);
 			expect(modify).toHaveBeenCalledTimes(allow ? 1 : 0);
+		});
+
+		it("defaults source repair to the focused, primary singular action", () => {
+			const { app } = createApp();
+			const file = new obsidianMock.TFile("source.md");
+			const modal = new SourceRepairPermissionModal(app as any, [file], vi.fn());
+			document.body.appendChild(modal.contentEl);
+
+			modal.onOpen();
+
+			const repairButton = modal.contentEl.querySelector<HTMLButtonElement>("button.mod-cta")!;
+			expect(repairButton.textContent).toBe("Repair note and copy");
+			expect(document.activeElement).toBe(repairButton);
 		});
 
 		it("dismisses source repair permission without writing but still copies", async () => {
@@ -224,7 +237,7 @@ describe("PropertyPorter", () => {
 
 			expect(loadSettings).toHaveBeenCalled();
 			expect(plugin.statusBarItem).toBeDefined();
-			expect(addCommand).toHaveBeenCalledTimes(9);
+			expect(addCommand).toHaveBeenCalledTimes(8);
 			expect(addSettingTab).toHaveBeenCalledWith(expect.any(PropertyPorterSettingTab));
 		});
 
@@ -255,22 +268,20 @@ describe("PropertyPorter", () => {
 			run("clear-clipboard");
 			expect(clearClipboard).toHaveBeenCalled();
 
-			const selectTagsToPaste = vi.spyOn(plugin, "selectTagsToPaste").mockResolvedValue();
-			await run("select-tags-to-paste");
-			expect(selectTagsToPaste).toHaveBeenCalled();
-
-			const selectPropertiesToPaste = vi.spyOn(plugin, "selectPropertiesToPaste").mockResolvedValue();
-			await run("select-properties-to-paste");
-			expect(selectPropertiesToPaste).toHaveBeenCalled();
+			const editPropertyClipboard = vi.spyOn(plugin, "editPropertyClipboard").mockResolvedValue();
+			await run("edit-property-clipboard");
+			expect(editPropertyClipboard).toHaveBeenCalled();
 		});
 
-		it("registers the select-properties-to-paste command with 'Select properties to paste' name", async () => {
+		it("registers one combined clipboard editor command", async () => {
 			const { plugin } = createPlugin();
 			const addCommand = vi.spyOn(plugin, "addCommand");
 			await plugin.onload();
 
-			const call = addCommand.mock.calls.find((c) => c[0].id === "select-properties-to-paste");
-			expect(call?.[0].name).toBe("Select properties to paste");
+			const call = addCommand.mock.calls.find((c) => c[0].id === "edit-property-clipboard");
+			expect(call?.[0].name).toBe("Edit property clipboard");
+			expect(addCommand.mock.calls.some((c) => c[0].id === "select-tags-to-paste")).toBe(false);
+			expect(addCommand.mock.calls.some((c) => c[0].id === "select-properties-to-paste")).toBe(false);
 		});
 
 		it("registers the clear command with 'Clear properties clipboard' name", async () => {
@@ -280,15 +291,6 @@ describe("PropertyPorter", () => {
 
 			const call = addCommand.mock.calls.find((c) => c[0].id === "clear-clipboard");
 			expect(call?.[0].name).toBe("Clear properties clipboard");
-		});
-
-		it("registers the tag-picker command with an accurate 'Select tags to paste' name, not the misleading 'properties' wording", async () => {
-			const { plugin } = createPlugin();
-			const addCommand = vi.spyOn(plugin, "addCommand");
-			await plugin.onload();
-
-			const call = addCommand.mock.calls.find((c) => c[0].id === "select-tags-to-paste");
-			expect(call?.[0].name).toBe("Select tags to paste");
 		});
 
 		it("clears clipboard and updates status bar on unload", async () => {
@@ -532,8 +534,9 @@ describe("PropertyPorter", () => {
 					(c: any) => c.querySelector(".pp-property-name")?.textContent === "modified_date"
 				) as HTMLElement;
 				void card;
-				// Clear the value, then finish: the property is removed.
-				this.clearAll();
+				// Exclude only the duplicate property, preserving the rest of
+				// the source properties selected for the clipboard.
+				card.querySelector(".pp-property-remove-btn").click();
 				this.contentEl.querySelector(".pp-finish-button").click();
 			};
 
@@ -782,7 +785,19 @@ describe("PropertyPorter", () => {
 			await plugin.pasteProperties(target);
 
 			expect(fileCache[target.path].frontmatter).toEqual({ tags: ["b", "a"] });
-			expect(spy).toHaveBeenCalledWith("Property Porter: Pasted properties into dest");
+			expect(spy).toHaveBeenCalledWith("Property Porter: Pasted 1 tag into dest");
+		});
+
+		it("reports property and individual value counts after a paste", async () => {
+			const target = new obsidianMock.TFile("dest.md");
+			const { plugin } = createPlugin();
+			await plugin.onload();
+			plugin.clipboard = { title: "T", tags: ["a", "b"] };
+			const spy = vi.spyOn(obsidianMock, "Notice");
+
+			await plugin.pasteProperties(target);
+
+			expect(spy).toHaveBeenCalledWith("Property Porter: Pasted 2 properties (3 values) into dest");
 		});
 
 		it("keeps the clipboard after a paste so it can be pasted again", async () => {
@@ -836,6 +851,11 @@ describe("PropertyPorter", () => {
 						conflictNotes: ["dest"],
 						valueSources: { status: { target: [{ note: "dest", count: 1 }] } },
 					},
+				},
+				{
+					title: "Resolve property conflicts",
+					conflictNames: ["status"],
+					finishText: "Continue",
 				}
 			);
 			expect(fileCache[target.path].frontmatter).toEqual({ status: "target" });
@@ -1104,6 +1124,29 @@ describe("PropertyPorter", () => {
 			expect(fileCache[other.path]).toBeUndefined();
 		});
 
+		it("uses the active file to recover the tab group when activeLeaf is unavailable", async () => {
+			const active = new obsidianMock.TFile("active.md");
+			const sibling = new obsidianMock.TFile("sibling.md");
+			const other = new obsidianMock.TFile("other.md");
+			const { plugin, fileCache } = createPlugin({
+				activeFile: active,
+				activeLeaf: null,
+				leaves: [
+					{ file: active, group: "g1" },
+					{ file: sibling, group: "g1" },
+					{ file: other, group: "g2" },
+				],
+			});
+			await plugin.onload();
+			plugin.clipboard = { tags: ["a"] };
+
+			await plugin.pasteIntoActiveTabGroup();
+
+			expect(fileCache[active.path].frontmatter).toEqual({ tags: ["a"] });
+			expect(fileCache[sibling.path].frontmatter).toEqual({ tags: ["a"] });
+			expect(fileCache[other.path]).toBeUndefined();
+		});
+
 		it("shows exactly one summary notice and keeps the clipboard", async () => {
 			const f1 = new obsidianMock.TFile("a.md");
 			const f2 = new obsidianMock.TFile("b.md");
@@ -1120,7 +1163,7 @@ describe("PropertyPorter", () => {
 			await plugin.pasteIntoActiveTabGroup();
 
 			expect(spy).toHaveBeenCalledTimes(1);
-			expect(spy).toHaveBeenCalledWith("Property Porter: Pasted properties into 2 notes");
+			expect(spy).toHaveBeenCalledWith("Property Porter: Pasted 1 tag into 2 notes");
 			expect(plugin.clipboard).toEqual({ tags: ["a"] });
 		});
 
@@ -1156,6 +1199,11 @@ describe("PropertyPorter", () => {
 							},
 						},
 					},
+				},
+				{
+					title: "Resolve property conflicts",
+					conflictNames: ["status"],
+					finishText: "Continue",
 				}
 			);
 			expect(fileCache[f1.path].frontmatter).toEqual({ status: "picked" });
@@ -1233,21 +1281,29 @@ describe("PropertyPorter", () => {
 			fileCache[f2.path] = { frontmatter: { tags: ["y"], status: "two" } };
 			const modal = vi
 				.spyOn(plugin, "openPropertySelectionModal")
-				.mockResolvedValue({ properties: { status: "two" }, cancelled: false });
+				.mockResolvedValue({ properties: { tags: ["x", "y"], status: "two" }, cancelled: false });
 
 			await plugin.copyPropertiesFromActiveTabGroup();
 
-			expect(modal).toHaveBeenCalledWith({ status: ["one", "two"] }, {
-				status: {
-					conflictNotes: ["a", "b"],
-					valueSources: {
-						status: {
-							one: [{ note: "a", count: 1 }],
-							two: [{ note: "b", count: 1 }],
+			expect(modal).toHaveBeenCalledWith(
+				{ status: ["one", "two"], tags: ["x", "y"] },
+				{
+					status: {
+						conflictNotes: ["a", "b"],
+						valueSources: {
+							status: {
+								one: [{ note: "a", count: 1 }],
+								two: [{ note: "b", count: 1 }],
+							},
 						},
 					},
 				},
-			});
+				{
+					title: "Resolve property conflicts",
+					conflictNames: ["status"],
+					finishText: "Continue",
+				}
+			);
 			expect(plugin.clipboard).toEqual({ tags: ["x", "y"], status: "two" });
 		});
 

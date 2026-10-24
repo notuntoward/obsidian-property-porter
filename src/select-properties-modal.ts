@@ -4,6 +4,7 @@ import {
 	getPropertySuggestions,
 	getPropertyType,
 	normalizeTag,
+	rankCandidates,
 	ValuePicker,
 	type VaultMetadataCatalog,
 } from "commons/properties";
@@ -31,6 +32,12 @@ export interface ConflictCardContext {
 	clipboardOrigin?: string;
 	/** Notes and occurrence counts for each candidate value. */
 	valueSources?: Record<string, Record<string, { note: string; count: number }[]>>;
+}
+
+export interface SelectPropertiesModalOptions {
+	title?: string;
+	conflictNames?: readonly string[];
+	finishText?: string;
 }
 
 function conflictWarningText(state: PropertyCardState): string {
@@ -71,6 +78,14 @@ function duplicateNoticeText(
 		.join(" ");
 }
 
+function getDateTimeOffset(value: string): string {
+	return value.match(/(Z|[+-]\d{2}:\d{2})$/i)?.[1] ?? "";
+}
+
+function preserveDateTimeOffset(value: string, offset: string): string {
+	return getDateTimeOffset(value) ? value : `${value}${offset}`;
+}
+
 export class PropertyNameSuggest extends AbstractInputSuggest<string> {
 	constructor(
 		app: App,
@@ -79,22 +94,19 @@ export class PropertyNameSuggest extends AbstractInputSuggest<string> {
 		private readonly onSelectProperty: (name: string) => void
 	) {
 		super(app, inputEl);
+		this.onSelect((name) => this.onSelectProperty(name));
 	}
 
 	getSuggestions(query: string): string[] {
 		const lower = query.trim().toLowerCase();
 		if (!lower) return [];
-		const available = this.getSuggestionsList();
-		return available.filter((name) => name.toLowerCase().includes(lower)).slice(0, 20);
+		return rankCandidates(query.trim(), this.getSuggestionsList(), 20);
 	}
 
 	renderSuggestion(value: string, el: HTMLElement): void {
 		el.setText(value);
 	}
 
-	selectSuggestion(value: string): void {
-		this.onSelectProperty(value);
-	}
 }
 
 export class SelectPropertiesModal extends Modal {
@@ -104,8 +116,7 @@ export class SelectPropertiesModal extends Modal {
 	private hintEl: HTMLElement | null = null;
 	private doneButton: HTMLButtonElement | null = null;
 	private clearAllButton: HTMLButtonElement | null = null;
-	private addPropertyInput: HTMLInputElement | null = null;
-	private addPropertySuggest: PropertyNameSuggest | null = null;
+	private propertyPicker: ValuePicker | null = null;
 
 	constructor(
 		app: App,
@@ -113,7 +124,8 @@ export class SelectPropertiesModal extends Modal {
 		initialProperties: Record<string, unknown>,
 		private readonly onSubmit: (selected: Record<string, unknown>) => void,
 		private readonly onCancel: () => void,
-		private readonly conflictContext: Record<string, ConflictCardContext> = {}
+		private readonly conflictContext: Record<string, ConflictCardContext> = {},
+		private readonly options: SelectPropertiesModalOptions = {}
 	) {
 		super(app);
 		this.initPropertyStates(initialProperties);
@@ -141,6 +153,10 @@ export class SelectPropertiesModal extends Modal {
 			}
 
 			const context = this.conflictContext[name];
+			const propertyType = getPropertyType(this.catalog, name, candidates);
+			if (propertyType === "date" || propertyType === "datetime") {
+				candidates.sort((left, right) => Date.parse(right) - Date.parse(left));
+			}
 			const hasConflict = !isList && candidates.length > 1;
 			const selected = isList
 				? [...candidates]
@@ -161,50 +177,67 @@ export class SelectPropertiesModal extends Modal {
 	}
 
 	get inputEl(): HTMLInputElement | null {
-		return this.addPropertyInput;
+		return this.propertyPicker?.inputEl ?? null;
 	}
 
 	onOpen(): void {
 		this.submitted = false;
 		this.contentEl.empty();
 		this.contentEl.addClass("pp-select-properties-modal");
-		this.titleEl.setText("Select properties to paste");
+		this.titleEl.setText(this.options.title ?? "Edit property clipboard");
 
 		// Search / add property container
 		const searchContainer = this.contentEl.createDiv({ cls: "pp-search-container" });
-		this.addPropertyInput = searchContainer.createEl("input", {
-			cls: "pp-search-input",
-			type: "text",
-			placeholder: "Add property to selection…",
-			attr: { "aria-label": "Add property to selection" },
+		this.propertyPicker = new ValuePicker(this.app, searchContainer, {
+			suggestions: () =>
+				this.propertyPicker?.inputEl.value.trim()
+					? this.catalog.properties.map(({ name }) => name).filter((name) => !this.propertyStates.has(name))
+					: [],
+			multiple: false,
+			showSingleValueChip: true,
+			allowCreate: true,
+			kind: "property",
+			classPrefix: "pp",
+			placeholder: "Search or add a property…",
+			ariaLabel: "Search or add a property to the clipboard",
+			getCreateLabel: (name) => `Add property "${name}"…`,
+			onChange: (values) => {
+				const name = values[0];
+				if (!name) return;
+				const state = this.addProperty(name);
+				this.propertyPicker?.setValue([]);
+				this.propertyPicker?.refresh();
+				state?.picker?.inputEl.focus();
+			},
 		});
 
-		this.addPropertySuggest = new PropertyNameSuggest(
-			this.app,
-			this.addPropertyInput,
-			() => this.catalog.properties.map((p) => p.name).filter((name) => !this.propertyStates.has(name)),
-			(name) => {
-				this.addProperty(name);
-				if (this.addPropertyInput) this.addPropertyInput.value = "";
-			}
+		const conflictNames = new Set(
+			this.options.conflictNames ??
+				Array.from(this.propertyStates.values())
+					.filter((state) => state.hasConflict)
+					.map((state) => state.name)
 		);
-
-		this.addPropertyInput.addEventListener("keydown", (e: KeyboardEvent) => {
-			if (e.key === "Enter") {
-				const val = this.addPropertyInput?.value.trim();
-				if (val) {
-					e.preventDefault();
-					this.addProperty(val);
-					if (this.addPropertyInput) this.addPropertyInput.value = "";
-				}
-			}
-		});
-
-		// Properties list
-		this.listContainerEl = this.contentEl.createDiv({ cls: "pp-properties-list" });
-		for (const state of this.propertyStates.values()) {
-			this.renderPropertyCard(state, this.listContainerEl);
+		const conflictStates = Array.from(this.propertyStates.values()).filter(
+			(state) => conflictNames.has(state.name) && state.hasConflict
+		);
+		if (conflictStates.length) {
+			const section = this.contentEl.createDiv({ cls: "pp-conflict-section" });
+			section.createEl("h3", { text: "Resolve conflicts" });
+			const conflictContainer = section.createDiv({ cls: "pp-properties-list pp-conflicts-list" });
+			for (const state of conflictStates) this.renderPropertyCard(state, conflictContainer);
 		}
+
+		const otherStates = Array.from(this.propertyStates.values()).filter(
+			(state) => !conflictStates.includes(state)
+		);
+		if (conflictStates.length) {
+			const section = this.contentEl.createDiv({ cls: "pp-properties-section" });
+			section.createEl("h3", { text: "Properties to paste" });
+			this.listContainerEl = section.createDiv({ cls: "pp-properties-list" });
+		} else {
+			this.listContainerEl = this.contentEl.createDiv({ cls: "pp-properties-list" });
+		}
+		for (const state of otherStates) this.renderPropertyCard(state, this.listContainerEl);
 
 		// Controls
 		const controlsEl = this.contentEl.createDiv({ cls: "pp-multi-select-controls" });
@@ -219,38 +252,40 @@ export class SelectPropertiesModal extends Modal {
 		this.clearAllButton.addEventListener("click", () => this.clearAll());
 
 		this.doneButton = buttonsEl.createEl("button", {
-			text: "Finish selection",
+			text: this.options.finishText ?? "Finish selection",
 			cls: ["mod-cta", "pp-finish-button"],
 			type: "button",
 		});
 		this.doneButton.addEventListener("click", () => this.submit());
+		this.contentEl.addEventListener("keydown", this.handleConflictEnter, true);
 
 		this.updateControls();
 
 		const win = ownerWindow(this.contentEl) ?? window;
 		setTimeoutIn(win, () => {
-			const hasConflict = Array.from(this.propertyStates.values()).some((state) => state.hasConflict);
-			if (hasConflict) {
+			if (conflictStates.length) {
 				const conflictInput = this.contentEl.querySelector<HTMLInputElement>(".pp-conflict-option input");
 				(conflictInput ?? this.doneButton)?.focus();
 				return;
 			}
-			this.addPropertyInput?.focus();
+			this.propertyPicker?.inputEl.focus();
 		}, 0);
 	}
 
 	onClose(): void {
+		this.contentEl.removeEventListener("keydown", this.handleConflictEnter, true);
 		for (const state of this.propertyStates.values()) {
 			state.picker?.destroy();
 		}
-		this.addPropertySuggest = null;
+		this.propertyPicker?.destroy();
+		this.propertyPicker = null;
 		this.contentEl.empty();
 		if (!this.submitted) this.onCancel();
 	}
 
-	addProperty(name: string): void {
+	addProperty(name: string): PropertyCardState | undefined {
 		const trimmed = name.trim();
-		if (!trimmed || this.propertyStates.has(trimmed)) return;
+		if (!trimmed || this.propertyStates.has(trimmed)) return this.propertyStates.get(trimmed);
 
 		const isList = isListProperty(this.catalog, trimmed);
 		const state: PropertyCardState = {
@@ -265,6 +300,8 @@ export class SelectPropertiesModal extends Modal {
 			this.renderPropertyCard(state, this.listContainerEl);
 		}
 		this.updateControls();
+		state.cardEl?.scrollIntoView?.({ block: "nearest" });
+		return state;
 	}
 
 	removeProperty(name: string): void {
@@ -320,9 +357,18 @@ export class SelectPropertiesModal extends Modal {
 	}
 
 	private renderScalarBody(state: PropertyCardState, cardEl: HTMLElement): void {
-		const isDateProperty = ["date", "datetime"].includes(
-			getPropertyType(this.catalog, state.name) ?? ""
-		);
+		const propertyType = getPropertyType(this.catalog, state.name, state.candidates);
+		const isDateProperty = propertyType === "date" || propertyType === "datetime";
+		const dateTimeOffset = { value: getDateTimeOffset(state.selected[0] ?? state.candidates[0] ?? "") };
+		const datePickerOptions =
+			propertyType === "date"
+				? { inputType: "date" as const }
+				: propertyType === "datetime"
+					? {
+							inputType: "datetime-local" as const,
+							parseInputValue: (value: string) => preserveDateTimeOffset(value, dateTimeOffset.value),
+						}
+					: {};
 		if (state.hasConflict) {
 			cardEl.createDiv({
 				cls: "pp-property-warning",
@@ -341,6 +387,7 @@ export class SelectPropertiesModal extends Modal {
 				pickerHost.hidden = false;
 				if (state.picker) {
 					state.picker.setValue([]);
+					state.picker.inputEl.focus();
 					return;
 				}
 				state.picker = new ValuePicker(this.app, pickerHost, {
@@ -351,17 +398,22 @@ export class SelectPropertiesModal extends Modal {
 					showSingleValueChip: true,
 					suppressNewBadge: isDateProperty,
 					confirmNewEntries: !isDateProperty,
+					...datePickerOptions,
 					allowCreate: true,
 					kind: "value",
 					context: state.name,
 					classPrefix: "pp",
+					getCreateLabel: (value) => `Add "${value}" as a new ${state.name} value…`,
 					placeholder: `Choose or type ${state.name}…`,
 					ariaLabel: `${state.name} value`,
 					onChange: (values) => {
 						state.selected = values.slice(0, 1);
+						dateTimeOffset.value =
+							getDateTimeOffset(state.selected[0] ?? "") || dateTimeOffset.value;
 						this.updateControls();
 					},
 				});
+				state.picker.inputEl.focus();
 			};
 
 			for (const candidate of state.candidates) {
@@ -384,6 +436,7 @@ export class SelectPropertiesModal extends Modal {
 					if (!radio.checked) return;
 					if (state.selected.length === 1 && state.selected[0] === candidate && !pickerHost?.hidden) return;
 					state.selected = [candidate];
+					dateTimeOffset.value = getDateTimeOffset(candidate);
 					if (pickerHost) pickerHost.hidden = true;
 					this.updateControls();
 				};
@@ -404,6 +457,8 @@ export class SelectPropertiesModal extends Modal {
 			const selectOther = (): void => {
 				if (!otherRadio.checked) return;
 				if (state.selected.length === 0 && pickerHost && !pickerHost.hidden) return;
+				dateTimeOffset.value =
+					getDateTimeOffset(state.selected[0] ?? "") || dateTimeOffset.value;
 				state.selected = [];
 				ensurePicker();
 				this.updateControls();
@@ -422,23 +477,23 @@ export class SelectPropertiesModal extends Modal {
 			showSingleValueChip: true,
 			suppressNewBadge: isDateProperty,
 			confirmNewEntries: !isDateProperty,
+			...datePickerOptions,
 			allowCreate: true,
 			kind: "value",
 			context: state.name,
 			classPrefix: "pp",
+			getCreateLabel: (value) => `Add "${value}" as a new ${state.name} value…`,
 			placeholder: `Choose or type ${state.name}…`,
 			ariaLabel: `${state.name} value`,
 			onChange: (values) => {
 				state.selected = values.slice(0, 1);
+				dateTimeOffset.value = getDateTimeOffset(state.selected[0] ?? "") || dateTimeOffset.value;
 				this.updateControls();
 			},
 		});
 	}
 
 	private renderListBody(state: PropertyCardState, cardEl: HTMLElement): void {
-		const isDateProperty = ["date", "datetime"].includes(
-			getPropertyType(this.catalog, state.name) ?? ""
-		);
 		let updatePills: (() => void) | undefined;
 
 		if (state.candidates.length > 0) {
@@ -522,12 +577,11 @@ export class SelectPropertiesModal extends Modal {
 			knownValues: state.candidates,
 			value: state.selected,
 			multiple: true,
-			suppressNewBadge: isDateProperty,
-			confirmNewEntries: !isDateProperty,
 			allowCreate: true,
 			kind: "value",
 			context: state.name,
 			classPrefix: "pp",
+			getCreateLabel: (value) => `Add "${value}" as a new ${state.name} value…`,
 			normalizeValue: isTagProp ? normalizeTag : undefined,
 			placeholder: `Add ${state.name}…`,
 			ariaLabel: `${state.name} values`,
@@ -598,10 +652,19 @@ export class SelectPropertiesModal extends Modal {
 				: `${totalPropsWithValues} propert${totalPropsWithValues === 1 ? "y" : "ies"} selected with values.`
 		);
 		if (this.doneButton) {
-			this.doneButton.setText(`Finish selection (${totalPropsWithValues})`);
+			this.doneButton.setText(`${this.options.finishText ?? "Save clipboard"} (${totalPropsWithValues})`);
 		}
 		if (this.clearAllButton) {
 			this.clearAllButton.disabled = totalPropsWithValues === 0;
 		}
 	}
+
+	private readonly handleConflictEnter = (event: KeyboardEvent): void => {
+		if (event.key !== "Enter") return;
+		if (!(event.target instanceof HTMLInputElement)) return;
+		if (!event.target.matches('.pp-conflict-option input[type="radio"]')) return;
+		event.preventDefault();
+		event.stopPropagation();
+		this.submit();
+	};
 }

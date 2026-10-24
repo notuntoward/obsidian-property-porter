@@ -41,7 +41,11 @@ import {
 	ValuePicker,
 } from "commons/properties";
 import { FileSuggestModal } from "./utils/modal";
-import { SelectPropertiesModal, type ConflictCardContext } from "./select-properties-modal";
+import {
+	SelectPropertiesModal,
+	type ConflictCardContext,
+	type SelectPropertiesModalOptions,
+} from "./select-properties-modal";
 
 export class SourceRepairPermissionModal extends Modal {
 	private answered = false;
@@ -51,20 +55,35 @@ export class SourceRepairPermissionModal extends Modal {
 	}
 
 	onOpen(): void {
-		this.titleEl.setText("Repair duplicate properties in source notes?");
+		this.titleEl.setText(
+			this.files.length === 1
+				? "Repair duplicate properties in source note?"
+				: "Repair duplicate properties in source notes?"
+		);
 		this.contentEl.createEl("p", {
 			text: "Your chosen values will be copied either way. Allow Property Porter to rewrite these source notes, keeping only your chosen occurrences and removing any properties you cleared?",
 		});
 		const list = this.contentEl.createEl("ul");
 		for (const file of this.files) list.createEl("li", { text: file.path });
-		for (const [label, allow] of [["Copy only", false], ["Repair notes and copy", true]] as const) {
-			const button = this.contentEl.createEl("button", { text: label });
-			button.addEventListener("click", () => {
-				this.answered = true;
-				this.answer(allow);
-				this.close();
-			});
-		}
+		const repairLabel = this.files.length === 1 ? "Repair note and copy" : "Repair notes and copy";
+		const repairButton = this.contentEl.createEl("button", {
+			text: repairLabel,
+			cls: "mod-cta",
+			type: "button",
+		});
+		repairButton.addEventListener("click", () => this.finish(true));
+		const copyButton = this.contentEl.createEl("button", {
+			text: "Copy only",
+			type: "button",
+		});
+		copyButton.addEventListener("click", () => this.finish(false));
+		repairButton.focus();
+	}
+
+	private finish(allow: boolean): void {
+		this.answered = true;
+		this.answer(allow);
+		this.close();
 	}
 
 	onClose(): void {
@@ -90,6 +109,28 @@ export const NOTICE_NO_PROPERTIES_TO_PASTE =
 	'Property Porter: No properties copied. Use "Copy properties" (not system clipboard).';
 export const NOTICE_CLEARED_COPIED_TAGS = "Property Porter: No tags selected. Cleared copied tags.";
 export const NOTICE_CLEARED_COPIED_PROPERTIES = "Property Porter: No properties selected. Cleared copied properties.";
+
+function selectedClipboardEntries(payload: Record<string, unknown>): Array<[string, unknown]> {
+	return Object.entries(payload).filter(([, value]) => !isEmptyPropertyValue(value));
+}
+
+function clipboardDescription(payload: Record<string, unknown>): string {
+	const entries = selectedClipboardEntries(payload);
+	const valueCount = entries.reduce((count, [, value]) => count + countPropertyValue(value), 0);
+	if (entries.length === 1 && ["tag", "tags"].includes(entries[0][0].toLowerCase())) {
+		return `${valueCount} tag${valueCount === 1 ? "" : "s"}`;
+	}
+	return `${entries.length} propert${entries.length === 1 ? "y" : "ies"} (${valueCount} value${
+		valueCount === 1 ? "" : "s"
+	})`;
+}
+
+function pastedClipboardNotice(payload: Record<string, unknown>, destinations: readonly string[]): string {
+	const entries = selectedClipboardEntries(payload);
+	if (entries.length === 0) return "Property Porter: Nothing pasted; no property values were selected.";
+	const destination = destinations.length === 1 ? destinations[0] : `${destinations.length} notes`;
+	return `Property Porter: Pasted ${clipboardDescription(payload)} into ${destination}`;
+}
 
 // Obsidian injects a positional cache object (`position`) into frontmatter
 // read from metadataCache/processFrontMatter; strip it before copy/paste so
@@ -159,15 +200,9 @@ export default class PropertyPorter extends Plugin {
 		});
 
 		this.addCommand({
-			id: "select-properties-to-paste",
-			name: "Select properties to paste",
-			callback: () => this.selectPropertiesToPaste(),
-		});
-
-		this.addCommand({
-			id: "select-tags-to-paste",
-			name: "Select tags to paste",
-			callback: () => this.selectTagsToPaste(),
+			id: "edit-property-clipboard",
+			name: "Edit property clipboard",
+			callback: () => this.editPropertyClipboard(),
 		});
 
 		this.addSettingTab(new PropertyPorterSettingTab(this.app, this));
@@ -261,11 +296,14 @@ export default class PropertyPorter extends Plugin {
 		cancelled: boolean;
 		/** Post-repair frontmatter per note that had duplicates. */
 		fullByFile: Map<TFile, Record<string, unknown>>;
+		/** User-selected values to include in clipboard copy operations. */
+		selectedByFile: Map<TFile, Record<string, unknown>>;
 		/** Applies the staged note rewrites. Call only on success. */
 		commit: () => Promise<void>;
 	} | null> {
 		const staged: Array<{ file: TFile; content: string }> = [];
 		const fullByFile = new Map<TFile, Record<string, unknown>>();
+		const selectedByFile = new Map<TFile, Record<string, unknown>>();
 
 		for (const file of files) {
 			const content = await this.readRawFileContent(file);
@@ -303,9 +341,22 @@ export default class PropertyPorter extends Plugin {
 				};
 			}
 
-			const result = await this.openPropertySelectionModal({ ...conflicts }, context);
-			if (result.cancelled) return { cancelled: true, fullByFile: new Map(), commit: async () => {} };
-
+			const copyCandidates = filterFrontmatter(parsed.map, this.settings.onlyInclude, this.settings.excludeKeys);
+			const initial = { ...(askBeforeRepair ? copyCandidates : {}), ...conflicts };
+			const conflictNames = Object.keys(conflicts);
+			const result = await this.openPropertySelectionModal(initial, context, {
+				title: "Resolve property conflicts",
+				conflictNames,
+				finishText: "Continue",
+			});
+			if (result.cancelled) {
+				return {
+					cancelled: true,
+					fullByFile: new Map(),
+					selectedByFile: new Map(),
+					commit: async () => {},
+				};
+			}
 			const keep: Record<string, unknown> = {};
 			const remove: string[] = [];
 			const decisions: DuplicateResolution[] = [];
@@ -324,6 +375,17 @@ export default class PropertyPorter extends Plugin {
 				decisions.push({ key, keep: value });
 			}
 
+			if (askBeforeRepair) {
+				const selected = Object.fromEntries(
+					Object.entries(result.properties).filter(([key]) => key in copyCandidates)
+				);
+				for (const key of Object.keys(conflicts)) {
+					if (key in keep && key in copyCandidates) selected[key] = keep[key];
+					else delete selected[key];
+				}
+				selectedByFile.set(file, selected);
+			}
+
 			staged.push({ file, content: applyDuplicateResolution(content, decisions) });
 			const full: Record<string, unknown> = { ...parsed.map, ...keep };
 			for (const key of remove) delete full[key];
@@ -338,7 +400,7 @@ export default class PropertyPorter extends Plugin {
 				await this.app.vault.modify(file, content);
 			}
 		};
-		return { cancelled: false, fullByFile, commit };
+		return { cancelled: false, fullByFile, selectedByFile, commit };
 	}
 
 	confirmSourceRepair(files: TFile[]): Promise<boolean> {
@@ -356,7 +418,9 @@ export default class PropertyPorter extends Plugin {
 		const duplicates = await this.resolveDuplicateKeys([source], true);
 		if (duplicates?.cancelled) return;
 		const full = duplicates?.fullByFile.get(source) ?? this.getParsedFrontmatter(source);
-		const filtered = filterFrontmatter(full, this.settings.onlyInclude, this.settings.excludeKeys);
+		const filtered =
+			duplicates?.selectedByFile.get(source) ??
+			filterFrontmatter(full, this.settings.onlyInclude, this.settings.excludeKeys);
 		await duplicates?.commit();
 		this.clipboardOrigin = source.basename;
 		this.applyClipboard(
@@ -374,7 +438,9 @@ export default class PropertyPorter extends Plugin {
 		const duplicates = await this.resolveDuplicateKeys([file], true);
 		if (duplicates?.cancelled) return;
 		const full = duplicates?.fullByFile.get(file) ?? this.getParsedFrontmatter(file);
-		const filtered = filterFrontmatter(full, this.settings.onlyInclude, this.settings.excludeKeys);
+		const filtered =
+			duplicates?.selectedByFile.get(file) ??
+			filterFrontmatter(full, this.settings.onlyInclude, this.settings.excludeKeys);
 		await duplicates?.commit();
 		this.clipboardOrigin = file.basename;
 		this.applyClipboard(filtered, collectValueSources([{ note: file.basename, frontmatter: filtered }]));
@@ -398,7 +464,10 @@ export default class PropertyPorter extends Plugin {
 		const collected = files.map((file) => {
 			const full = duplicates?.fullByFile.get(file) ?? this.getParsedFrontmatter(file);
 			fulls.push(full);
-			return filterFrontmatter(full, this.settings.onlyInclude, this.settings.excludeKeys);
+			return (
+				duplicates?.selectedByFile.get(file) ??
+				filterFrontmatter(full, this.settings.onlyInclude, this.settings.excludeKeys)
+			);
 		});
 		const valueSources = collectValueSources(
 			files.map((file, index) => ({ note: file.basename, frontmatter: collected[index] }))
@@ -453,18 +522,20 @@ export default class PropertyPorter extends Plugin {
 
 		// A merge-mode scalar collision is ambiguous: ask once before writing.
 		// Overwrite and skip modes already encode the user's choice.
-		const payload = structuredClone(this.clipboard);
+		let payload = structuredClone(this.clipboard);
 		const { conflicts, context } = this.gatherPasteConflicts([file], overrides);
 		if (Object.keys(conflicts).length > 0) {
 			const resolved = await this.resolveConflicts(payload, conflicts, context);
 			if (resolved === null) return; // cancelled: target stays untouched
-			await duplicates?.commit();
-			await this.writeProperties(file, resolved);
-		} else {
-			await duplicates?.commit();
-			await this.writeProperties(file, payload);
+			payload = resolved;
 		}
-		new Notice(`Property Porter: Pasted properties into ${file.basename}`);
+		if (selectedClipboardEntries(payload).length === 0) {
+			new Notice("Property Porter: Nothing pasted; no property values were selected.");
+			return;
+		}
+		await duplicates?.commit();
+		await this.writeProperties(file, payload);
+		new Notice(pastedClipboardNotice(payload, [file.basename]));
 	}
 
 	// Writes the clipboard into one file. Each call gets its own deep copy so
@@ -501,10 +572,18 @@ export default class PropertyPorter extends Plugin {
 	// Pop-out windows are handled automatically because the group identity
 	// is (native window, WorkspaceParent), not just the parent object.
 	getActiveTabGroupFiles(): TFile[] {
-		const activeLeaf = this.app.workspace.activeLeaf;
-		if (!activeLeaf) return [];
-
-		const activeGroup = getGroupForLeaf(buildNavigationModel(this.app, activeLeaf), activeLeaf);
+		const workspace = this.app.workspace;
+		const currentLeaf = workspace.activeLeaf ?? null;
+		const model = buildNavigationModel(this.app, currentLeaf);
+		const activeFile = workspace.getActiveFile?.() ?? null;
+		const activeFileLeaf = activeFile
+			? model.tabs.find(
+					({ leaf }) => leaf.view instanceof FileView && leaf.view.file?.path === activeFile.path
+				)?.leaf ?? null
+			: null;
+		const activeLeaf =
+			activeFileLeaf ?? currentLeaf;
+		const activeGroup = getGroupForLeaf(model, activeLeaf);
 
 		if (!activeGroup) return [];
 
@@ -550,21 +629,22 @@ export default class PropertyPorter extends Plugin {
 			: undefined;
 
 		const { conflicts, context } = this.gatherPasteConflicts(files, overrides);
-		let payload: Record<string, unknown> | null = structuredClone(this.clipboard);
+		let payload: Record<string, unknown> = structuredClone(this.clipboard);
 		if (Object.keys(conflicts).length > 0) {
-			payload = await this.resolveConflicts(payload, conflicts, context);
-			if (payload === null) return; // cancelled: nothing is written, notes stay unrepaired
+			const resolved = await this.resolveConflicts(payload, conflicts, context);
+			if (resolved === null) return; // cancelled: nothing is written, notes stay unrepaired
+			payload = resolved;
 		}
 
+		if (selectedClipboardEntries(payload).length === 0) {
+			new Notice("Property Porter: Nothing pasted; no property values were selected.");
+			return;
+		}
 		await duplicates?.commit();
 		for (const file of files) {
 			await this.writeProperties(file, payload);
 		}
-		new Notice(
-			`Property Porter: Pasted properties into ${files.length} note${
-				files.length === 1 ? "" : "s"
-			}`
-		);
+		new Notice(pastedClipboardNotice(payload, files.map(({ basename }) => basename)));
 	}
 
 	async pickTargetFile(): Promise<TFile | null> {
@@ -598,53 +678,14 @@ export default class PropertyPorter extends Plugin {
 		return Array.from(seen);
 	}
 
-	async selectTagsToPaste(): Promise<void> {
-		const knownTags = this.getKnownTagsForPicking();
-		const existingTags = this.getClipboardTags();
-		const result = await new Promise<{
-			items: string[];
-			cancelled: boolean;
-		}>((resolve) => {
-			new MultiSelectSuggestModal(
-				this.app,
-				knownTags,
-				"",
-				(selectedItems) => resolve({ items: selectedItems, cancelled: false }),
-				() => resolve({ items: [], cancelled: true }),
-				existingTags
-			).open();
-		});
-
-		// Escape/close without finishing is a true cancel: leave any
-		// existing clipboard untouched and stay silent.
-		if (result.cancelled) return;
-
-		// Clicking "Finish selection" always commits, even with zero tags,
-		// since that's how the user clears a previously accumulated
-		// selection (e.g. "Clear all" then "Finish selection (0)").
-		const selected = result.items;
-		this.clipboard = { tags: selected };
-		this.clipboardOrigin = null;
-		this.clipboardValueSources = {};
-		this.updateStatusBar();
-		if (selected.length === 0) {
-			new Notice(NOTICE_CLEARED_COPIED_TAGS);
-			return;
-		}
-		new Notice(
-			`Property Porter: ${selected.length} tag${
-				selected.length === 1 ? "" : "s"
-			} ready to paste`
-		);
-	}
-
 	// Opens the shared property-selection modal seeded with `initial`.
 	// A scalar seeded with an array of candidates renders as a conflict the
 	// user must resolve. Returns the edited selection, or `cancelled: true`
 	// when the modal is dismissed without finishing.
 	async openPropertySelectionModal(
 		initial: Record<string, unknown>,
-		conflictContext: Record<string, ConflictCardContext> = {}
+		conflictContext: Record<string, ConflictCardContext> = {},
+		options: SelectPropertiesModalOptions = {}
 	): Promise<{ properties: Record<string, unknown>; cancelled: boolean }> {
 		const catalog = collectVaultMetadata(this.app);
 		return new Promise((resolve) => {
@@ -654,7 +695,8 @@ export default class PropertyPorter extends Plugin {
 				initial,
 				(selected) => resolve({ properties: selected, cancelled: false }),
 				() => resolve({ properties: {}, cancelled: true }),
-				conflictContext
+				conflictContext,
+				options
 			).open();
 		});
 	}
@@ -779,31 +821,36 @@ export default class PropertyPorter extends Plugin {
 		conflicts: Record<string, unknown[]>,
 		context: Record<string, ConflictCardContext> = {}
 	): Promise<Record<string, unknown> | null> {
-		const result = await this.openPropertySelectionModal({ ...conflicts }, context);
+		const result = await this.openPropertySelectionModal(
+			{ ...payload, ...conflicts },
+			context,
+			{
+				title: "Resolve property conflicts",
+				conflictNames: Object.keys(conflicts),
+				finishText: "Continue",
+			}
+		);
 		if (result.cancelled) return null;
-		for (const key of Object.keys(conflicts)) {
-			if (key in result.properties) payload[key] = result.properties[key];
-			else delete payload[key];
-		}
-		return payload;
+		return result.properties;
 	}
 
-	// Edits the properties clipboard directly. The modal shows exactly what
-	// is in the clipboard (empty when nothing has been copied yet), so this
-	// doubles as a debugging check on the current clipboard state. Conflict
-	// resolution happens on copy and paste instead, not here.
-	async selectPropertiesToPaste(): Promise<void> {
+	async editPropertyClipboard(): Promise<void> {
 		const context = Object.fromEntries(
 			Object.entries(this.clipboardValueSources).map(([key, valueSources]) => [
 				key,
 				{ valueSources: { [key]: valueSources } },
 			])
 		);
-		const result = await this.openPropertySelectionModal({ ...this.clipboard }, context);
+		const result = await this.openPropertySelectionModal(
+			{ ...this.clipboard },
+			context,
+			{ title: "Edit property clipboard" }
+		);
 
 		if (result.cancelled) return;
 
 		this.clipboard = result.properties;
+		this.clipboardOrigin = null;
 		this.clipboardValueSources = Object.fromEntries(
 			Object.entries(this.clipboardValueSources)
 				.filter(([key]) => key in result.properties)
@@ -825,9 +872,35 @@ export default class PropertyPorter extends Plugin {
 			new Notice(NOTICE_CLEARED_COPIED_PROPERTIES);
 			return;
 		}
-		new Notice(
-			`Property Porter: ${count} propert${count === 1 ? "y" : "ies"} ready to paste`
-		);
+		new Notice(`Property Porter: ${clipboardDescription(this.clipboard)} ready to paste`);
+	}
+
+	async selectPropertiesToPaste(): Promise<void> {
+		await this.editPropertyClipboard();
+	}
+
+	async selectTagsToPaste(): Promise<void> {
+		const result = await new Promise<{ items: string[]; cancelled: boolean }>((resolve) => {
+			new MultiSelectSuggestModal(
+				this.app,
+				this.getKnownTagsForPicking(),
+				"",
+				(items) => resolve({ items, cancelled: false }),
+				() => resolve({ items: [], cancelled: true }),
+				this.getClipboardTags()
+			).open();
+		});
+		if (result.cancelled) return;
+
+		this.clipboard = { tags: result.items };
+		this.clipboardOrigin = null;
+		this.clipboardValueSources = {};
+		this.updateStatusBar();
+		if (result.items.length === 0) {
+			new Notice(NOTICE_CLEARED_COPIED_TAGS);
+			return;
+		}
+		new Notice(`Property Porter: ${clipboardDescription(this.clipboard)} ready to paste`);
 	}
 
 	mergeFrontmatter(

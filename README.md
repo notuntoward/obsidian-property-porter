@@ -12,7 +12,7 @@ Keeping frontmatter consistent across a vault is tedious and error-prone. When y
 
 ## Usage
 
-Property Porter provides nine commands:
+Property Porter provides eight commands:
 
 - **Copy properties from active note** — saves the properties matching **Only include**/**Exclude keys** from the active file into an internal clipboard, replacing whatever was there before. The status bar shows `PP: N`, where `N` is the total number of individual values copied (each list item counts separately; e.g. three tags shows `PP: 3`).
 - **Copy properties from another note** — opens the same file picker as **Paste properties into another note** so you can choose which note to copy from, then collects its properties the same way as the active-note command.
@@ -20,11 +20,10 @@ Property Porter provides nine commands:
 - **Paste properties into another note** — opens a file picker so you can choose which file to paste into.
 - **Paste properties into active note** — pastes directly into whichever file is active.
 - **Paste properties into the active tab group** — pastes the clipboard into every note open in the current tab group.
-- **Select properties to paste** — opens an interactive modal that edits exactly what is in the properties clipboard (empty when nothing has been copied yet). It shows every property currently copied, lets you drop properties or values, add properties from the vault catalog, and edit values, so it doubles as a debugging check on the current clipboard state. List properties (e.g. `tags`, `aliases`, or custom lists) offer "Select all", "Clear", and candidate toggle pills; scalars are edited directly.
-- **Select tags to paste** — opens a searchable picker over every tag used anywhere in the vault so you can build up a `tags` list to paste, without needing an active note with those exact tags already on it. This command always operates on tags and tags only, paying no attention to the **Only include** or **Exclude keys** settings. The picker is seeded with whatever tags are already in the clipboard, so you can keep adding across multiple runs; use "Clear all" or Ctrl/Cmd+Backspace to empty it, or the × on any tag to drop just that one. Type to filter, Enter to add the highlighted tag (or to add a brand-new tag typed verbatim when it matches nothing), Enter again on an empty search box (or "Finish selection") to commit. Esc cancels without changing the clipboard.
+- **Edit property clipboard** — opens one editor for the current clipboard, whether it contains properties, tags, or both. It initially shows only the properties already in the clipboard, so a tag-only clipboard stays tag-only. You can exclude properties or values, choose list values, search for additional properties, add a new property, and edit values. When copying or pasting produces scalar conflicts, the same editor shows the conflict choices alongside the other properties; date conflicts are ordered newest first, and Enter accepts the default.
 - **Clear properties clipboard** — empties the internal clipboard.
 
-Commands other than **Select properties to paste** and **Select tags to paste** always *replace* the clipboard outright; they don't merge with whatever was copied/selected before.
+Copy commands replace the clipboard outright. **Edit property clipboard** replaces it with the selection you finish, including any properties you added.
 
 ### Conflict resolution
 
@@ -32,6 +31,7 @@ Scalar collisions are resolved interactively, at the moment they occur, and ever
 
 - **Copy from the active tab group**: when the same scalar property holds different values across the group's notes (e.g. different `status` values), the conflicting options are presented once — with the notes involved named in the warning — and exactly one must be chosen before anything reaches the clipboard. List properties union silently; agreeing scalars copy silently.
 - **Paste** (merge mode only): when a scalar property in the clipboard collides with a different value already in the target note(s), the options are presented before anything is written, naming the note the clipboard was copied from and the target notes; one resolution is applied to every target. For a tab-group paste, all conflicts in the group are resolved in a single pass. **Overwrite** and **Skip existing** paste modes never ask about value collisions — the mode itself already decides the winner. Cancel the dialog and nothing is written.
+- **Repeated values**: identical scalar values within one note are shown once with a notice rather than treated as a conflict. Repeated list values are deduplicated and show their occurrence counts. For date and datetime properties, choosing **Other value…** opens the native date/time input; datetime edits retain the selected candidate's UTC offset.
 
 #### Duplicate property keys
 
@@ -47,7 +47,7 @@ Settings are organized into groups:
 
 ### Property filters (non-tag commands)
 
-These filters apply to general property copy and paste commands. Tag commands (**Select tags to paste**) always operate strictly on tags and ignore these filters.
+These filters apply to property copy and paste commands. **Edit property clipboard** edits the current clipboard and can add properties regardless of these filters.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
@@ -84,18 +84,16 @@ All three paste modes (Overwrite, Skip existing, Merge) are implemented for **ev
 
 #### Select interface availability by property type
 
-The **Select properties to paste** command opens an interactive modal that edits the current clipboard contents. When the clipboard's list properties hold multiple values, you can select one or all of them. Conflict resolution happens on copy and paste (see above), not in this editor.
-
-In addition, **Select tags to paste** provides a dedicated, fast tag picker that operates exclusively on tags and ignores non-tag filter settings.
+The **Edit property clipboard** command opens the shared property editor. When a list property holds multiple values, you can select one or all of them. If only tags are in the clipboard, only tags are shown initially; use the property search to add more properties. Conflicts encountered while copying or pasting appear in a dedicated section of this editor.
 
 | Data Structure / Property Type | Select interface implemented? | Notes |
 | --- | --- | --- |
-| Text (string) | Yes | Selectable via **Select properties to paste**. When merging conflicting scalar values, options are presented and exactly one must be chosen. |
-| Number | Yes | Selectable via **Select properties to paste**. When merging conflicting numbers, options are presented and exactly one must be chosen. |
-| Checkbox (boolean) | Yes | Selectable via **Select properties to paste**. |
-| Date | Yes | Selectable via **Select properties to paste**. |
-| Date & Time | Yes | Selectable via **Select properties to paste**. |
-| List (array) | Yes | Selectable via **Select properties to paste** (with "Select all", "Clear", and candidate pills). In addition, `tags` can also be selected via the dedicated **Select tags to paste** command. |
+| Text (string) | Yes | Selectable via **Edit property clipboard**. When merging conflicting scalar values, options are presented and exactly one must be chosen. |
+| Number | Yes | Selectable via **Edit property clipboard**. When merging conflicting numbers, options are presented and exactly one must be chosen. |
+| Checkbox (boolean) | Yes | Selectable via **Edit property clipboard**. |
+| Date | Yes | Selectable via **Edit property clipboard** and native date input for custom conflict values. |
+| Date & Time | Yes | Selectable via **Edit property clipboard** and native date/time input for custom conflict values. |
+| List (array) | Yes | Selectable via **Edit property clipboard** (with "Select all", "Clear", and candidate pills). |
 | Nested Object (mapping) | Whole value | Copied/pasted as a whole value. |
 | Array of Objects | Whole value | Copied/pasted as a whole value. |
 
@@ -107,7 +105,7 @@ Precise wording matters here because "property" and "tag" mean different things:
 - **Property value** — whatever is stored under a property key. For `tags`, that's a list; for `status`, that might be a single string.
 - **Item** — one element of a *list-type* property's value. Each tag in `tags: [a, b, c]` is an item of the `tags` property — an item is never itself a "property".
 
-Both the `tags` property and general frontmatter properties can be interactively configured before pasting via **Select tags to paste** and **Select properties to paste**.
+Both the `tags` property and general frontmatter properties can be interactively configured before pasting via **Edit property clipboard**.
 
 ## Install
 

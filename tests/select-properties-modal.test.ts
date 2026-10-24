@@ -91,6 +91,12 @@ function createPlugin(options: any = {}) {
 	return { plugin, app, ...rest };
 }
 
+function getInputSuggest(input: HTMLInputElement): any {
+	return (obsidianMock.AbstractInputSuggest as any).instances.find(
+		(instance: any) => instance.inputEl === input
+	);
+}
+
 const originalModalOpen = obsidianMock.Modal.prototype.open;
 
 afterEach(() => {
@@ -301,6 +307,7 @@ describe("SelectPropertiesModal", () => {
 		const card = modal.contentEl.querySelector(".pp-property-card")!;
 		card.querySelectorAll<HTMLInputElement>(".pp-conflict-option input")[2]!.click();
 		const picker = modal.propertyStates.get("modified_date")!.picker!;
+		expect(picker.inputEl.type).toBe("datetime-local");
 		const candidate = "2026-10-24T10:00:00Z";
 		picker.setValue(candidate);
 		const chip = picker.rootEl.querySelector<HTMLElement>(".commons-property-picker-chip");
@@ -308,17 +315,79 @@ describe("SelectPropertiesModal", () => {
 		expect(chip?.querySelector(".commons-property-picker-new-badge")).toBeNull();
 		expect(picker.rootEl.querySelector<HTMLElement>(".commons-property-picker-status")?.hidden).toBe(true);
 
-		picker.setValue([]);
-		const suggest = obsidianMock.AbstractInputSuggest.instances.find(
-			(instance: any) => instance.inputEl === picker.inputEl
-		)!;
-		const typedDate = "2026-10-26T10:00:00Z";
-		const createOption = suggest.suggestions(typedDate).find((option: any) => option.kind === "create");
 		const confirmationModalCount = document.querySelectorAll(".pp-new-entry-modal").length;
-		suggest.select(createOption);
+		picker.inputEl.value = "2026-10-26T10:00";
+		picker.inputEl.dispatchEvent(new Event("change"));
 
-		expect(modal.propertyStates.get("modified_date")?.selected).toEqual([typedDate]);
+		expect(modal.propertyStates.get("modified_date")?.selected).toEqual(["2026-10-26T10:00Z"]);
 		expect(document.querySelectorAll(".pp-new-entry-modal")).toHaveLength(confirmationModalCount);
+	});
+
+	it("sorts date conflicts newest first and Enter accepts the default", () => {
+		const { app } = createApp();
+		const catalog = createMockCatalog();
+		catalog.properties.push({
+			name: "modified_date",
+			kinds: ["string"],
+			values: [
+				"2026-10-24T10:00:00Z",
+				"2026-10-25T10:00:00Z",
+				"2026-10-26T10:00:00Z",
+			],
+		});
+		const onSubmit = vi.fn();
+		const modal = new SelectPropertiesModal(
+			app as any,
+			catalog,
+			{
+				modified_date: [
+					"2026-10-24T10:00:00Z",
+					"2026-10-26T10:00:00Z",
+					"2026-10-25T10:00:00Z",
+				],
+			},
+			onSubmit,
+			vi.fn()
+		);
+		document.body.appendChild(modal.contentEl);
+		modal.onOpen();
+
+		const radios = modal.contentEl.querySelectorAll<HTMLInputElement>(
+			'.pp-conflict-option input[type="radio"]'
+		);
+		expect(radios[0].value).toBe("2026-10-26T10:00:00Z");
+		expect(radios[0].checked).toBe(true);
+		radios[0].focus();
+		radios[0].dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+
+		expect(onSubmit).toHaveBeenCalledWith({ modified_date: "2026-10-26T10:00:00Z" });
+	});
+
+	it("preserves the selected timestamp offset when editing a conflict with the native picker", () => {
+		const { app } = createApp();
+		const catalog = createMockCatalog();
+		catalog.properties.push({
+			name: "modified_date",
+			kinds: ["string"],
+			values: ["2026-10-24T10:00:00+02:00", "2026-10-25T10:00:00+02:00"],
+		});
+		const modal = new SelectPropertiesModal(
+			app as any,
+			catalog,
+			{ modified_date: ["2026-10-24T10:00:00+02:00", "2026-10-25T10:00:00+02:00"] },
+			vi.fn(),
+			vi.fn()
+		);
+		modal.onOpen();
+		modal.contentEl.querySelectorAll<HTMLInputElement>(".pp-conflict-option input")[2]!.click();
+
+		const picker = modal.propertyStates.get("modified_date")!.picker!;
+		picker.inputEl.value = "2026-10-26T11:30";
+		picker.inputEl.dispatchEvent(new Event("change"));
+
+		expect(modal.propertyStates.get("modified_date")?.selected).toEqual([
+			"2026-10-26T11:30+02:00",
+		]);
 	});
 
 	it("when notes with a list property have multiple values, allows selecting one or all of them", () => {
@@ -379,6 +448,63 @@ describe("SelectPropertiesModal", () => {
 		const card = modal.contentEl.querySelector(".pp-property-card")!;
 		expect(card.querySelector(".pp-property-name")?.textContent).toBe("year");
 		expect(card.querySelector(".pp-property-badge")?.textContent).toBe("Scalar");
+	});
+
+	it("adds a suggested property through the shared ValuePicker and focuses its value input", () => {
+		const { app } = createApp();
+		const modal = new SelectPropertiesModal(
+			app as any,
+			createMockCatalog(),
+			{ tags: ["dev"] },
+			vi.fn(),
+			vi.fn()
+		);
+		document.body.appendChild(modal.contentEl);
+		modal.onOpen();
+
+		const propertyInput = modal.inputEl!;
+		expect(propertyInput.classList.contains("commons-property-picker-input")).toBe(true);
+		const suggester = getInputSuggest(propertyInput);
+		expect(suggester.suggestions("")).toEqual([]);
+		propertyInput.value = "sta";
+		const option = suggester
+			.suggestions("sta")
+			.find((candidate: any) => candidate.kind === "suggestion" && candidate.value === "status");
+		expect(option).toBeDefined();
+		suggester.select(option);
+
+		const state = modal.propertyStates.get("status");
+		expect(state).toBeDefined();
+		expect(state?.picker?.inputEl).toBe(document.activeElement);
+		expect(propertyInput.value).toBe("");
+	});
+
+	it("creates a typed property through the shared picker confirmation action", () => {
+		const { app } = createApp();
+		const modal = new SelectPropertiesModal(app as any, createMockCatalog(), {}, vi.fn(), vi.fn());
+		document.body.appendChild(modal.contentEl);
+		modal.onOpen();
+		const propertyInput = modal.inputEl!;
+		propertyInput.value = "custom_property";
+		const suggester = getInputSuggest(propertyInput);
+		const createOption = suggester
+			.suggestions("custom_property")
+			.find((candidate: any) => candidate.kind === "create");
+		expect(createOption).toBeDefined();
+
+		obsidianMock.Modal.prototype.open = function (this: any) {
+			this.onOpen();
+			const createButton = Array.from(
+				this.contentEl.querySelectorAll<HTMLButtonElement>(".commons-new-entry-button")
+			).find((button) => button.textContent?.startsWith('Create "custom_property"'));
+			expect(createButton).toBeDefined();
+			createButton!.click();
+		};
+		suggester.select(createOption);
+
+		const state = modal.propertyStates.get("custom_property");
+		expect(state).toBeDefined();
+		expect(state?.picker?.inputEl).toBe(document.activeElement);
 	});
 
 	it("allows removing a property card with the remove button", () => {
@@ -546,6 +672,12 @@ describe("PropertyPorter.selectPropertiesToPaste", () => {
 
 		obsidianMock.Modal.prototype.open = function (this: any) {
 			this.onOpen();
+			expect(this.titleEl.textContent).toBe("Resolve property conflicts");
+			expect(
+				Array.from(this.contentEl.querySelectorAll(".pp-property-name")).map((element: any) =>
+					element.textContent
+				)
+			).toEqual(["status", "tags"]);
 			// Confirm conflicting status has options "draft" and "published"
 			const statusCard = Array.from(this.contentEl.querySelectorAll(".pp-property-card")).find(
 				(c: any) => c.querySelector(".pp-property-name")?.textContent === "status"
@@ -600,6 +732,26 @@ describe("PropertyPorter.selectPropertiesToPaste", () => {
 		await plugin.selectPropertiesToPaste();
 
 		expect(plugin.clipboard).toEqual({ kept: "value" });
+	});
+
+	it("shows a tag-only clipboard without adding unrelated properties", async () => {
+		const { plugin } = createPlugin();
+		await plugin.onload();
+		plugin.clipboard = { tags: ["dev"] };
+
+		obsidianMock.Modal.prototype.open = function (this: any) {
+			this.onOpen();
+			expect(this.titleEl.textContent).toBe("Edit property clipboard");
+			expect(
+				Array.from(this.contentEl.querySelectorAll(".pp-property-name")).map((element: any) =>
+					element.textContent
+				)
+			).toEqual(["tags"]);
+			this.contentEl.querySelector(".pp-finish-button").click();
+		};
+
+		await plugin.editPropertyClipboard();
+		expect(plugin.clipboard).toEqual({ tags: ["dev"] });
 	});
 
 	it("pastes selected properties into another note", async () => {

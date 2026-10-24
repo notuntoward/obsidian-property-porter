@@ -1,4 +1,5 @@
 export { AbstractInputSuggest } from 'commons/testing';
+export { Platform } from 'commons/testing';
 
 // Minimal mock of the type-only `obsidian` package so that unit tests can
 // resolve `import { ... } from "obsidian"` without the real Obsidian runtime.
@@ -229,6 +230,7 @@ export class Modal {
 	containerEl: any;
 	modalEl: any;
 	titleEl: any;
+	scope: { register(modifiers: string[] | null, key: string, fn: (evt: Event) => boolean): void };
 
 	constructor(app: any) {
 		this.app = app;
@@ -236,6 +238,7 @@ export class Modal {
 		this.modalEl = decorateEl(document.createElement("div"));
 		this.containerEl = decorateEl(document.createElement("div"));
 		this.titleEl = decorateEl(document.createElement("div"));
+		this.scope = { register: () => {} };
 	}
 
 	open(): void {
