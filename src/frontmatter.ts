@@ -61,6 +61,28 @@ export function mergeValueSources(...sources: FrontmatterValueSources[]): Frontm
 	return result;
 }
 
+// Combines overlapping clipboard/target snapshots: for a given note and
+// value, both maps describe the same occurrences rather than new occurrences.
+export function mergeValueSourcesByMaximumCount(
+	...sources: FrontmatterValueSources[]
+): FrontmatterValueSources {
+	const result: FrontmatterValueSources = {};
+	for (const sourceMap of sources) {
+		for (const [property, values] of Object.entries(sourceMap)) {
+			for (const [value, entries] of Object.entries(values)) {
+				const propertySources = (result[property] ??= {});
+				const valueSources = (propertySources[value] ??= []);
+				for (const entry of entries) {
+					const existing = valueSources.find((source) => source.note === entry.note);
+					if (existing) existing.count = Math.max(existing.count, entry.count);
+					else valueSources.push({ ...entry });
+				}
+			}
+		}
+	}
+	return result;
+}
+
 export function mergeArrays(
 	source: unknown[],
 	destination: unknown[]
@@ -84,12 +106,30 @@ export function mergeArrays(
 
 // Parses a user-facing comma-separated settings string (e.g. "tags, status")
 // into a trimmed, non-empty list. Shared by every setting that accepts this
-// format (Only include, Exclude keys) so the parsing rules stay consistent.
+// format (Only include properties, Exclude properties) so the parsing rules stay consistent.
 export function parseCommaList(value: string): string[] {
 	return value
 		.split(",")
 		.map((s) => s.trim())
 		.filter(Boolean);
+}
+
+export function findOverlappingPropertyFilters(onlyInclude: string, excludeKeys: string): string[] {
+	const excluded = new Set(parseCommaList(excludeKeys).map(normalizeKeyForMatch));
+	return parseCommaList(onlyInclude).filter((key) => excluded.has(normalizeKeyForMatch(key)));
+}
+
+export function removeOverlappingExcludedProperties(
+	onlyInclude: string,
+	excludeKeys: string
+): { excludeKeys: string; removed: string[] } {
+	const included = new Set(parseCommaList(onlyInclude).map(normalizeKeyForMatch));
+	const excluded = parseCommaList(excludeKeys);
+	const removed = excluded.filter((key) => included.has(normalizeKeyForMatch(key)));
+	return {
+		excludeKeys: excluded.filter((key) => !included.has(normalizeKeyForMatch(key))).join(", "),
+		removed,
+	};
 }
 
 export function isEmptyPropertyValue(value: unknown): boolean {
@@ -208,7 +248,7 @@ export function mergeFrontmatter(
 }
 
 // Matches a settings key against a property name case-insensitively, treating
-// underscores as spaces, so "created date" in Exclude keys also matches a
+// underscores as spaces, so "created date" in Exclude properties also matches a
 // "created_date" property.
 function normalizeKeyForMatch(key: string): string {
 	return key.trim().toLowerCase().replace(/_/g, " ");
@@ -220,10 +260,10 @@ export function filterFrontmatter(
 	excludeKeys: string
 ): Record<string, unknown> {
 	const onlyList = parseCommaList(onlyInclude);
-
-	let result: Record<string, unknown> = {};
+	let result: Record<string, unknown>;
 
 	if (onlyList.length > 0) {
+		result = {};
 		for (const key of onlyList) {
 			if (key in fm) {
 				result[key] = fm[key];
@@ -236,11 +276,12 @@ export function filterFrontmatter(
 			if (match) result[match] = fm[match];
 		}
 	} else {
-		const exclude = parseCommaList(excludeKeys).map(normalizeKeyForMatch);
 		result = { ...fm };
-		for (const key of Object.keys(result)) {
-			if (exclude.includes(normalizeKeyForMatch(key))) delete result[key];
-		}
+	}
+
+	const excluded = new Set(parseCommaList(excludeKeys).map(normalizeKeyForMatch));
+	for (const key of Object.keys(result)) {
+		if (excluded.has(normalizeKeyForMatch(key))) delete result[key];
 	}
 
 	return result;
@@ -317,10 +358,38 @@ function renderOccurrenceLines(key: string, value: unknown): string[] {
  * numbers, strings); list values become arrays of item strings with duplicate
  * items removed.
  */
+export function getFrontmatterLines(content: string): string[] {
+	const firstNewline = content.indexOf("\n");
+	const firstLineEnd = firstNewline === -1 ? content.length : firstNewline;
+	const firstLine =
+		content.charCodeAt(firstLineEnd - 1) === 13
+			? content.slice(0, firstLineEnd - 1)
+			: content.slice(0, firstLineEnd);
+	if (firstLine.trim() !== "---") return [];
+
+	const lines = [firstLine];
+	if (firstNewline === -1) return lines;
+
+	let lineStart = firstNewline + 1;
+	while (lineStart <= content.length) {
+		const newline = content.indexOf("\n", lineStart);
+		const lineEnd = newline === -1 ? content.length : newline;
+		const contentEnd =
+			lineEnd > lineStart && content.charCodeAt(lineEnd - 1) === 13
+				? lineEnd - 1
+				: lineEnd;
+		const line = content.slice(lineStart, contentEnd);
+		lines.push(line);
+		if (line.trim() === "---" || newline === -1) break;
+		lineStart = newline + 1;
+	}
+	return lines;
+}
+
 export function parseRawFrontmatter(content: string): RawFrontmatter {
 	const result: RawFrontmatter = { map: {}, duplicates: [] };
-	const lines = content.split(/\r?\n/);
-	if ((lines[0] ?? "").trim() !== "---") return result;
+	const lines = getFrontmatterLines(content);
+	if (lines.length === 0) return result;
 
 	const occurrences = new Map<string, { values: unknown[]; spans: Array<[number, number]> }>();
 	let pendingListKey: string | null = null;
@@ -393,8 +462,7 @@ export function parseRawFrontmatter(content: string): RawFrontmatter {
 	return result;
 }
 
-// Stringifies a parsed occurrence value for display inside the conflict
-// modal's candidate pills.
+// Stringifies a parsed occurrence value for display in a conflict option.
 export function formatRawValue(value: unknown): string {
 	return Array.isArray(value) ? value.join(", ") : String(value);
 }

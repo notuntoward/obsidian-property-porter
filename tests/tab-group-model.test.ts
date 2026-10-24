@@ -33,7 +33,7 @@ function createPlugin(options: any = {}) {
 			},
 		},
 		metadataCache: { getFileCache: () => null },
-		vault: { getMarkdownFiles: () => [] },
+		vault: { getMarkdownFiles: () => [], read: async () => "---\n---\n" },
 		fileManager: {
 			processFrontMatter: async (
 				_file: any,

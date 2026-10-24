@@ -70,6 +70,18 @@ function createApp(options: any = {}) {
 		},
 		vault: {
 			getMarkdownFiles: () => markdownFiles,
+			read: async (file: obsidianMock.TFile) => {
+				if (fileContents[file.path] !== undefined) return fileContents[file.path];
+				const frontmatter = fileCache[file.path]?.frontmatter ?? {};
+				const lines = Object.entries(frontmatter)
+					.filter(([key]) => key !== "position")
+					.flatMap(([key, value]) =>
+						Array.isArray(value)
+							? [`${key}:`, ...value.map((item) => `  - ${JSON.stringify(item)}`)]
+							: [`${key}: ${JSON.stringify(value)}`]
+					);
+				return `---\n${lines.join("\n")}\n---\n`;
+			},
 			cachedRead: async (file: obsidianMock.TFile) => fileContents[file.path] ?? "",
 			modify: async (file: obsidianMock.TFile, data: string) => {
 				fileContents[file.path] = data;
@@ -126,11 +138,13 @@ describe("PropertyPorter", () => {
 
 		await plugin.copyProperties();
 
-		let tagSources: string[] = [];
+		let tagNotice = "";
+		let tagValues: string[] = [];
 		obsidianMock.Modal.prototype.open = function (this: any) {
 			this.onOpen();
 			const tagsCard = this.contentEl.querySelector(".pp-property-card") as HTMLElement;
-			tagSources = Array.from(tagsCard.querySelectorAll(".pp-list-candidate-sources")).map(
+			tagNotice = tagsCard.querySelector(".pp-property-notice")?.textContent ?? "";
+			tagValues = Array.from(tagsCard.querySelectorAll(".commons-property-picker-chip span:first-child")).map(
 				(el) => el.textContent ?? ""
 			);
 			this.contentEl.querySelector(".pp-finish-button").click();
@@ -138,7 +152,8 @@ describe("PropertyPorter", () => {
 
 		await plugin.selectPropertiesToPaste();
 
-		expect(tagSources).toEqual(["×2 in source"]);
+		expect(tagNotice).toContain("source had tags twice with the same value");
+		expect(tagValues).toEqual(["a", "b"]);
 	});
 	let originalSuggestOpen: () => void;
 
@@ -284,6 +299,23 @@ describe("PropertyPorter", () => {
 			expect(addCommand.mock.calls.some((c) => c[0].id === "select-properties-to-paste")).toBe(false);
 		});
 
+		it("does not autofocus the first property when editing the clipboard", async () => {
+			const { plugin } = createPlugin();
+			await plugin.onload();
+			plugin.clipboard = { title: "A title", tags: ["tag"] };
+			const openModal = vi
+				.spyOn(plugin, "openPropertySelectionModal")
+				.mockResolvedValue({ properties: plugin.clipboard, cancelled: false });
+
+			await plugin.editPropertyClipboard();
+
+			expect(openModal).toHaveBeenCalledWith(
+				plugin.clipboard,
+				expect.any(Object),
+				{ title: "Edit property clipboard", focusFirstProperty: false }
+			);
+		});
+
 		it("registers the clear command with 'Clear properties clipboard' name", async () => {
 			const { plugin } = createPlugin();
 			const addCommand = vi.spyOn(plugin, "addCommand");
@@ -367,7 +399,7 @@ describe("PropertyPorter", () => {
 			expect(plugin.getActiveFile()).toBe(active);
 		});
 
-		it("returns parsed frontmatter without position", () => {
+		it("returns parsed frontmatter without position", async () => {
 			const file = new obsidianMock.TFile("note.md");
 			const { plugin, fileCache } = createPlugin();
 			fileCache[file.path] = {
@@ -377,7 +409,7 @@ describe("PropertyPorter", () => {
 			expect(plugin.getParsedFrontmatter(file)).toEqual({ tags: ["a"] });
 		});
 
-		it("returns empty object when no frontmatter", () => {
+		it("returns empty object when no frontmatter", async () => {
 			const file = new obsidianMock.TFile("note.md");
 			const { plugin } = createPlugin();
 			expect(plugin.getParsedFrontmatter(file)).toEqual({});
@@ -385,17 +417,17 @@ describe("PropertyPorter", () => {
 	});
 
 	describe("copy", () => {
-		it("shows notice and returns null when no active file", () => {
+		it("shows notice and returns null when no active file", async () => {
 			const { plugin } = createPlugin();
 			const spy = vi.spyOn(obsidianMock, "Notice");
 
-			const result = plugin.getFilteredSourceFrontmatter();
+			const result = await plugin.getFilteredSourceFrontmatter();
 
 			expect(result).toBeNull();
 			expect(spy).toHaveBeenCalledWith("Property Porter: No active file");
 		});
 
-		it("filters source frontmatter by settings", () => {
+		it("filters source frontmatter by settings", async () => {
 			const file = new obsidianMock.TFile("note.md");
 			const { plugin, fileCache } = createPlugin({ activeFile: file });
 			fileCache[file.path] = {
@@ -467,7 +499,7 @@ describe("PropertyPorter", () => {
 
 			await plugin.copyProperties();
 
-			expect(warningText).toBe("Choose which modified_date to keep. Notes differ: note-six");
+			expect(warningText).toBe("Choose which modified_date value to keep.");
 			// The note is repaired textually: only the chosen occurrence survives
 			// and every other line is preserved.
 			expect(fileContents[file.path]).toBe(
@@ -604,7 +636,7 @@ describe("PropertyPorter", () => {
 				// resolves the union's scalar collision with cross-note wording.
 				if (modalIndex <= 2) {
 					expect(card.querySelector(".pp-property-warning")?.textContent).toBe(
-						`Choose which status to keep. Notes differ: ${modalIndex === 1 ? "one" : "two"}`
+						"Choose which status value to keep."
 					);
 				}
 				const radios = card.querySelectorAll<HTMLInputElement>('.pp-conflict-option input[type="radio"]');
@@ -689,6 +721,7 @@ describe("PropertyPorter", () => {
 			fileCache[source.path] = { frontmatter: { status: "from-source" } };
 			plugin.settings.onlyInclude = "status";
 			obsidianMock.SuggestModal.prototype.open = function (this: any) {
+				expect(this).toBeInstanceOf(SuggestFilesModal);
 				this.onChooseItem(source);
 			};
 			const spy = vi.spyOn(obsidianMock, "Notice");
@@ -732,6 +765,31 @@ describe("PropertyPorter", () => {
 	});
 
 	describe("paste", () => {
+		it("uses current file contents instead of stale metadata cache for merge conflicts", async () => {
+			const target = new obsidianMock.TFile("target.md");
+			const { plugin, fileCache } = createPlugin({
+				markdownFiles: [target],
+				fileContents: { [target.path]: "---\nstatus: current-target\n---\n" },
+			});
+			await plugin.onload();
+			fileCache[target.path] = { frontmatter: { status: "clipboard-value" } };
+			plugin.clipboard = { status: "clipboard-value" };
+			plugin.settings.onlyInclude = "";
+			const modal = vi
+				.spyOn(plugin, "openPropertySelectionModal")
+				.mockResolvedValue({
+					properties: { status: "clipboard-value" },
+					cancelled: false,
+				});
+
+			await plugin.pasteProperties(target);
+
+			expect(modal).toHaveBeenCalledWith(
+				{ status: ["clipboard-value", "current-target"] },
+				expect.any(Object),
+				expect.objectContaining({ conflictNames: ["status"] })
+			);
+		});
 		it("shows notice when clipboard is empty", async () => {
 			const { plugin } = createPlugin();
 			await plugin.onload();
@@ -901,7 +959,7 @@ describe("PropertyPorter", () => {
 					// Duplicate-resolution modal: pick the first modified_date.
 					const card = findCard("modified_date");
 					expect(card.querySelector(".pp-property-warning")?.textContent).toBe(
-						"Choose which modified_date to keep. Notes differ: dup"
+						"Choose which modified_date value to keep."
 					);
 					const radios = card.querySelectorAll<HTMLInputElement>('.pp-conflict-option input[type="radio"]');
 					radios[0].click();
@@ -920,8 +978,7 @@ describe("PropertyPorter", () => {
 
 			await plugin.pasteProperties(target);
 
-			// The merge conflict names the clipboard origin and the target.
-			expect(secondWarning).toBe("Choose which status to keep. Notes differ: active, dup");
+			expect(secondWarning).toBe("Choose which status value to keep.");
 			// The target was repaired and then pasted into.
 			expect(modalIndex).toBe(2);
 			expect(fileContents[target.path]).toBe(
@@ -972,7 +1029,7 @@ describe("PropertyPorter", () => {
 					this.contentEl.querySelector(".pp-finish-button").click();
 				} else {
 					// Merge-conflict modal is cancelled: nothing may be written.
-					expect(this.contentEl.textContent).toContain("Choose which status to keep");
+					expect(this.contentEl.textContent).toContain("Choose which status value to keep");
 					expect(this.contentEl.textContent).toContain("status");
 					this.close();
 				}
@@ -1210,6 +1267,58 @@ describe("PropertyPorter", () => {
 			expect(fileCache[f2.path].frontmatter).toEqual({ status: "picked" });
 		});
 
+		it("does not count clipboard-source values twice when pasting into a group containing that source", async () => {
+			const source = new obsidianMock.TFile("source.md");
+			const other = new obsidianMock.TFile("other.md");
+			const { plugin, fileCache } = createPlugin({
+				activeFile: source,
+				markdownFiles: [source, other],
+				leaves: [
+					{ file: source, group: "g1" },
+					{ file: other, group: "g1" },
+				],
+			});
+			await plugin.onload();
+			plugin.settings.onlyInclude = "tags, modified_date";
+			fileCache[source.path] = {
+				frontmatter: {
+					tags: ["perception", "obsidian", "vision", "programming"],
+					modified_date: "2026-10-13T15:44:59",
+				},
+			};
+			fileCache[other.path] = {
+				frontmatter: { modified_date: "2026-10-13T15:33:18" },
+			};
+			await plugin.copyProperties();
+
+			obsidianMock.Modal.prototype.open = function (this: any) {
+				this.onOpen();
+				const tagsCard = Array.from(this.contentEl.querySelectorAll(".pp-property-card")).find(
+					(card: any) => card.querySelector(".pp-property-name")?.textContent === "tags"
+				) as HTMLElement;
+				expect(tagsCard.querySelector(".pp-property-notice")).toBeNull();
+				expect(Array.from(tagsCard.querySelectorAll(".pp-list-candidate-sources")).map(
+					(element) => element.textContent
+				)).toEqual([]);
+				this.contentEl.querySelector(".pp-finish-button").click();
+			};
+
+			await plugin.pasteIntoActiveTabGroup();
+
+			expect(fileCache[source.path].frontmatter.tags).toEqual([
+				"perception",
+				"obsidian",
+				"vision",
+				"programming",
+			]);
+			expect(fileCache[other.path].frontmatter.tags).toEqual([
+				"perception",
+				"obsidian",
+				"vision",
+				"programming",
+			]);
+		});
+
 		it("does not paste into duplicates of the same file in the group", async () => {
 			const f1 = new obsidianMock.TFile("a.md");
 			const { plugin, fileCache } = createPlugin({
@@ -1307,6 +1416,71 @@ describe("PropertyPorter", () => {
 			expect(plugin.clipboard).toEqual({ tags: ["x", "y"], status: "two" });
 		});
 
+		it("detects changed scalar values even when the metadata cache has not updated", async () => {
+			const f1 = new obsidianMock.TFile("a.md");
+			const f2 = new obsidianMock.TFile("b.md");
+			const { plugin, fileCache } = createPlugin({
+				leaves: [
+					{ file: f1, group: "g1" },
+					{ file: f2, group: "g1" },
+				],
+				fileContents: {
+					[f1.path]: "---\nstatus: current-one\n---\n",
+					[f2.path]: "---\nstatus: current-two\n---\n",
+				},
+			});
+			await plugin.onload();
+			plugin.settings.onlyInclude = "status";
+			fileCache[f1.path] = { frontmatter: { status: "stale-same" } };
+			fileCache[f2.path] = { frontmatter: { status: "stale-same" } };
+			const modal = vi
+				.spyOn(plugin, "openPropertySelectionModal")
+				.mockResolvedValue({
+					properties: { status: "current-two" },
+					cancelled: false,
+				});
+
+			await plugin.copyPropertiesFromActiveTabGroup();
+
+			expect(modal).toHaveBeenCalledWith(
+				{ status: ["current-one", "current-two"] },
+				expect.objectContaining({
+					status: expect.objectContaining({
+						conflictNotes: ["a", "b"],
+					}),
+				}),
+				expect.objectContaining({ conflictNames: ["status"] })
+			);
+			expect(plugin.clipboard).toEqual({ status: "current-two" });
+		});
+
+		it("detects checkbox conflicts and preserves boolean false as a value", async () => {
+			const f1 = new obsidianMock.TFile("a.md");
+			const f2 = new obsidianMock.TFile("b.md");
+			const { plugin, fileCache } = createPlugin({
+				leaves: [
+					{ file: f1, group: "g1" },
+					{ file: f2, group: "g1" },
+				],
+			});
+			await plugin.onload();
+			plugin.settings.onlyInclude = "favorite";
+			fileCache[f1.path] = { frontmatter: { favorite: false } };
+			fileCache[f2.path] = { frontmatter: { favorite: true } };
+			const modal = vi
+				.spyOn(plugin, "openPropertySelectionModal")
+				.mockResolvedValue({ properties: { favorite: false }, cancelled: false });
+
+			await plugin.copyPropertiesFromActiveTabGroup();
+
+			expect(modal).toHaveBeenCalledWith(
+				{ favorite: [false, true] },
+				expect.any(Object),
+				expect.objectContaining({ conflictNames: ["favorite"] })
+			);
+			expect(plugin.clipboard).toEqual({ favorite: false });
+		});
+
 		it("keeps the clipboard when the copy conflict modal is cancelled", async () => {
 			const f1 = new obsidianMock.TFile("a.md");
 			const f2 = new obsidianMock.TFile("b.md");
@@ -1370,13 +1544,19 @@ describe("PropertyPorter", () => {
 				activeFile: active,
 				markdownFiles: [active, other],
 			});
+			let openedModal: any;
 			obsidianMock.SuggestModal.prototype.open = function (this: any) {
+				openedModal = this;
 				this.onChooseItem(other);
 			};
 
 			const result = await plugin.pickTargetFile();
 
 			expect(result).toBe(other);
+			expect(openedModal.options).toMatchObject({
+				searchMode: "substring",
+				limit: 20,
+			});
 		});
 	});
 
@@ -1998,6 +2178,23 @@ describe("PropertyPorterSettingTab", () => {
 		vi.restoreAllMocks();
 	});
 
+	it("warns and removes legacy exclusions that overlap Only include properties", async () => {
+		const { plugin } = createPlugin();
+		vi.spyOn(plugin, "loadData").mockResolvedValue({
+			onlyInclude: "Status, tags",
+			excludeKeys: "status, aliases",
+		});
+		const noticeSpy = vi.spyOn(obsidianMock, "Notice");
+
+		await plugin.loadSettings();
+
+		expect(plugin.settings.onlyInclude).toBe("Status, tags");
+		expect(plugin.settings.excludeKeys).toBe("aliases");
+		expect(noticeSpy).toHaveBeenCalledWith(
+			"Property Porter: removed excluded properties that also appear in Only include properties: status."
+		);
+	});
+
 	it("renders property pickers while retaining the persisted string settings", async () => {
 		const file = new obsidianMock.TFile("settings.md");
 		const { plugin, fileCache } = createPlugin({ markdownFiles: [file] });
@@ -2011,7 +2208,7 @@ describe("PropertyPorterSettingTab", () => {
 		expect(defs).toHaveLength(2);
 		expect(defs[0]).toMatchObject({
 			type: "group",
-			heading: "Property filters (non-tag commands)",
+			heading: "Property filters (property-copy commands)",
 		});
 		expect(defs[1]).toMatchObject({
 			type: "group",
@@ -2019,10 +2216,16 @@ describe("PropertyPorterSettingTab", () => {
 		});
 
 		const items = defs.flatMap((d: any) => (d.items ? d.items : [d]));
-		const includeDef = items.find((definition) => definition.name === "Only include");
-		const excludeDef = items.find((definition) => definition.name === "Exclude keys");
+		const includeDef = items.find((definition) => definition.name === "Only include properties");
+		const excludeDef = items.find((definition) => definition.name === "Exclude properties");
 		expect(includeDef.render).toBeTypeOf("function");
 		expect(excludeDef.render).toBeTypeOf("function");
+		expect(includeDef.desc).toBe(
+			"Choose existing properties or confirm new names to copy. Cannot overlap with Exclude properties."
+		);
+		expect(excludeDef.desc).toBe(
+			"Choose existing properties or confirm new names to skip. Cannot overlap with Only include properties."
+		);
 		expect(items.find((definition) => definition.name === "Paste mode").control.options).toEqual(
 			{
 				overwrite: "Overwrite",
@@ -2039,6 +2242,14 @@ describe("PropertyPorterSettingTab", () => {
 		expect(includeControl.querySelector(".commons-property-picker")).not.toBeNull();
 		expect(excludeControl.querySelector(".commons-property-picker")).not.toBeNull();
 		expect(
+			Array.from(includeControl.querySelectorAll(".commons-property-picker-chip span:first-child")).map(
+				(element) => element.textContent
+			)
+		).toEqual(["tags"]);
+		expect(
+			includeControl.querySelector<HTMLInputElement>(".commons-property-picker-input")?.placeholder
+		).toBe("Add a property");
+		expect(
 			includeControl
 				.querySelector(".commons-property-picker-input")
 				.getAttribute("aria-label")
@@ -2047,36 +2258,46 @@ describe("PropertyPorterSettingTab", () => {
 		expect(plugin.settings.excludeKeys).toBe("aliases, created date, modified date");
 	});
 
-	it("persists picker changes and disables Exclude keys until Only include is empty", async () => {
+	it("warns and prevents overlapping include and exclude selections", async () => {
 		const file = new obsidianMock.TFile("settings.md");
 		const { plugin, fileCache } = createPlugin({ markdownFiles: [file] });
 		fileCache[file.path] = { frontmatter: { status: "draft" } };
 		await plugin.onload();
 		plugin.settings.onlyInclude = "";
+		plugin.settings.excludeKeys = "status";
 
 		const tab = new PropertyPorterSettingTab(plugin.app, plugin);
 		const defs = tab.getSettingDefinitions();
 		const items = defs.flatMap((d: any) => (d.items ? d.items : [d]));
 		const includeControl = obsidianMock.decorateEl(document.createElement("div"));
 		const excludeControl = obsidianMock.decorateEl(document.createElement("div"));
-		items.find((definition) => definition.name === "Only include").render(
+		items.find((definition) => definition.name === "Only include properties").render(
 			{ controlEl: includeControl },
 			{} as any
 		);
-		items.find((definition) => definition.name === "Exclude keys").render(
+		items.find((definition) => definition.name === "Exclude properties").render(
 			{ controlEl: excludeControl },
 			{} as any
 		);
 		const input = includeControl.querySelector(".commons-property-picker-input");
-		const excludeFieldset = excludeControl.querySelector("fieldset");
-		expect(excludeFieldset.disabled).toBe(false);
+		const excludedInput = excludeControl.querySelector(".commons-property-picker-input");
+		const noticeSpy = vi.spyOn(obsidianMock, "Notice");
 
 		selectInputSuggestion(input, "status", "status");
-		expect(plugin.settings.onlyInclude).toBe("status");
-		expect(excludeFieldset.disabled).toBe(true);
-
-		includeControl.querySelector(".commons-property-picker-remove").click();
 		expect(plugin.settings.onlyInclude).toBe("");
-		expect(excludeFieldset.disabled).toBe(false);
+		expect(noticeSpy).toHaveBeenCalledWith(
+			"Property Porter: status is already excluded and cannot also be included."
+		);
+
+		excludeControl.querySelector(".commons-property-picker-remove").click();
+		selectInputSuggestion(input, "status", "status");
+		expect(plugin.settings.excludeKeys).toBe("");
+		expect(plugin.settings.onlyInclude).toBe("status");
+
+		selectInputSuggestion(excludedInput, "status", "status");
+		expect(plugin.settings.excludeKeys).toBe("");
+		expect(noticeSpy).toHaveBeenLastCalledWith(
+			"Property Porter: status is already included and cannot also be excluded."
+		);
 	});
 });

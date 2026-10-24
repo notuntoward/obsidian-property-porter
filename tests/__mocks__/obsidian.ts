@@ -1,3 +1,4 @@
+import { parseRawFrontmatter } from '../../src/frontmatter';
 export { AbstractInputSuggest } from 'commons/testing';
 export { Platform } from 'commons/testing';
 
@@ -344,6 +345,12 @@ export class App {
 		this.metadataCache = options.metadataCache ?? {};
 		this.fileManager = options.fileManager ?? {};
 	}
+}
+
+export function parseYaml(yaml: string): Record<string, unknown> {
+	const parsed = parseRawFrontmatter(`---\n${yaml}\n---`);
+	if (parsed.duplicates.length > 0) throw new Error("Duplicate YAML property");
+	return parsed.map;
 }
 
 // Mirrors the real obsidian.getAllTags(cache): collects inline body tags

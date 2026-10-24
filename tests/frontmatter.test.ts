@@ -1,11 +1,15 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
 	filterFrontmatter,
 	unionFrontmatter,
+	getFrontmatterLines,
 	mergeArrays,
 	deepMerge,
 	mergeFrontmatter,
 	collectValueSources,
+	findOverlappingPropertyFilters,
+	removeOverlappingExcludedProperties,
+	mergeValueSourcesByMaximumCount,
 	isEmptyPropertyValue,
 	countPropertyValue,
 	parseCommaList,
@@ -223,9 +227,27 @@ describe("filterFrontmatter", () => {
 		});
 	});
 
-	it("onlyInclude takes precedence over excludeKeys", () => {
+	it("applies excludes after the include whitelist", () => {
 		const result = filterFrontmatter(fm, "tags", "tags, aliases");
-		expect(result).toEqual({ tags: ["a", "b"] });
+		expect(result).toEqual({});
+	});
+
+	it("finds overlapping include and exclude names case-insensitively and across underscores", () => {
+		expect(findOverlappingPropertyFilters("Created Date, status", "created_date, aliases")).toEqual([
+			"Created Date",
+		]);
+	});
+
+	it("removes legacy overlapping exclusions while preserving other exclusions", () => {
+		expect(removeOverlappingExcludedProperties("Created Date, status", "created_date, aliases")).toEqual({
+			excludeKeys: "aliases",
+			removed: ["created_date"],
+		});
+	});
+
+	it("allows disjoint include and exclude filters together", () => {
+		const result = filterFrontmatter(fm, "tags, status", "aliases");
+		expect(result).toEqual({ tags: ["a", "b"], status: "completed" });
 	});
 
 	it("returns empty object when fm is empty", () => {
@@ -241,6 +263,26 @@ describe("unionFrontmatter", () => {
 			tags: {
 				a: [{ note: "Note-06", count: 2 }],
 				b: [{ note: "Note-06", count: 1 }],
+			},
+		});
+	});
+
+	it("merges clipboard and target provenance without double-counting the same note", () => {
+		const clipboardSources = collectValueSources([
+			{ note: "source", frontmatter: { tags: ["a", "a", "b"] } },
+		]);
+		const targetSources = collectValueSources([
+			{ note: "source", frontmatter: { tags: ["a", "a", "b"] } },
+			{ note: "other", frontmatter: { tags: ["a"] } },
+		]);
+
+		expect(mergeValueSourcesByMaximumCount(clipboardSources, targetSources)).toEqual({
+			tags: {
+				a: [
+					{ note: "source", count: 2 },
+					{ note: "other", count: 1 },
+				],
+				b: [{ note: "source", count: 1 }],
 			},
 		});
 	});
@@ -308,10 +350,34 @@ describe("filterFrontmatter key normalization", () => {
 });
 
 describe("parseRawFrontmatter", () => {
+	it("extracts only frontmatter lines from notes with large bodies", () => {
+		const content = `---\ntitle: Note\n---\n${"body line\n".repeat(10_000)}`;
+		const split = vi.spyOn(String.prototype, "split");
+
+		const lines = getFrontmatterLines(content);
+		const splitWholeNote = split.mock.contexts.some((context) => context === content);
+		split.mockRestore();
+
+		expect(lines).toEqual(["---", "title: Note", "---"]);
+		expect(splitWholeNote).toBe(false);
+	});
+
 	it("returns no duplicates for a note with unique keys", () => {
 		const parsed = parseRawFrontmatter("---\ntitle: Note Six\nversion: 2\n---\n\nbody");
 		expect(parsed.map).toEqual({ title: "Note Six", version: 2 });
 		expect(parsed.duplicates).toEqual([]);
+	});
+
+	it("does not split a large note body when parsing frontmatter", () => {
+		const content = `---\ntitle: Note\n---\n${"body line\n".repeat(10_000)}`;
+		const split = vi.spyOn(String.prototype, "split");
+
+		const parsed = parseRawFrontmatter(content);
+		const splitWholeNote = split.mock.contexts.some((context) => context === content);
+		split.mockRestore();
+
+		expect(parsed.map).toEqual({ title: "Note" });
+		expect(splitWholeNote).toBe(false);
 	});
 
 	it("detects duplicate scalar keys and keeps every occurrence with spans", () => {

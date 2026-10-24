@@ -1,9 +1,5 @@
 # Property Porter
 
-[![Build](https://github.com/notuntoward/obsidian-property-porter/actions/workflows/build.yml/badge.svg)](https://github.com/notuntoward/obsidian-property-porter/actions/workflows/build.yml)
-[![CodeQL](https://github.com/notuntoward/obsidian-property-porter/actions/workflows/codeql.yml/badge.svg)](https://github.com/notuntoward/obsidian-property-porter/actions/workflows/codeql.yml)
-[![OpenSSF Scorecard](https://github.com/notuntoward/obsidian-property-porter/actions/workflows/scorecard.yml/badge.svg)](https://github.com/notuntoward/obsidian-property-porter/actions/workflows/scorecard.yml)
-
 Copy some or all YAML frontmatter properties from one note and paste them into another in Obsidian.
 
 ## Why use Property Porter?
@@ -14,24 +10,26 @@ Keeping frontmatter consistent across a vault is tedious and error-prone. When y
 
 Property Porter provides eight commands:
 
-- **Copy properties from active note** — saves the properties matching **Only include**/**Exclude keys** from the active file into an internal clipboard, replacing whatever was there before. The status bar shows `PP: N`, where `N` is the total number of individual values copied (each list item counts separately; e.g. three tags shows `PP: 3`).
-- **Copy properties from another note** — opens the same file picker as **Paste properties into another note** so you can choose which note to copy from, then collects its properties the same way as the active-note command.
+- **Copy properties from active note** — saves the properties matching **Only include properties**/**Exclude properties** from the active file into an internal clipboard, replacing whatever was there before. The status bar shows `PP: N`, where `N` is the total number of individual values copied (each list item counts separately; e.g. three tags shows `PP: 3`).
+- **Copy properties from another note** — opens a fast file picker that searches note names, paths, and aliases with literal substring matching as you type, so you can choose which note to copy from; then it collects properties the same way as the active-note command.
 - **Copy properties from the active tab group** — collects properties from every note open in the current tab group and unions them into one clipboard payload. List properties (e.g. `tags`) accumulate every distinct value across the notes; scalar properties keep the first value seen. Files in other tab groups are ignored.
 - **Paste properties into another note** — opens a file picker so you can choose which file to paste into.
 - **Paste properties into active note** — pastes directly into whichever file is active.
 - **Paste properties into the active tab group** — pastes the clipboard into every note open in the current tab group.
-- **Edit property clipboard** — opens one editor for the current clipboard, whether it contains properties, tags, or both. It initially shows only the properties already in the clipboard, so a tag-only clipboard stays tag-only. You can exclude properties or values, choose list values, search for additional properties, add a new property, and edit values. When copying or pasting produces scalar conflicts, the same editor shows the conflict choices alongside the other properties; date conflicts are ordered newest first, and Enter accepts the default.
+- **Edit property clipboard** — opens one editor for the current clipboard, whether it contains properties, tags, or both. It initially shows only the properties already in the clipboard, so a tag-only clipboard stays tag-only. You can exclude properties or values, remove individual list values, search for additional properties, add a new property, and edit values. Tags use Obsidian-style bubbles; other list values are shown as plain text. When copying or pasting produces scalar conflicts, the same editor separates the required conflict choices from other properties, which are optional and shown for reference. Date conflicts are ordered newest first, and Enter accepts the default. The action bar stays visible while scrolling; Escape cancels and Enter accepts when ready, including only after all conflicts are resolved.
 - **Clear properties clipboard** — empties the internal clipboard.
 
 Copy commands replace the clipboard outright. **Edit property clipboard** replaces it with the selection you finish, including any properties you added.
 
 ### Conflict resolution
 
-Scalar collisions are resolved interactively, at the moment they occur, and every conflict names the notes it came from:
+Scalar collisions are resolved interactively, at the moment they occur. Each candidate value shows the note or notes it came from. For scalar properties, **Other value…** accepts typed values directly; tags and other list properties ask for confirmation before adding a new entry.
 
-- **Copy from the active tab group**: when the same scalar property holds different values across the group's notes (e.g. different `status` values), the conflicting options are presented once — with the notes involved named in the warning — and exactly one must be chosen before anything reaches the clipboard. List properties union silently; agreeing scalars copy silently.
-- **Paste** (merge mode only): when a scalar property in the clipboard collides with a different value already in the target note(s), the options are presented before anything is written, naming the note the clipboard was copied from and the target notes; one resolution is applied to every target. For a tab-group paste, all conflicts in the group are resolved in a single pass. **Overwrite** and **Skip existing** paste modes never ask about value collisions — the mode itself already decides the winner. Cancel the dialog and nothing is written.
-- **Repeated values**: identical scalar values within one note are shown once with a notice rather than treated as a conflict. Repeated list values are deduplicated and show their occurrence counts. For date and datetime properties, choosing **Other value…** opens the native date/time input; datetime edits retain the selected candidate's UTC offset.
+- **Copy from the active tab group**: when the same scalar property holds different values across the group's notes (e.g. different `status` values), the conflicting options are presented once and exactly one must be chosen before anything reaches the clipboard. List properties union silently; agreeing scalars copy silently.
+- **Paste** (merge mode only): when a scalar property in the clipboard collides with a different value already in the target note(s), the options are presented before anything is written; one resolution is applied to every target. For a tab-group paste, all conflicts in the group are resolved in a single pass. **Overwrite** and **Skip existing** paste modes never ask about value collisions — the mode itself already decides the winner. Cancel the dialog and nothing is written.
+- **Repeated values**: identical scalar values within one note are shown once with a notice rather than treated as a conflict. Repeated list values are deduplicated and show their occurrence counts. For date and datetime properties, choosing **Other value…** opens the native date/time input. The chosen date stays visible and can be edited in place; changing it replaces the one selected value rather than adding a second date. Datetime edits retain the selected candidate's UTC offset.
+
+Only conflicting properties require a choice. Other properties are shown in a separate optional section for reference and can be edited or excluded, but they do not need to be resolved.
 
 #### Duplicate property keys
 
@@ -39,20 +37,20 @@ A note whose frontmatter contains the same property key more than once (e.g. two
 
 During Copy, your choices determine the clipboard contents. A separate permission prompt lists the affected source files before any rewrite: **Repair notes and copy** removes redundant occurrences, while **Copy only** leaves source files unchanged. Dismissing this permission prompt also copies without rewriting. During Paste, duplicate keys in the target are repaired as part of the paste. Clearing a duplicate property removes it from the resolved values and, if repair is authorized, from the note. Cancelling conflict resolution leaves the notes and clipboard unchanged. Unrelated list items and other note content are not rewritten by the repair.
 
-The **Only include** and **Exclude keys** filters match property names case-insensitively and treat underscores as spaces, so `created_date` is caught by an exclusion of `created date`.
+The **Only include properties** and **Exclude properties** filters match property names case-insensitively and treat underscores as spaces, so `created_date` is caught by an exclusion of `created date`.
 
 ## Settings
 
 Settings are organized into groups:
 
-### Property filters (non-tag commands)
+### Property filters (property-copy commands)
 
-These filters apply to property copy and paste commands. **Edit property clipboard** edits the current clipboard and can add properties regardless of these filters.
+These filters apply to all property-copy commands. Tags are frontmatter properties here, not a separate tag-only command. They do not change paste operations or **Edit property clipboard**; duplicate-key repair still runs regardless of these filters.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| **Only include** | `tags` | Comma-separated whitelist of properties to copy (applies only to non-tag commands). When populated, **Exclude keys** is ignored. |
-| **Exclude keys** | `aliases, created date, modified date` | Comma-separated properties to ignore (applies only to non-tag commands). Automatically disabled when **Only include** is populated. |
+| **Only include properties** | `tags` | Choose existing properties or confirm new names to copy only those properties in property-copy commands. |
+| **Exclude properties** | `aliases, created date, modified date` | Choose existing properties or confirm new names to skip after applying **Only include properties**. A property cannot be in both lists; the picker warns and rejects overlapping selections. |
 
 ### Paste behavior
 
@@ -93,7 +91,7 @@ The **Edit property clipboard** command opens the shared property editor. When a
 | Checkbox (boolean) | Yes | Selectable via **Edit property clipboard**. |
 | Date | Yes | Selectable via **Edit property clipboard** and native date input for custom conflict values. |
 | Date & Time | Yes | Selectable via **Edit property clipboard** and native date/time input for custom conflict values. |
-| List (array) | Yes | Selectable via **Edit property clipboard** (with "Select all", "Clear", and candidate pills). |
+| List (array) | Yes | Selectable via **Edit property clipboard**, with individual values removable from the list. |
 | Nested Object (mapping) | Whole value | Copied/pasted as a whole value. |
 | Array of Objects | Whole value | Copied/pasted as a whole value. |
 
@@ -101,29 +99,8 @@ The **Edit property clipboard** command opens the shared property editor. When a
 
 Precise wording matters here because "property" and "tag" mean different things:
 
-- **Property** — a YAML frontmatter *key*, e.g. `tags`, `status`, `aliases`. The **Only include** and **Exclude keys** settings operate on properties for non-tag commands.
+- **Property** — a YAML frontmatter property, e.g. `tags`, `status`, `aliases`. The **Only include properties** and **Exclude properties** settings operate on properties in all property-copy commands; `tags` is treated the same as other properties.
 - **Property value** — whatever is stored under a property key. For `tags`, that's a list; for `status`, that might be a single string.
 - **Item** — one element of a *list-type* property's value. Each tag in `tags: [a, b, c]` is an item of the `tags` property — an item is never itself a "property".
 
 Both the `tags` property and general frontmatter properties can be interactively configured before pasting via **Edit property clipboard**.
-
-## Install
-
-1. Create a new repository from this template, or clone this repo into `<vault>/.obsidian/plugins/obsidian-property-porter/`.
-2. Run `npm install`.
-3. Run `npm run build`.
-4. Enable **Property Porter** in Obsidian's Community Plugins settings.
-
-## Developing
-
-- `npm run dev` — watch and rebuild `main.js` with esbuild.
-- `npm run lint` — ESLint with zero-warning policy.
-- `npm run build` — lint + type-check + production bundle.
-- `npm run format` — Prettier write over `src`.
-- `npm run test:run` — Vitest unit/integration suite.
-- `npm run test:browser` — Playwright browser regression suite.
-
-## Releasing
-
-1. Bump the version: `npm version patch` (or `minor`/`major`). This updates `manifest.json` and `versions.json` via `version-bump.mjs`.
-2. Push the tag: `git push && git push --tags`. The `release.yml` workflow builds the plugin and drafts a GitHub release containing `main.js`, `manifest.json`, and `styles.css`.

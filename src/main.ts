@@ -8,6 +8,7 @@ import {
 	Modal,
 	FileView,
 	WorkspaceLeaf,
+	parseYaml,
 	type SettingDefinitionItem,
 } from "obsidian";
 import {
@@ -16,10 +17,14 @@ import {
 	unionFrontmatter,
 	collectValueSources,
 	mergeValueSources,
+	mergeValueSourcesByMaximumCount,
 	isEmptyPropertyValue,
 	countPropertyValue,
 	parseCommaList,
+	findOverlappingPropertyFilters,
+	removeOverlappingExcludedProperties,
 	parseRawFrontmatter,
+	getFrontmatterLines,
 	applyDuplicateResolution,
 	formatRawValue,
 	type PasteMode,
@@ -40,7 +45,7 @@ import {
 	normalizeTag,
 	ValuePicker,
 } from "commons/properties";
-import { FileSuggestModal } from "./utils/modal";
+import { FileSuggestModal } from "commons/modal";
 import {
 	SelectPropertiesModal,
 	type ConflictCardContext,
@@ -218,6 +223,17 @@ export default class PropertyPorter extends Plugin {
 		const { autoClear: _legacyAutoClear, ...stored } =
 			((await this.loadData()) ?? {}) as Partial<PropertyPorterSettings> & { autoClear?: unknown };
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, stored);
+		const repairedFilters = removeOverlappingExcludedProperties(
+			this.settings.onlyInclude,
+			this.settings.excludeKeys
+		);
+		if (repairedFilters.removed.length > 0) {
+			this.settings.excludeKeys = repairedFilters.excludeKeys;
+			new Notice(
+				`Property Porter: removed excluded properties that also appear in Only include properties: ${repairedFilters.removed.join(", ")}.`
+			);
+			await this.saveData(this.settings);
+		}
 	}
 
 	async saveSettings(): Promise<void> {
@@ -248,6 +264,11 @@ export default class PropertyPorter extends Plugin {
 		return stripPosition(cache.frontmatter);
 	}
 
+	private async getFreshParsedFrontmatter(file: TFile): Promise<Record<string, unknown>> {
+		const content = await this.readRawFileContent(file);
+		return this.parseFrontmatterContent(content, file);
+	}
+
 	getFilteredSourceFrontmatter(file?: TFile | null): Record<string, unknown> | null {
 		const source = file ?? this.getActiveFile();
 		if (!source) {
@@ -270,17 +291,47 @@ export default class PropertyPorter extends Plugin {
 		new Notice(`Property Porter: ${count} propert${count === 1 ? "y" : "ies"} copied`);
 	}
 
-	// Reads the raw text of a file. Duplicate-key detection cannot use the
-	// metadata cache because Obsidian can return no frontmatter at all for a
-	// note with duplicated keys.
+	// Reads from the vault rather than metadataCache/cachedRead so commands see
+	// frontmatter changes immediately, before Obsidian finishes re-indexing.
 	private async readRawFileContent(file: TFile): Promise<string> {
 		try {
-			return (await this.app.vault.cachedRead?.(file)) ?? "";
+			return await this.app.vault.read(file);
 		} catch (error) {
-			new Notice(
-				`Property Porter: could not read ${file.basename} to check for duplicate properties (${String(error)})`
-			);
-			return "";
+			new Notice(`Property Porter: could not read ${file.basename} frontmatter (${String(error)})`);
+			throw error;
+		}
+	}
+
+	private parseFrontmatterContent(
+		content: string,
+		file: TFile,
+		rawFrontmatter = parseRawFrontmatter(content)
+	): Record<string, unknown> {
+		const lines = getFrontmatterLines(content);
+		if (lines.length === 0) return {};
+		const closingLine = lines.findIndex((line, index) => index > 0 && line.trim() === "---");
+		if (closingLine === -1) return {};
+		const duplicateLines = new Set<number>();
+		for (const duplicate of rawFrontmatter.duplicates) {
+			for (const [start, end] of duplicate.spans.slice(1)) {
+				for (let line = start; line <= end; line++) duplicateLines.add(line);
+			}
+		}
+		const yaml = lines
+			.slice(1, closingLine)
+			.filter((_, index) => !duplicateLines.has(index + 1))
+			.join("\n");
+
+		try {
+			const parsed = parseYaml(yaml);
+			if (parsed === null || parsed === undefined) return {};
+			if (typeof parsed !== "object" || Array.isArray(parsed)) {
+				throw new Error("Frontmatter must be a YAML mapping");
+			}
+			return stripPosition(parsed as Record<string, unknown>);
+		} catch (error) {
+			new Notice(`Property Porter: could not parse ${file.basename} frontmatter (${String(error)})`);
+			throw error;
 		}
 	}
 
@@ -300,7 +351,7 @@ export default class PropertyPorter extends Plugin {
 		selectedByFile: Map<TFile, Record<string, unknown>>;
 		/** Applies the staged note rewrites. Call only on success. */
 		commit: () => Promise<void>;
-	} | null> {
+	}> {
 		const staged: Array<{ file: TFile; content: string }> = [];
 		const fullByFile = new Map<TFile, Record<string, unknown>>();
 		const selectedByFile = new Map<TFile, Record<string, unknown>>();
@@ -308,6 +359,11 @@ export default class PropertyPorter extends Plugin {
 		for (const file of files) {
 			const content = await this.readRawFileContent(file);
 			const parsed = parseRawFrontmatter(content);
+			const freshFrontmatter = {
+				...this.parseFrontmatterContent(content, file, parsed),
+				...parsed.map,
+			};
+			fullByFile.set(file, freshFrontmatter);
 			if (parsed.duplicates.length === 0) continue;
 
 			const conflicts: Record<string, unknown[]> = {};
@@ -341,7 +397,11 @@ export default class PropertyPorter extends Plugin {
 				};
 			}
 
-			const copyCandidates = filterFrontmatter(parsed.map, this.settings.onlyInclude, this.settings.excludeKeys);
+			const copyCandidates = filterFrontmatter(
+				freshFrontmatter,
+				this.settings.onlyInclude,
+				this.settings.excludeKeys
+			);
 			const initial = { ...(askBeforeRepair ? copyCandidates : {}), ...conflicts };
 			const conflictNames = Object.keys(conflicts);
 			const result = await this.openPropertySelectionModal(initial, context, {
@@ -387,15 +447,18 @@ export default class PropertyPorter extends Plugin {
 			}
 
 			staged.push({ file, content: applyDuplicateResolution(content, decisions) });
-			const full: Record<string, unknown> = { ...parsed.map, ...keep };
+			const full: Record<string, unknown> = { ...freshFrontmatter, ...keep };
 			for (const key of remove) delete full[key];
 			fullByFile.set(file, full);
 		}
 
-		if (staged.length === 0) return null;
-
 		const commit = async (): Promise<void> => {
-			if (askBeforeRepair && !(await this.confirmSourceRepair(staged.map(({ file }) => file)))) return;
+			if (
+				staged.length > 0 &&
+				askBeforeRepair &&
+				!(await this.confirmSourceRepair(staged.map(({ file }) => file)))
+			)
+				return;
 			for (const { file, content } of staged) {
 				await this.app.vault.modify(file, content);
 			}
@@ -417,11 +480,11 @@ export default class PropertyPorter extends Plugin {
 		}
 		const duplicates = await this.resolveDuplicateKeys([source], true);
 		if (duplicates?.cancelled) return;
-		const full = duplicates?.fullByFile.get(source) ?? this.getParsedFrontmatter(source);
+		const full = duplicates.fullByFile.get(source) ?? (await this.getFreshParsedFrontmatter(source));
 		const filtered =
-			duplicates?.selectedByFile.get(source) ??
+			duplicates.selectedByFile.get(source) ??
 			filterFrontmatter(full, this.settings.onlyInclude, this.settings.excludeKeys);
-		await duplicates?.commit();
+		await duplicates.commit();
 		this.clipboardOrigin = source.basename;
 		this.applyClipboard(
 			filtered,
@@ -437,11 +500,11 @@ export default class PropertyPorter extends Plugin {
 		if (!file) return;
 		const duplicates = await this.resolveDuplicateKeys([file], true);
 		if (duplicates?.cancelled) return;
-		const full = duplicates?.fullByFile.get(file) ?? this.getParsedFrontmatter(file);
+		const full = duplicates.fullByFile.get(file) ?? (await this.getFreshParsedFrontmatter(file));
 		const filtered =
-			duplicates?.selectedByFile.get(file) ??
+			duplicates.selectedByFile.get(file) ??
 			filterFrontmatter(full, this.settings.onlyInclude, this.settings.excludeKeys);
-		await duplicates?.commit();
+		await duplicates.commit();
 		this.clipboardOrigin = file.basename;
 		this.applyClipboard(filtered, collectValueSources([{ note: file.basename, frontmatter: filtered }]));
 	}
@@ -461,14 +524,15 @@ export default class PropertyPorter extends Plugin {
 		if (duplicates?.cancelled) return; // leave every note and the clipboard untouched
 
 		const fulls: Record<string, unknown>[] = [];
-		const collected = files.map((file) => {
-			const full = duplicates?.fullByFile.get(file) ?? this.getParsedFrontmatter(file);
+		for (const file of files) {
+			const full = duplicates.fullByFile.get(file);
+			if (!full) throw new Error(`Missing frontmatter snapshot for ${file.path}`);
 			fulls.push(full);
-			return (
-				duplicates?.selectedByFile.get(file) ??
-				filterFrontmatter(full, this.settings.onlyInclude, this.settings.excludeKeys)
-			);
-		});
+		}
+		const collected = files.map((file, index) =>
+			duplicates.selectedByFile.get(file) ??
+			filterFrontmatter(fulls[index], this.settings.onlyInclude, this.settings.excludeKeys)
+		);
 		const valueSources = collectValueSources(
 			files.map((file, index) => ({ note: file.basename, frontmatter: collected[index] }))
 		);
@@ -482,12 +546,12 @@ export default class PropertyPorter extends Plugin {
 			const context = this.buildCrossNoteConflictContext(files, fulls, conflicts, valueSources);
 			const resolved = await this.resolveConflicts({ ...union }, conflicts, context);
 			if (resolved === null) return; // cancelled: notes stay unrepaired, clipboard untouched
-			await duplicates?.commit();
+			await duplicates.commit();
 			this.clipboardOrigin = files.map((file) => file.basename).join(", ");
 			this.applyClipboard(resolved, valueSources);
 			return;
 		}
-		await duplicates?.commit();
+		await duplicates.commit();
 		this.clipboardOrigin = files.map((file) => file.basename).join(", ");
 		this.applyClipboard(union, valueSources);
 	}
@@ -517,13 +581,13 @@ export default class PropertyPorter extends Plugin {
 		// whole paste has succeeded.
 		const duplicates = await this.resolveDuplicateKeys([file]);
 		if (duplicates?.cancelled) return;
-		const repaired = duplicates?.fullByFile.get(file);
+		const repaired = duplicates.fullByFile.get(file);
 		const overrides = repaired ? new Map([[file, repaired]]) : undefined;
 
 		// A merge-mode scalar collision is ambiguous: ask once before writing.
 		// Overwrite and skip modes already encode the user's choice.
 		let payload = structuredClone(this.clipboard);
-		const { conflicts, context } = this.gatherPasteConflicts([file], overrides);
+		const { conflicts, context } = await this.gatherPasteConflicts([file], overrides);
 		if (Object.keys(conflicts).length > 0) {
 			const resolved = await this.resolveConflicts(payload, conflicts, context);
 			if (resolved === null) return; // cancelled: target stays untouched
@@ -533,7 +597,7 @@ export default class PropertyPorter extends Plugin {
 			new Notice("Property Porter: Nothing pasted; no property values were selected.");
 			return;
 		}
-		await duplicates?.commit();
+		await duplicates.commit();
 		await this.writeProperties(file, payload);
 		new Notice(pastedClipboardNotice(payload, [file.basename]));
 	}
@@ -628,7 +692,7 @@ export default class PropertyPorter extends Plugin {
 				)
 			: undefined;
 
-		const { conflicts, context } = this.gatherPasteConflicts(files, overrides);
+		const { conflicts, context } = await this.gatherPasteConflicts(files, overrides);
 		let payload: Record<string, unknown> = structuredClone(this.clipboard);
 		if (Object.keys(conflicts).length > 0) {
 			const resolved = await this.resolveConflicts(payload, conflicts, context);
@@ -640,7 +704,7 @@ export default class PropertyPorter extends Plugin {
 			new Notice("Property Porter: Nothing pasted; no property values were selected.");
 			return;
 		}
-		await duplicates?.commit();
+		await duplicates.commit();
 		for (const file of files) {
 			await this.writeProperties(file, payload);
 		}
@@ -658,9 +722,12 @@ export default class PropertyPorter extends Plugin {
 				return;
 			}
 
-			new FileSuggestModal(this.app, files, (file) => {
-				resolve(file);
-			}).open();
+			new FileSuggestModal(
+				this.app,
+				files,
+				(file) => resolve(file),
+				{ searchMode: "substring", limit: 20 }
+			).open();
 		});
 	}
 
@@ -750,25 +817,27 @@ export default class PropertyPorter extends Plugin {
 	// the candidates are the clipboard value plus every distinct target value.
 	// `overrides` replace a target's cached frontmatter (used after a
 	// duplicate-key repair, which the metadata cache may not reflect yet).
-	private gatherPasteConflicts(
+	private async gatherPasteConflicts(
 		files: TFile[],
 		overrides?: Map<TFile, Record<string, unknown>>
-	): { conflicts: Record<string, unknown[]>; context: Record<string, ConflictCardContext> } {
+	): Promise<{ conflicts: Record<string, unknown[]>; context: Record<string, ConflictCardContext> }> {
 		const conflicts: Record<string, unknown[]> = {};
 		const context: Record<string, ConflictCardContext> = {};
 		if (this.settings.pasteMode !== "merge") return { conflicts, context };
 
-		const targetFrontmatters = files.map((file) => ({
-			note: file.basename,
-			frontmatter: overrides?.get(file) ?? this.getParsedFrontmatter(file),
-		}));
+		const targetFrontmatters = await Promise.all(
+			files.map(async (file) => ({
+				note: file.basename,
+				frontmatter: overrides?.get(file) ?? (await this.getFreshParsedFrontmatter(file)),
+			}))
+		);
 		const fallbackClipboardSources: FrontmatterValueSources = this.clipboardOrigin
 			? collectValueSources([{ note: this.clipboardOrigin, frontmatter: this.clipboard }])
 			: {};
 		for (const key of Object.keys(this.clipboardValueSources)) {
 			delete fallbackClipboardSources[key];
 		}
-		const valueSources = mergeValueSources(
+		const valueSources = mergeValueSourcesByMaximumCount(
 			this.clipboardValueSources,
 			fallbackClipboardSources,
 			collectValueSources(targetFrontmatters)
@@ -844,7 +913,7 @@ export default class PropertyPorter extends Plugin {
 		const result = await this.openPropertySelectionModal(
 			{ ...this.clipboard },
 			context,
-			{ title: "Edit property clipboard" }
+			{ title: "Edit property clipboard", focusFirstProperty: false }
 		);
 
 		if (result.cancelled) return;
@@ -1079,58 +1148,48 @@ export class PropertyPorterSettingTab extends PluginSettingTab {
 		super(app, plugin);
 	}
 
-	private isExcludeKeysDisabled(): boolean {
-		return parseCommaList(this.plugin.settings.onlyInclude).length > 0;
-	}
-
 	getSettingDefinitions(): SettingDefinitionItem<keyof PropertyPorterSettings>[] {
-		const propertyNames = collectVaultMetadata(this.app).properties.map(({ name }) => name);
-		let excludeFieldset: HTMLFieldSetElement | null = null;
-
 		const propertyPickerDefinition = (key: "onlyInclude" | "excludeKeys") => {
 			const isIncludePicker = key === "onlyInclude";
 			return {
-				name: isIncludePicker ? "Only include" : "Exclude keys",
+				name: isIncludePicker ? "Only include properties" : "Exclude properties",
 				desc: isIncludePicker
-					? "Properties to copy (only for non-tag commands). Mutually exclusive with Exclude keys."
-					: "Properties to ignore (only for non-tag commands). Disabled when Only include is populated.",
+					? "Choose existing properties or confirm new names to copy. Cannot overlap with Exclude properties."
+					: "Choose existing properties or confirm new names to skip. Cannot overlap with Only include properties.",
 				render: (setting: Setting) => {
-					let pickerHost: HTMLElement = setting.controlEl;
-					let fieldset: HTMLFieldSetElement | null = null;
-					if (!isIncludePicker) {
-						fieldset = setting.controlEl.createEl("fieldset", {
-							cls: "pp-property-picker-fieldset",
-						});
-						fieldset.disabled = this.isExcludeKeysDisabled();
-						excludeFieldset = fieldset;
-						pickerHost = fieldset;
-					}
-
-					const picker = new ValuePicker(this.app, pickerHost, {
+					const propertyNames = collectVaultMetadata(this.app).properties.map(({ name }) => name);
+					const picker = new ValuePicker(this.app, setting.controlEl, {
 						suggestions: propertyNames,
 						value: parseCommaList(this.plugin.settings[key]),
 						multiple: true,
 						allowCreate: true,
 						kind: "property",
 						classPrefix: "pp",
-						placeholder: isIncludePicker
-							? "Add properties to include…"
-							: "Add properties to exclude…",
+						placeholder: "Add a property",
 						ariaLabel: isIncludePicker
 							? "Only include properties"
 							: "Exclude properties",
 						onChange: (values) => {
-							this.plugin.settings[key] = values.join(", ");
-							if (isIncludePicker && excludeFieldset) {
-								excludeFieldset.disabled = this.isExcludeKeysDisabled();
+							const includes = isIncludePicker ? values.join(", ") : this.plugin.settings.onlyInclude;
+							const excludes = isIncludePicker ? this.plugin.settings.excludeKeys : values.join(", ");
+							const overlaps = findOverlappingPropertyFilters(includes, excludes);
+							if (overlaps.length > 0) {
+								const names = overlaps.join(", ");
+								new Notice(
+									`Property Porter: ${names} ${overlaps.length === 1 ? "is" : "are"} already ${
+										isIncludePicker ? "excluded" : "included"
+									} and cannot also be ${isIncludePicker ? "included" : "excluded"}.`
+								);
+								picker.setValue(parseCommaList(this.plugin.settings[key]));
+								return;
 							}
+							this.plugin.settings[key] = values.join(", ");
 							void this.plugin.saveSettings();
 						},
 					});
 
 					return () => {
 						picker.destroy();
-						fieldset?.remove();
 					};
 				},
 			};
@@ -1139,7 +1198,7 @@ export class PropertyPorterSettingTab extends PluginSettingTab {
 		return [
 			{
 				type: "group",
-				heading: "Property filters (non-tag commands)",
+				heading: "Property filters (property-copy commands)",
 				items: [
 					propertyPickerDefinition("onlyInclude"),
 					propertyPickerDefinition("excludeKeys"),

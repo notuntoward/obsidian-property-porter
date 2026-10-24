@@ -3,6 +3,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import * as obsidianMock from "obsidian";
+import { ConfirmNewEntryModal } from "commons/properties";
 import PropertyPorter, {
 	SelectPropertiesModal,
 	NOTICE_CLEARED_COPIED_PROPERTIES,
@@ -60,6 +61,18 @@ function createApp(options: any = {}) {
 		},
 		vault: {
 			getMarkdownFiles: () => markdownFiles,
+			read: async (file: obsidianMock.TFile) => {
+				if (fileContents[file.path] !== undefined) return fileContents[file.path];
+				const frontmatter = fileCache[file.path]?.frontmatter ?? {};
+				const lines = Object.entries(frontmatter)
+					.filter(([key]) => key !== "position")
+					.flatMap(([key, value]) =>
+						Array.isArray(value)
+							? [`${key}:`, ...value.map((item) => `  - ${JSON.stringify(item)}`)]
+							: [`${key}: ${JSON.stringify(value)}`]
+					);
+				return `---\n${lines.join("\n")}\n---\n`;
+			},
 			cachedRead: async (file: obsidianMock.TFile) => fileContents[file.path] ?? "",
 			modify: async (file: obsidianMock.TFile, data: string) => {
 				fileContents[file.path] = data;
@@ -135,6 +148,33 @@ describe("SelectPropertiesModal", () => {
 			expect(modal.propertyStates.get("status")?.hasConflict).toBe(true);
 			expect(document.activeElement).not.toBe(modal.inputEl);
 			expect(document.activeElement).toBe(modal.contentEl.querySelector(".pp-conflict-option input"));
+			expect(modal.contentEl.querySelector<HTMLDetailsElement>(".pp-add-property-details")?.open).toBe(false);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("can leave the first property unfocused when editing the clipboard", () => {
+		vi.useFakeTimers();
+		try {
+			const { app } = createApp();
+			const modal = new SelectPropertiesModal(
+				app as any,
+				createMockCatalog(),
+				{ status: "draft" },
+				vi.fn(),
+				vi.fn(),
+				{},
+				{ title: "Edit property clipboard", focusFirstProperty: false }
+			);
+			document.body.appendChild(modal.contentEl);
+			modal.onOpen();
+			vi.runOnlyPendingTimers();
+
+			expect(document.activeElement).toBe(modal.contentEl.querySelector(".pp-finish-button"));
+			const addPropertySection = modal.contentEl.querySelector<HTMLDetailsElement>(".pp-add-property-details");
+			expect(addPropertySection?.open).toBe(false);
+			expect(addPropertySection?.nextElementSibling?.classList.contains("pp-properties-list")).toBe(true);
 		} finally {
 			vi.useRealTimers();
 		}
@@ -189,6 +229,22 @@ describe("SelectPropertiesModal", () => {
 		expect(chip?.dataset.entry).toBeUndefined();
 		expect(chip?.querySelector(".commons-property-picker-new-badge")).toBeNull();
 		expect(card.querySelector<HTMLElement>(".commons-property-picker-status")?.hidden).toBe(true);
+		expect(modal.propertyStates.get("imported_property")?.picker?.rootEl.dataset.valueStyle).toBe("plain");
+	});
+
+	it("renders scalar conflict values without tag bubbles", () => {
+		const { app } = createApp();
+		const modal = new SelectPropertiesModal(
+			app as any,
+			createMockCatalog(),
+			{ status: ["draft", "published"] },
+			vi.fn(),
+			vi.fn()
+		);
+		modal.onOpen();
+		modal.contentEl.querySelectorAll<HTMLInputElement>(".pp-conflict-option input")[2]!.click();
+
+		expect(modal.propertyStates.get("status")?.picker?.rootEl.dataset.valueStyle).toBe("plain");
 	});
 
 	it("when notes with a scalar property are merged and there is a conflict, presents options and user selects one", () => {
@@ -206,7 +262,9 @@ describe("SelectPropertiesModal", () => {
 
 		const statusCard = modal.contentEl.querySelector(".pp-property-card")!;
 		expect(statusCard).not.toBeNull();
-		expect(statusCard.querySelector(".pp-property-warning")?.textContent).toContain("Conflicting values");
+		expect(statusCard.querySelector(".pp-property-warning")?.textContent).toBe(
+			"Choose which status value to keep."
+		);
 
 		const group = statusCard.querySelector('[role="radiogroup"]')!;
 		const options = statusCard.querySelectorAll<HTMLLabelElement>(".pp-conflict-option");
@@ -222,13 +280,25 @@ describe("SelectPropertiesModal", () => {
 		expect(statusCard.querySelector(".pp-option-pill")).toBeNull();
 		expect(statusCard.querySelector(".pp-property-picker-host")).toBeNull();
 
+		expect(modal.contentEl.querySelector(".pp-conflict-section h3")?.textContent).toBe(
+			"Resolve Property Conflicts"
+		);
+		expect(modal.contentEl.querySelector(".pp-properties-section h3")?.textContent).toBe("Other properties");
+		expect(modal.contentEl.querySelector(".pp-properties-section .pp-properties-info")?.textContent).toBe(
+			"These properties have no conflicts and need no action. Edit or exclude them only if you want."
+		);
+		const addPropertySection = modal.contentEl.querySelector(".pp-properties-section .pp-add-property-details");
+		expect(addPropertySection?.querySelector("summary")?.textContent).toBe("Add new property");
+		expect(addPropertySection?.nextElementSibling?.classList.contains("pp-properties-list")).toBe(true);
+
 		radios[1].click();
 		expect(radios[1].checked).toBe(true);
 		expect(modal.propertyStates.get("status")?.selected).toEqual(["published"]);
 		expect(modal.getSelectedProperties()).toEqual({ status: "published" });
 
-		// Click finish selection
-		modal.contentEl.querySelector<HTMLButtonElement>(".pp-finish-button")!.click();
+		modal.contentEl.dispatchEvent(
+			new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true })
+		);
 
 		expect(onSubmit).toHaveBeenCalledWith({
 			status: "published",
@@ -260,10 +330,11 @@ describe("SelectPropertiesModal", () => {
 		const card = modal.contentEl.querySelector(".pp-property-card")!;
 		const options = card.querySelectorAll<HTMLLabelElement>(".pp-conflict-option");
 		const otherRadio = options[2].querySelector<HTMLInputElement>("input")!;
-		expect(card.querySelector(".pp-property-warning")?.textContent).toBe(
-			"Choose which status to keep. Notes differ: Note-A, Note-B"
-		);
+		expect(card.querySelector(".pp-property-warning")?.textContent).toBe("Choose which status value to keep.");
+		expect(card.querySelector(".pp-property-warning")?.textContent).not.toContain("Note-A");
+		expect(card.querySelector(".pp-property-warning")?.textContent).not.toContain("Note-B");
 		expect(options[0].querySelector(".pp-conflict-sources")?.textContent).toBe("Note-A");
+		expect(options[1].querySelector(".pp-conflict-sources")?.textContent).toBe("Note-B");
 		expect(options[2].querySelector(".pp-conflict-value")?.textContent).toBe("Other value…");
 		expect(card.querySelector(".pp-property-picker-host")).toBeNull();
 
@@ -285,6 +356,79 @@ describe("SelectPropertiesModal", () => {
 
 		modal.contentEl.querySelector<HTMLButtonElement>(".pp-finish-button")!.click();
 		expect(onSubmit).toHaveBeenCalledWith({ status: "draft" });
+	});
+
+	it("accepts typed values for scalar conflicts without a new-entry confirmation", () => {
+		const { app } = createApp();
+		const modal = new SelectPropertiesModal(
+			app as any,
+			createMockCatalog(),
+			{ status: ["draft", "published"] },
+			vi.fn(),
+			vi.fn()
+		);
+		modal.onOpen();
+		modal.contentEl.querySelectorAll<HTMLInputElement>(".pp-conflict-option input")[2]!.click();
+
+		const picker = modal.propertyStates.get("status")!.picker!;
+		const confirmOpen = vi.spyOn(ConfirmNewEntryModal.prototype, "open");
+		const suggester = getInputSuggest(picker.inputEl);
+		const createOption = suggester.suggestions("custom status").find(
+			(option: any) => option.kind === "create"
+		);
+		expect(createOption).toBeDefined();
+		suggester.select(createOption);
+
+		expect(confirmOpen).not.toHaveBeenCalled();
+		expect(modal.propertyStates.get("status")?.selected).toEqual(["custom status"]);
+	});
+
+	it("accepts typed values for non-conflicting scalar properties without confirmation", () => {
+		const { app } = createApp();
+		const modal = new SelectPropertiesModal(
+			app as any,
+			createMockCatalog(),
+			{ status: "draft" },
+			vi.fn(),
+			vi.fn()
+		);
+		modal.onOpen();
+
+		const picker = modal.propertyStates.get("status")!.picker!;
+		const confirmOpen = vi.spyOn(ConfirmNewEntryModal.prototype, "open");
+		const suggester = getInputSuggest(picker.inputEl);
+		const createOption = suggester.suggestions("custom status").find(
+			(option: any) => option.kind === "create"
+		);
+		expect(createOption).toBeDefined();
+		suggester.select(createOption);
+
+		expect(confirmOpen).not.toHaveBeenCalled();
+		expect(picker.getValue()).toEqual(["custom status"]);
+	});
+
+	it("still confirms typed values for list properties", () => {
+		const { app } = createApp();
+		const modal = new SelectPropertiesModal(
+			app as any,
+			createMockCatalog(),
+			{ cast: ["Mark Hamill"] },
+			vi.fn(),
+			vi.fn()
+		);
+		modal.onOpen();
+
+		const picker = modal.propertyStates.get("cast")!.picker!;
+		const confirmOpen = vi.spyOn(ConfirmNewEntryModal.prototype, "open");
+		const suggester = getInputSuggest(picker.inputEl);
+		const createOption = suggester.suggestions("New Actor").find(
+			(option: any) => option.kind === "create"
+		);
+		expect(createOption).toBeDefined();
+		suggester.select(createOption);
+
+		expect(confirmOpen).toHaveBeenCalledOnce();
+		expect(picker.getValue()).toEqual(["Mark Hamill"]);
 	});
 
 	it("treats conflict candidates as known and accepts typed date values without a new-entry modal", () => {
@@ -320,6 +464,15 @@ describe("SelectPropertiesModal", () => {
 		picker.inputEl.dispatchEvent(new Event("change"));
 
 		expect(modal.propertyStates.get("modified_date")?.selected).toEqual(["2026-10-26T10:00Z"]);
+		expect(picker.inputEl.value).toBe("2026-10-26T10:00");
+		expect(card.querySelector(".pp-property-picker-hint")?.textContent).toBe(
+			"Changing this date replaces the property value; it will not add another date."
+		);
+
+		picker.inputEl.value = "2026-10-27T12:15";
+		picker.inputEl.dispatchEvent(new Event("change"));
+		expect(modal.propertyStates.get("modified_date")?.selected).toEqual(["2026-10-27T12:15Z"]);
+		expect(modal.getSelectedProperties()).toEqual({ modified_date: "2026-10-27T12:15Z" });
 		expect(document.querySelectorAll(".pp-new-entry-modal")).toHaveLength(confirmationModalCount);
 	});
 
@@ -388,9 +541,10 @@ describe("SelectPropertiesModal", () => {
 		expect(modal.propertyStates.get("modified_date")?.selected).toEqual([
 			"2026-10-26T11:30+02:00",
 		]);
+		expect(picker.inputEl.value).toBe("2026-10-26T11:30");
 	});
 
-	it("when notes with a list property have multiple values, allows selecting one or all of them", () => {
+	it("shows only selected list values and removes them without opening suggestions", () => {
 		const { app } = createApp();
 		const catalog = createMockCatalog();
 		const initial = {
@@ -404,42 +558,124 @@ describe("SelectPropertiesModal", () => {
 
 		const castCard = modal.contentEl.querySelector(".pp-property-card")!;
 		expect(castCard.querySelector(".pp-property-badge")?.textContent).toBe("List");
-
-		// Quick action buttons exist
-		const selectAllBtn = castCard.querySelector<HTMLButtonElement>(".pp-select-all-btn")!;
-		const clearBtn = castCard.querySelector<HTMLButtonElement>(".pp-clear-btn")!;
-		expect(selectAllBtn).not.toBeNull();
-		expect(clearBtn).not.toBeNull();
-
-		// Candidate pills are present and initially all selected
-		const pills = castCard.querySelectorAll<HTMLButtonElement>(".pp-option-pill");
-		expect(pills.length).toBe(3);
-		expect(Array.from(pills).every((p) => p.classList.contains("is-selected"))).toBe(true);
-
-		// Click "Clear" to unselect all
-		clearBtn.click();
-		expect(Array.from(pills).every((p) => !p.classList.contains("is-selected"))).toBe(true);
-
-		// Click one candidate pill to select only "Harrison Ford"
-		pills[1].click();
-		expect(pills[1].classList.contains("is-selected")).toBe(true);
-		expect(pills[0].classList.contains("is-selected")).toBe(false);
-
-		// Click "Select all" to select all of them
-		selectAllBtn.click();
-		expect(Array.from(pills).every((p) => p.classList.contains("is-selected"))).toBe(true);
+		expect(castCard.querySelector(".pp-list-actions")).toBeNull();
+		expect(castCard.querySelector(".pp-options-container")).toBeNull();
+		const picker = modal.propertyStates.get("cast")?.picker!;
+		expect(picker.rootEl.dataset.valueStyle).toBe("plain");
+		expect(picker.getValue()).toEqual(["Mark Hamill", "Harrison Ford", "Carrie Fisher"]);
+		const removeButton = castCard.querySelector<HTMLButtonElement>(".commons-property-picker-remove")!;
+		removeButton.focus();
+		removeButton.click();
+		expect(picker.getValue()).toEqual(["Harrison Ford", "Carrie Fisher"]);
+		expect(document.activeElement).not.toBe(picker.inputEl);
+		expect(castCard.querySelector(".suggestion-container")).toBeNull();
 
 		modal.contentEl.querySelector<HTMLButtonElement>(".pp-finish-button")!.click();
 		expect(onSubmit).toHaveBeenCalledWith({
-			cast: ["Mark Hamill", "Harrison Ford", "Carrie Fisher"],
+			cast: ["Harrison Ford", "Carrie Fisher"],
 		});
 	});
 
-	it("allows adding a new property through the search/add input", () => {
+	it("uses tag bubbles only for the tags list", () => {
+		const { app } = createApp();
+		const modal = new SelectPropertiesModal(
+			app as any,
+			createMockCatalog(),
+			{ tags: ["dev"], cast: ["Mark Hamill"] },
+			vi.fn(),
+			vi.fn()
+		);
+		modal.onOpen();
+
+		expect(modal.propertyStates.get("tags")?.picker?.rootEl.dataset.valueStyle).toBe("tag");
+		expect(modal.propertyStates.get("cast")?.picker?.rootEl.dataset.valueStyle).toBe("plain");
+	});
+
+	it("closes on Escape and cannot accept while a conflict has no selected value", () => {
+		const { app } = createApp();
+		const onSubmit = vi.fn();
+		const onCancel = vi.fn();
+		const modal = new SelectPropertiesModal(
+			app as any,
+			createMockCatalog(),
+			{ status: ["draft", "published"] },
+			onSubmit,
+			onCancel
+		);
+		modal.onOpen();
+
+		modal.clearAll();
+		const acceptButton = modal.contentEl.querySelector<HTMLButtonElement>(".pp-finish-button")!;
+		expect(acceptButton.disabled).toBe(true);
+		modal.submit();
+		expect(onSubmit).not.toHaveBeenCalled();
+
+		modal.contentEl.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		expect(onCancel).toHaveBeenCalledOnce();
+		expect(onSubmit).not.toHaveBeenCalled();
+	});
+
+	it("keeps accept and keyboard guidance visible while the property list scrolls", () => {
+		const { app } = createApp();
+		const modal = new SelectPropertiesModal(
+			app as any,
+			createMockCatalog(),
+			{ status: ["draft", "published"] },
+			vi.fn(),
+			vi.fn()
+		);
+		modal.onOpen();
+
+		expect(modal.contentEl.querySelector(".pp-select-properties-body")?.contains(
+			modal.contentEl.querySelector(".pp-properties-list")
+		)).toBe(true);
+		expect(modal.contentEl.querySelector(".pp-multi-select-controls")?.parentElement).toBe(modal.contentEl);
+		expect(modal.contentEl.querySelector(".pp-keyboard-hint")?.textContent).toContain("Esc cancels");
+	});
+
+	it("accepts the current clipboard with Enter from an empty property search", () => {
+		const { app } = createApp();
+		const onSubmit = vi.fn();
+		const modal = new SelectPropertiesModal(
+			app as any,
+			createMockCatalog(),
+			{ status: "draft" },
+			onSubmit,
+			vi.fn()
+		);
+		modal.onOpen();
+		modal.contentEl.querySelector<HTMLDetailsElement>(".pp-add-property-details")!.open = true;
+
+		modal.inputEl!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+
+		expect(onSubmit).toHaveBeenCalledWith({ status: "draft" });
+	});
+
+	it("leaves Enter available for property suggestions while the search has text", () => {
+		const { app } = createApp();
+		const onSubmit = vi.fn();
+		const modal = new SelectPropertiesModal(
+			app as any,
+			createMockCatalog(),
+			{ status: "draft" },
+			onSubmit,
+			vi.fn()
+		);
+		modal.onOpen();
+		modal.contentEl.querySelector<HTMLDetailsElement>(".pp-add-property-details")!.open = true;
+		modal.inputEl!.value = "sta";
+
+		modal.inputEl!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+
+		expect(onSubmit).not.toHaveBeenCalled();
+	});
+
+	it("allows adding a property that is not already shown", () => {
 		const { app } = createApp();
 		const catalog = createMockCatalog();
 		const modal = new SelectPropertiesModal(app as any, catalog, {}, vi.fn(), vi.fn());
 		modal.onOpen();
+		modal.contentEl.querySelector<HTMLDetailsElement>(".pp-add-property-details")!.open = true;
 
 		expect(modal.contentEl.querySelectorAll(".pp-property-card").length).toBe(0);
 
@@ -461,6 +697,7 @@ describe("SelectPropertiesModal", () => {
 		);
 		document.body.appendChild(modal.contentEl);
 		modal.onOpen();
+		modal.contentEl.querySelector<HTMLDetailsElement>(".pp-add-property-details")!.open = true;
 
 		const propertyInput = modal.inputEl!;
 		expect(propertyInput.classList.contains("commons-property-picker-input")).toBe(true);
@@ -484,6 +721,7 @@ describe("SelectPropertiesModal", () => {
 		const modal = new SelectPropertiesModal(app as any, createMockCatalog(), {}, vi.fn(), vi.fn());
 		document.body.appendChild(modal.contentEl);
 		modal.onOpen();
+		modal.contentEl.querySelector<HTMLDetailsElement>(".pp-add-property-details")!.open = true;
 		const propertyInput = modal.inputEl!;
 		propertyInput.value = "custom_property";
 		const suggester = getInputSuggest(propertyInput);
@@ -523,8 +761,8 @@ describe("SelectPropertiesModal", () => {
 		const cards = Array.from(modal.contentEl.querySelectorAll(".pp-property-card"));
 		const titleCard = cards.find((c) => c.querySelector(".pp-property-name")?.textContent === "title")!;
 		const excludeButton = titleCard.querySelector<HTMLButtonElement>(".pp-property-remove-btn")!;
-		expect(excludeButton.textContent).toBe("Don't paste");
-		expect(excludeButton.title).toBe("Exclude this whole property from the paste");
+		expect(excludeButton.textContent).toBe("Exclude");
+		expect(excludeButton.title).toBe("Exclude this property from the selection");
 		expect(excludeButton.getAttribute("aria-label")).toBe("Exclude title");
 		excludeButton.click();
 
@@ -596,6 +834,33 @@ describe("SelectPropertiesModal", () => {
 		expect(modal.contentEl.querySelectorAll(".pp-conflict-option")).toHaveLength(3);
 	});
 
+	it("keeps checkbox false and true values distinct and returns a boolean selection", () => {
+		const { app } = createApp();
+		const catalog = createMockCatalog();
+		catalog.properties.push({
+			name: "favorite",
+			kinds: ["boolean"],
+			values: ["false", "true"],
+		});
+		const modal = new SelectPropertiesModal(
+			app as any,
+			catalog,
+			{ favorite: [false, true] },
+			vi.fn(),
+			vi.fn()
+		);
+		modal.onOpen();
+
+		const card = modal.contentEl.querySelector(".pp-property-card")!;
+		const options = card.querySelectorAll(".pp-conflict-option");
+		expect(options[0].querySelector(".pp-conflict-value")?.textContent).toBe("false");
+		expect(options[1].querySelector(".pp-conflict-value")?.textContent).toBe("true");
+		options[0].querySelector<HTMLInputElement>("input")!.click();
+
+		expect(modal.propertyStates.get("favorite")?.hasConflict).toBe(true);
+		expect(modal.getSelectedProperties()).toEqual({ favorite: false });
+	});
+
 	it("renders an option for each distinct scalar value", () => {
 		const { app } = createApp();
 		const modal = new SelectPropertiesModal(
@@ -636,21 +901,17 @@ describe("SelectPropertiesModal", () => {
 		const card = modal.contentEl.querySelector(".pp-property-card")!;
 		expect(state.hasConflict).toBe(false);
 		expect(state.selected).toEqual(["a", "b"]);
-		expect(card.querySelectorAll(".pp-option-pill")).toHaveLength(2);
+		expect(card.querySelectorAll(".pp-option-pill")).toHaveLength(0);
 		expect(card.querySelector(".pp-property-notice")?.textContent).toContain(
 			"Note-06 had tags twice with the same value; it will be pasted once."
 		);
-		expect(card.querySelector(".pp-list-candidate-sources")?.textContent).toBe("×2 in Note-06");
 		expect(
 			Array.from(card.querySelectorAll<HTMLElement>(".commons-property-picker-chip")).every(
 				(chip) => chip.dataset.entry === undefined
 			)
 		).toBe(true);
 		expect(card.querySelector<HTMLElement>(".commons-property-picker-status")?.hidden).toBe(true);
-		expect(
-			card.querySelector(".pp-property-notice")!.compareDocumentPosition(card.querySelector(".pp-options-container")!) &
-				Node.DOCUMENT_POSITION_FOLLOWING
-		).toBeTruthy();
+		expect(card.querySelector(".commons-property-picker")?.dataset.valueStyle).toBe("tag");
 	});
 });
 
@@ -682,8 +943,8 @@ describe("PropertyPorter.selectPropertiesToPaste", () => {
 			const statusCard = Array.from(this.contentEl.querySelectorAll(".pp-property-card")).find(
 				(c: any) => c.querySelector(".pp-property-name")?.textContent === "status"
 			) as HTMLElement;
-			expect(statusCard.querySelector(".pp-property-warning")?.textContent).toContain(
-				"Choose which status to keep. Notes differ: a, b"
+			expect(statusCard.querySelector(".pp-property-warning")?.textContent).toBe(
+				"Choose which status value to keep."
 			);
 
 			const radios = statusCard.querySelectorAll<HTMLInputElement>('.pp-conflict-option input[type="radio"]');
