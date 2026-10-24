@@ -111,6 +111,35 @@ afterEach(() => {
 });
 
 describe("PropertyPorter", () => {
+	it("keeps repeated tag sources through copy and paste conflict resolution", async () => {
+		const source = new obsidianMock.TFile("source.md");
+		const { plugin, fileCache } = createPlugin({
+			activeFile: source,
+			markdownFiles: [source],
+		});
+		await plugin.onload();
+		plugin.settings.onlyInclude = "";
+		plugin.settings.excludeKeys = "";
+		fileCache[source.path] = {
+			frontmatter: { tags: ["#a", "a", "b"] },
+		};
+
+		await plugin.copyProperties();
+
+		let tagSources: string[] = [];
+		obsidianMock.Modal.prototype.open = function (this: any) {
+			this.onOpen();
+			const tagsCard = this.contentEl.querySelector(".pp-property-card") as HTMLElement;
+			tagSources = Array.from(tagsCard.querySelectorAll(".pp-list-candidate-sources")).map(
+				(el) => el.textContent ?? ""
+			);
+			this.contentEl.querySelector(".pp-finish-button").click();
+		};
+
+		await plugin.selectPropertiesToPaste();
+
+		expect(tagSources).toEqual(["×2 in source"]);
+	});
 	let originalSuggestOpen: () => void;
 
 	beforeEach(() => {
@@ -147,10 +176,12 @@ describe("PropertyPorter", () => {
 					Array.from(this.contentEl.querySelectorAll("button"))
 						.find((b: any) => b.textContent === label).click();
 				} else {
-					const pills = this.contentEl.querySelectorAll(".pp-option-pill");
-					expect(pills[0].textContent).toBe("1 (number)");
-					expect(pills[1].textContent).toBe("1 (string)");
-					pills[1].click();
+					const radios = this.contentEl.querySelectorAll<HTMLInputElement>(
+						'.pp-conflict-option input[type="radio"]'
+					);
+					expect(radios[0].value).toBe("1 (number)");
+					expect(radios[1].value).toBe("1 (string)");
+					radios[1].click();
 					this.contentEl.querySelector(".pp-finish-button").click();
 				}
 			};
@@ -174,7 +205,7 @@ describe("PropertyPorter", () => {
 				this.onOpen();
 				if (this instanceof SourceRepairPermissionModal) this.close();
 				else {
-					this.contentEl.querySelectorAll(".pp-option-pill")[1].click();
+					this.contentEl.querySelectorAll<HTMLInputElement>('.pp-conflict-option input[type="radio"]')[1].click();
 					this.contentEl.querySelector(".pp-finish-button").click();
 				}
 			};
@@ -426,16 +457,15 @@ describe("PropertyPorter", () => {
 					(c: any) => c.querySelector(".pp-property-name")?.textContent === "modified_date"
 				) as HTMLElement;
 				warningText = card.querySelector(".pp-property-warning")?.textContent ?? "";
-				const pills = card.querySelectorAll<HTMLButtonElement>(".pp-option-pill");
-				expect(pills.length).toBe(2);
-				pills[1].click(); // keep the later value
+					const radios = card.querySelectorAll<HTMLInputElement>('.pp-conflict-option input[type="radio"]');
+					expect(radios.length).toBe(3);
+					radios[1].click(); // keep the later value
 				this.contentEl.querySelector(".pp-finish-button").click();
 			};
 
 			await plugin.copyProperties();
 
-			// The card names the note the duplicate came from.
-			expect(warningText).toContain("note-six has more than one modified_date value");
+			expect(warningText).toBe("Choose which modified_date to keep. Notes differ: note-six");
 			// The note is repaired textually: only the chosen occurrence survives
 			// and every other line is preserved.
 			expect(fileContents[file.path]).toBe(
@@ -513,7 +543,7 @@ describe("PropertyPorter", () => {
 			expect(plugin.clipboard).toEqual({ title: "T" });
 		});
 
-		it("flags identical duplicate values as a conflict too", async () => {
+		it("shows a notice for identical duplicate values without a conflict", async () => {
 			const file = new obsidianMock.TFile("same.md");
 			const noteText = "---\nstatus: draft\nstatus: draft\n---\n";
 			const { plugin } = createPlugin({
@@ -524,19 +554,21 @@ describe("PropertyPorter", () => {
 			await plugin.onload();
 			plugin.settings.onlyInclude = "";
 
-			let warningText = "";
+			let noticeText = "";
 			obsidianMock.Modal.prototype.open = function (this: any) {
 				this.onOpen();
 				const card = Array.from(this.contentEl.querySelectorAll(".pp-property-card")).find(
 					(c: any) => c.querySelector(".pp-property-name")?.textContent === "status"
 				) as HTMLElement;
-				warningText = card.querySelector(".pp-property-warning")?.textContent ?? "";
+				noticeText = card.querySelector(".pp-property-notice")?.textContent ?? "";
+				expect(card.querySelector(".pp-property-warning")).toBeNull();
+				expect(card.querySelectorAll(".pp-option-pill")).toHaveLength(0);
 				this.contentEl.querySelector(".pp-finish-button").click();
 			};
 
 			await plugin.copyProperties();
 
-			expect(warningText).toContain("same has more than one status value");
+			expect(noticeText).toContain("same had status twice with the same value");
 			expect(plugin.clipboard).toEqual({ status: "draft" });
 		});
 
@@ -568,12 +600,12 @@ describe("PropertyPorter", () => {
 				// The first two modals resolve each note's duplicates; the third
 				// resolves the union's scalar collision with cross-note wording.
 				if (modalIndex <= 2) {
-					expect(card.querySelector(".pp-property-warning")?.textContent).toContain(
-						modalIndex === 1 ? "one has" : "two has"
+					expect(card.querySelector(".pp-property-warning")?.textContent).toBe(
+						`Choose which status to keep. Notes differ: ${modalIndex === 1 ? "one" : "two"}`
 					);
 				}
-				const pills = card.querySelectorAll<HTMLButtonElement>(".pp-option-pill");
-				pills[modalIndex === 1 ? 1 : 0].click();
+				const radios = card.querySelectorAll<HTMLInputElement>('.pp-conflict-option input[type="radio"]');
+				radios[modalIndex === 1 ? 1 : 0].click();
 				this.contentEl.querySelector(".pp-finish-button").click();
 			};
 
@@ -798,7 +830,13 @@ describe("PropertyPorter", () => {
 
 			expect(modal).toHaveBeenCalledWith(
 				{ status: ["clip", "target"] },
-				{ status: { clipboardOrigin: undefined, conflictNotes: ["dest"] } }
+				{
+					status: {
+						clipboardOrigin: undefined,
+						conflictNotes: ["dest"],
+						valueSources: { status: { target: [{ note: "dest", count: 1 }] } },
+					},
+				}
 			);
 			expect(fileCache[target.path].frontmatter).toEqual({ status: "target" });
 		});
@@ -842,20 +880,20 @@ describe("PropertyPorter", () => {
 				if (modalIndex === 1) {
 					// Duplicate-resolution modal: pick the first modified_date.
 					const card = findCard("modified_date");
-					expect(card.querySelector(".pp-property-warning")?.textContent).toContain(
-						"dup has more than one modified_date value"
+					expect(card.querySelector(".pp-property-warning")?.textContent).toBe(
+						"Choose which modified_date to keep. Notes differ: dup"
 					);
-					const pills = card.querySelectorAll<HTMLButtonElement>(".pp-option-pill");
-					pills[0].click();
+					const radios = card.querySelectorAll<HTMLInputElement>('.pp-conflict-option input[type="radio"]');
+					radios[0].click();
 				} else {
 					// Merge conflict on status only: the repaired
 					// modified_date matches the clipboard, so it is not a
 					// conflict.
 					const card = findCard("status");
 					secondWarning = card.querySelector(".pp-property-warning")?.textContent ?? "";
-					const pills = card.querySelectorAll<HTMLButtonElement>(".pp-option-pill");
-					expect(pills.length).toBe(2);
-					pills[0].click(); // keep the clipboard value
+					const radios = card.querySelectorAll<HTMLInputElement>('.pp-conflict-option input[type="radio"]');
+					expect(radios.length).toBe(3);
+					radios[0].click(); // keep the clipboard value
 				}
 				this.contentEl.querySelector(".pp-finish-button").click();
 			};
@@ -863,8 +901,7 @@ describe("PropertyPorter", () => {
 			await plugin.pasteProperties(target);
 
 			// The merge conflict names the clipboard origin and the target.
-			expect(secondWarning).toContain("clipboard (from active)");
-			expect(secondWarning).toContain("dup");
+			expect(secondWarning).toBe("Choose which status to keep. Notes differ: active, dup");
 			// The target was repaired and then pasted into.
 			expect(modalIndex).toBe(2);
 			expect(fileContents[target.path]).toBe(
@@ -910,12 +947,12 @@ describe("PropertyPorter", () => {
 					const card = Array.from(this.contentEl.querySelectorAll(".pp-property-card")).find(
 						(c: any) => c.querySelector(".pp-property-name")?.textContent === "modified_date"
 					) as HTMLElement;
-					const pills = card.querySelectorAll<HTMLButtonElement>(".pp-option-pill");
-					pills[0].click();
+					const radios = card.querySelectorAll<HTMLInputElement>('.pp-conflict-option input[type="radio"]');
+					radios[0].click();
 					this.contentEl.querySelector(".pp-finish-button").click();
 				} else {
 					// Merge-conflict modal is cancelled: nothing may be written.
-					expect(this.contentEl.textContent).toContain("Conflicting values");
+					expect(this.contentEl.textContent).toContain("Choose which status to keep");
 					expect(this.contentEl.textContent).toContain("status");
 					this.close();
 				}
@@ -1108,7 +1145,18 @@ describe("PropertyPorter", () => {
 
 			expect(modal).toHaveBeenCalledWith(
 				{ status: ["clip", "one", "two"] },
-				{ status: { clipboardOrigin: undefined, conflictNotes: ["a", "b"] } }
+				{
+					status: {
+						clipboardOrigin: undefined,
+						conflictNotes: ["a", "b"],
+						valueSources: {
+							status: {
+								one: [{ note: "a", count: 1 }],
+								two: [{ note: "b", count: 1 }],
+							},
+						},
+					},
+				}
 			);
 			expect(fileCache[f1.path].frontmatter).toEqual({ status: "picked" });
 			expect(fileCache[f2.path].frontmatter).toEqual({ status: "picked" });
@@ -1190,7 +1238,15 @@ describe("PropertyPorter", () => {
 			await plugin.copyPropertiesFromActiveTabGroup();
 
 			expect(modal).toHaveBeenCalledWith({ status: ["one", "two"] }, {
-				status: { conflictNotes: ["a", "b"] },
+				status: {
+					conflictNotes: ["a", "b"],
+					valueSources: {
+						status: {
+							one: [{ note: "a", count: 1 }],
+							two: [{ note: "b", count: 1 }],
+						},
+					},
+				},
 			});
 			expect(plugin.clipboard).toEqual({ tags: ["x", "y"], status: "two" });
 		});

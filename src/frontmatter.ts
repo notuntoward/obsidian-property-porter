@@ -11,6 +11,56 @@ export function normalizeArrayItems(arr: unknown[]): unknown[] {
 	);
 }
 
+export type FrontmatterValueSources = Record<
+	string,
+	Record<string, { note: string; count: number }[]>
+>;
+
+export function collectValueSources(
+	sources: { note: string; frontmatter: Record<string, unknown> }[]
+): FrontmatterValueSources {
+	const result: FrontmatterValueSources = {};
+	for (const { note, frontmatter } of sources) {
+		for (const [property, value] of Object.entries(frontmatter)) {
+			if (isEmptyPropertyValue(value)) continue;
+			const values = Array.isArray(value) ? value : [value];
+			for (const item of values) {
+				if (item === null || item === undefined || item === "") continue;
+				const key =
+					property === "tags" || property === "tag"
+						? stripHashTag(String(item).trim()).trim()
+						: formatRawValue(item);
+				if (!key) continue;
+
+				const propertySources = (result[property] ??= {});
+				const valueSources = (propertySources[key] ??= []);
+				const source = valueSources.find((entry) => entry.note === note);
+				if (source) source.count++;
+				else valueSources.push({ note, count: 1 });
+			}
+		}
+	}
+	return result;
+}
+
+export function mergeValueSources(...sources: FrontmatterValueSources[]): FrontmatterValueSources {
+	const result: FrontmatterValueSources = {};
+	for (const sourceMap of sources) {
+		for (const [property, values] of Object.entries(sourceMap)) {
+			for (const [value, entries] of Object.entries(values)) {
+				const propertySources = (result[property] ??= {});
+				const valueSources = (propertySources[value] ??= []);
+				for (const entry of entries) {
+					const existing = valueSources.find((source) => source.note === entry.note);
+					if (existing) existing.count += entry.count;
+					else valueSources.push({ ...entry });
+				}
+			}
+		}
+	}
+	return result;
+}
+
 export function mergeArrays(
 	source: unknown[],
 	destination: unknown[]

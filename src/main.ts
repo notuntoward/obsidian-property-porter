@@ -14,6 +14,8 @@ import {
 	filterFrontmatter,
 	mergeFrontmatter,
 	unionFrontmatter,
+	collectValueSources,
+	mergeValueSources,
 	isEmptyPropertyValue,
 	countPropertyValue,
 	parseCommaList,
@@ -21,6 +23,7 @@ import {
 	applyDuplicateResolution,
 	formatRawValue,
 	type PasteMode,
+	type FrontmatterValueSources,
 	type RawFrontmatter,
 	type DuplicateResolution,
 } from "./frontmatter";
@@ -104,6 +107,7 @@ export default class PropertyPorter extends Plugin {
 	/** Name of the note (or notes) the clipboard was copied from, so paste
 	 * conflicts can say where the clipboard value came from. */
 	clipboardOrigin: string | null = null;
+	private clipboardValueSources: FrontmatterValueSources = {};
 	statusBarItem: HTMLElement;
 
 	async onload(): Promise<void> {
@@ -223,8 +227,9 @@ export default class PropertyPorter extends Plugin {
 	// Copies the given frontmatter onto the clipboard, refreshes the status
 	// bar, and reports how many values were copied. Shared by every copy
 	// command so the clipboard-selection rule stays in one place.
-	applyClipboard(fm: Record<string, unknown>): void {
+	applyClipboard(fm: Record<string, unknown>, valueSources: FrontmatterValueSources = {}): void {
 		this.clipboard = fm;
+		this.clipboardValueSources = valueSources;
 		this.updateStatusBar();
 		const count = this.countClipboardValues();
 		new Notice(`Property Porter: ${count} propert${count === 1 ? "y" : "ies"} copied`);
@@ -281,14 +286,21 @@ export default class PropertyPorter extends Plugin {
 				});
 				const candidates = conflicts[dup.key] ?? [];
 				origins[dup.key] = origins[dup.key] ?? [];
+				const valueSources = context[dup.key]?.valueSources ?? {};
 				for (let i = 0; i < displays.length; i++) {
 					if (!candidates.includes(displays[i])) {
 						candidates.push(displays[i]);
 						origins[dup.key].push({ display: displays[i], value: dup.values[i] });
 					}
 				}
+				const sourceValues = collectValueSources([
+					{ note: file.basename, frontmatter: { [dup.key]: dup.values } },
+				]);
 				conflicts[dup.key] = candidates;
-				context[dup.key] = { duplicateIn: [file.basename] };
+				context[dup.key] = {
+					...context[dup.key],
+					valueSources: mergeValueSources(valueSources, sourceValues),
+				};
 			}
 
 			const result = await this.openPropertySelectionModal({ ...conflicts }, context);
@@ -344,9 +356,13 @@ export default class PropertyPorter extends Plugin {
 		const duplicates = await this.resolveDuplicateKeys([source], true);
 		if (duplicates?.cancelled) return;
 		const full = duplicates?.fullByFile.get(source) ?? this.getParsedFrontmatter(source);
+		const filtered = filterFrontmatter(full, this.settings.onlyInclude, this.settings.excludeKeys);
 		await duplicates?.commit();
 		this.clipboardOrigin = source.basename;
-		this.applyClipboard(filterFrontmatter(full, this.settings.onlyInclude, this.settings.excludeKeys));
+		this.applyClipboard(
+			filtered,
+			collectValueSources([{ note: source.basename, frontmatter: filtered }])
+		);
 	}
 
 	// Copies properties from a note the user picks via the same file selector
@@ -358,9 +374,10 @@ export default class PropertyPorter extends Plugin {
 		const duplicates = await this.resolveDuplicateKeys([file], true);
 		if (duplicates?.cancelled) return;
 		const full = duplicates?.fullByFile.get(file) ?? this.getParsedFrontmatter(file);
+		const filtered = filterFrontmatter(full, this.settings.onlyInclude, this.settings.excludeKeys);
 		await duplicates?.commit();
 		this.clipboardOrigin = file.basename;
-		this.applyClipboard(filterFrontmatter(full, this.settings.onlyInclude, this.settings.excludeKeys));
+		this.applyClipboard(filtered, collectValueSources([{ note: file.basename, frontmatter: filtered }]));
 	}
 
 	// Collects properties from every note in the active tab group, reusing the
@@ -383,6 +400,9 @@ export default class PropertyPorter extends Plugin {
 			fulls.push(full);
 			return filterFrontmatter(full, this.settings.onlyInclude, this.settings.excludeKeys);
 		});
+		const valueSources = collectValueSources(
+			files.map((file, index) => ({ note: file.basename, frontmatter: collected[index] }))
+		);
 
 		// Gather scalar collisions across the group and resolve them in one
 		// place before anything reaches the clipboard. When no key conflicts,
@@ -390,22 +410,23 @@ export default class PropertyPorter extends Plugin {
 		const union = unionFrontmatter(collected, { gatherConflicts: true });
 		const conflicts = this.extractScalarConflicts(union);
 		if (Object.keys(conflicts).length > 0) {
-			const context = this.buildCrossNoteConflictContext(files, fulls, conflicts);
+			const context = this.buildCrossNoteConflictContext(files, fulls, conflicts, valueSources);
 			const resolved = await this.resolveConflicts({ ...union }, conflicts, context);
 			if (resolved === null) return; // cancelled: notes stay unrepaired, clipboard untouched
 			await duplicates?.commit();
 			this.clipboardOrigin = files.map((file) => file.basename).join(", ");
-			this.applyClipboard(resolved);
+			this.applyClipboard(resolved, valueSources);
 			return;
 		}
 		await duplicates?.commit();
 		this.clipboardOrigin = files.map((file) => file.basename).join(", ");
-		this.applyClipboard(union);
+		this.applyClipboard(union, valueSources);
 	}
 
 	clearClipboard(): void {
 		this.clipboard = {};
 		this.clipboardOrigin = null;
+		this.clipboardValueSources = {};
 		this.updateStatusBar();
 	}
 
@@ -604,6 +625,7 @@ export default class PropertyPorter extends Plugin {
 		const selected = result.items;
 		this.clipboard = { tags: selected };
 		this.clipboardOrigin = null;
+		this.clipboardValueSources = {};
 		this.updateStatusBar();
 		if (selected.length === 0) {
 			new Notice(NOTICE_CLEARED_COPIED_TAGS);
@@ -655,7 +677,8 @@ export default class PropertyPorter extends Plugin {
 	private buildCrossNoteConflictContext(
 		files: TFile[],
 		fulls: Record<string, unknown>[],
-		conflicts: Record<string, unknown[]>
+		conflicts: Record<string, unknown[]>,
+		valueSources: FrontmatterValueSources
 	): Record<string, ConflictCardContext> {
 		const context: Record<string, ConflictCardContext> = {};
 		for (const key of Object.keys(conflicts)) {
@@ -671,7 +694,10 @@ export default class PropertyPorter extends Plugin {
 					notes.push(file.basename);
 				}
 			});
-			if (notes.length > 0) context[key] = { conflictNotes: notes };
+			context[key] = {
+				...(notes.length > 0 ? { conflictNotes: notes } : {}),
+				...(valueSources[key] ? { valueSources: { [key]: valueSources[key] } } : {}),
+			};
 		}
 		return context;
 	}
@@ -690,9 +716,27 @@ export default class PropertyPorter extends Plugin {
 		const context: Record<string, ConflictCardContext> = {};
 		if (this.settings.pasteMode !== "merge") return { conflicts, context };
 
+		const targetFrontmatters = files.map((file) => ({
+			note: file.basename,
+			frontmatter: overrides?.get(file) ?? this.getParsedFrontmatter(file),
+		}));
+		const fallbackClipboardSources: FrontmatterValueSources = this.clipboardOrigin
+			? collectValueSources([{ note: this.clipboardOrigin, frontmatter: this.clipboard }])
+			: {};
+		for (const key of Object.keys(this.clipboardValueSources)) {
+			delete fallbackClipboardSources[key];
+		}
+		const valueSources = mergeValueSources(
+			this.clipboardValueSources,
+			fallbackClipboardSources,
+			collectValueSources(targetFrontmatters)
+		);
+		for (const [key, propertySources] of Object.entries(valueSources)) {
+			context[key] = { valueSources: { [key]: propertySources } };
+		}
+
 		const catalog = collectVaultMetadata(this.app);
-		for (const file of files) {
-			const target = overrides?.get(file) ?? this.getParsedFrontmatter(file);
+		for (const { note, frontmatter: target } of targetFrontmatters) {
 			for (const [key, clipValue] of Object.entries(this.clipboard)) {
 				if (isEmptyPropertyValue(clipValue) || Array.isArray(clipValue)) continue;
 				if (isListProperty(catalog, key)) continue;
@@ -717,7 +761,9 @@ export default class PropertyPorter extends Plugin {
 				const ctx =
 					context[key] ??
 					{ clipboardOrigin: this.clipboardOrigin ?? undefined, conflictNotes: [] };
-				if (!ctx.conflictNotes?.includes(file.basename)) ctx.conflictNotes?.push(file.basename);
+				ctx.clipboardOrigin = this.clipboardOrigin ?? undefined;
+				ctx.conflictNotes ??= [];
+				if (!ctx.conflictNotes?.includes(note)) ctx.conflictNotes?.push(note);
 				context[key] = ctx;
 			}
 		}
@@ -747,11 +793,32 @@ export default class PropertyPorter extends Plugin {
 	// doubles as a debugging check on the current clipboard state. Conflict
 	// resolution happens on copy and paste instead, not here.
 	async selectPropertiesToPaste(): Promise<void> {
-		const result = await this.openPropertySelectionModal({ ...this.clipboard });
+		const context = Object.fromEntries(
+			Object.entries(this.clipboardValueSources).map(([key, valueSources]) => [
+				key,
+				{ valueSources: { [key]: valueSources } },
+			])
+		);
+		const result = await this.openPropertySelectionModal({ ...this.clipboard }, context);
 
 		if (result.cancelled) return;
 
 		this.clipboard = result.properties;
+		this.clipboardValueSources = Object.fromEntries(
+			Object.entries(this.clipboardValueSources)
+				.filter(([key]) => key in result.properties)
+				.map(([key, values]) => [
+					key,
+					Object.fromEntries(
+						Object.entries(values).filter(([value]) => {
+							const selected = result.properties[key];
+							return Array.isArray(selected)
+								? selected.some((item) => String(item).trim() === value)
+								: String(selected).trim() === value;
+						})
+					),
+				])
+		);
 		this.updateStatusBar();
 		const count = this.countClipboardValues();
 		if (count === 0) {

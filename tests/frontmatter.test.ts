@@ -5,6 +5,7 @@ import {
 	mergeArrays,
 	deepMerge,
 	mergeFrontmatter,
+	collectValueSources,
 	isEmptyPropertyValue,
 	countPropertyValue,
 	parseCommaList,
@@ -233,6 +234,17 @@ describe("filterFrontmatter", () => {
 });
 
 describe("unionFrontmatter", () => {
+	it("counts each normalized tag occurrence before list values are merged", () => {
+		const parsed = parseRawFrontmatter("---\ntags:\n  - a\n  - a\n  - b\n---\n");
+		expect(parsed.map.tags).toEqual(["a", "b"]);
+		expect(collectValueSources([{ note: "Note-06", frontmatter: { tags: ["a", "a", "b"] } }])).toEqual({
+			tags: {
+				a: [{ note: "Note-06", count: 2 }],
+				b: [{ note: "Note-06", count: 1 }],
+			},
+		});
+	});
+
 	it("unions list properties across inputs", () => {
 		const r = unionFrontmatter([
 			{ tags: ["a", "b"] },

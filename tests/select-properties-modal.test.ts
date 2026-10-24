@@ -7,6 +7,7 @@ import PropertyPorter, {
 	SelectPropertiesModal,
 	NOTICE_CLEARED_COPIED_PROPERTIES,
 } from "../src/main";
+import { PropertyNameSuggest } from "../src/select-properties-modal";
 import { parseRawFrontmatter } from "../src/frontmatter";
 import type { VaultMetadataCatalog } from "commons/properties";
 
@@ -98,6 +99,49 @@ afterEach(() => {
 });
 
 describe("SelectPropertiesModal", () => {
+	it("focuses the finish button instead of the add-property input when a conflict exists", () => {
+		vi.useFakeTimers();
+		try {
+			const { app } = createApp();
+			const onSubmit = vi.fn();
+			const modal = new SelectPropertiesModal(
+				app as any,
+				createMockCatalog(),
+				{ status: ["draft", "published"] },
+				onSubmit,
+				vi.fn(),
+				{
+					status: {
+						valueSources: {
+							status: {
+								draft: [{ note: "Note-A", count: 1 }],
+								published: [{ note: "Note-B", count: 1 }],
+							},
+						},
+					},
+				}
+			);
+			document.body.appendChild(modal.contentEl);
+
+			modal.onOpen();
+			vi.runOnlyPendingTimers();
+
+			expect(modal.propertyStates.get("status")?.hasConflict).toBe(true);
+			expect(document.activeElement).not.toBe(modal.inputEl);
+			expect(document.activeElement).toBe(modal.contentEl.querySelector(".pp-conflict-option input"));
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("does not suggest properties until the user types a query", () => {
+		const { app } = createApp();
+		const suggest = new PropertyNameSuggest(app as any, document.createElement("input"), () => ["status"], vi.fn());
+
+		expect(suggest.getSuggestions(" \t")).toEqual([]);
+		expect(suggest.getSuggestions("sta")).toEqual(["status"]);
+	});
+
 	it("initializes property cards for initial properties with correct list/scalar kinds", () => {
 		const { app } = createApp();
 		const catalog = createMockCatalog();
@@ -121,6 +165,26 @@ describe("SelectPropertiesModal", () => {
 		expect(statusCard?.querySelector(".pp-property-badge")?.textContent).toBe("Scalar");
 	});
 
+	it("treats a clipboard-only scalar candidate as known to the value picker", () => {
+		const { app } = createApp();
+		const modal = new SelectPropertiesModal(
+			app as any,
+			createMockCatalog(),
+			{ imported_property: "copied value" },
+			vi.fn(),
+			vi.fn()
+		);
+		modal.onOpen();
+
+		const card = Array.from(modal.contentEl.querySelectorAll(".pp-property-card")).find(
+			(element) => element.querySelector(".pp-property-name")?.textContent === "imported_property"
+		)!;
+		const chip = card.querySelector<HTMLElement>(".commons-property-picker-chip");
+		expect(chip?.dataset.entry).toBeUndefined();
+		expect(chip?.querySelector(".commons-property-picker-new-badge")).toBeNull();
+		expect(card.querySelector<HTMLElement>(".commons-property-picker-status")?.hidden).toBe(true);
+	});
+
 	it("when notes with a scalar property are merged and there is a conflict, presents options and user selects one", () => {
 		const { app } = createApp();
 		const catalog = createMockCatalog();
@@ -136,22 +200,26 @@ describe("SelectPropertiesModal", () => {
 
 		const statusCard = modal.contentEl.querySelector(".pp-property-card")!;
 		expect(statusCard).not.toBeNull();
-		// Warning is shown
 		expect(statusCard.querySelector(".pp-property-warning")?.textContent).toContain("Conflicting values");
 
-		// Option pills for the conflicting options are rendered
-		const pills = statusCard.querySelectorAll<HTMLButtonElement>(".pp-option-pill");
-		expect(pills.length).toBe(2);
-		expect(pills[0].textContent).toBe("draft");
-		expect(pills[1].textContent).toBe("published");
-		// Initially the first candidate is selected
-		expect(pills[0].classList.contains("is-selected")).toBe(true);
-		expect(pills[1].classList.contains("is-selected")).toBe(false);
+		const group = statusCard.querySelector('[role="radiogroup"]')!;
+		const options = statusCard.querySelectorAll<HTMLLabelElement>(".pp-conflict-option");
+		const radios = statusCard.querySelectorAll<HTMLInputElement>('.pp-conflict-option input[type="radio"]');
+		expect(group).not.toBeNull();
+		expect(options).toHaveLength(3);
+		expect(options[0].querySelector(".pp-conflict-value")?.textContent).toBe("draft");
+		expect(options[1].querySelector(".pp-conflict-value")?.textContent).toBe("published");
+		expect(radios).toHaveLength(3);
+		expect(radios[0].name).toBe("pp-status");
+		expect(radios[0].checked).toBe(true);
+		expect(radios[1].checked).toBe(false);
+		expect(statusCard.querySelector(".pp-option-pill")).toBeNull();
+		expect(statusCard.querySelector(".pp-property-picker-host")).toBeNull();
 
-		// User clicks "published" to choose that option
-		pills[1].click();
-		expect(pills[0].classList.contains("is-selected")).toBe(false);
-		expect(pills[1].classList.contains("is-selected")).toBe(true);
+		radios[1].click();
+		expect(radios[1].checked).toBe(true);
+		expect(modal.propertyStates.get("status")?.selected).toEqual(["published"]);
+		expect(modal.getSelectedProperties()).toEqual({ status: "published" });
 
 		// Click finish selection
 		modal.contentEl.querySelector<HTMLButtonElement>(".pp-finish-button")!.click();
@@ -159,6 +227,98 @@ describe("SelectPropertiesModal", () => {
 		expect(onSubmit).toHaveBeenCalledWith({
 			status: "published",
 		});
+	});
+
+	it("creates the conflict value picker only when Other value is selected", () => {
+		const { app } = createApp();
+		const onSubmit = vi.fn();
+		const modal = new SelectPropertiesModal(
+			app as any,
+			createMockCatalog(),
+			{ status: ["draft", "published"] },
+			onSubmit,
+			vi.fn(),
+			{
+				status: {
+					valueSources: {
+						status: {
+							draft: [{ note: "Note-A", count: 1 }],
+							published: [{ note: "Note-B", count: 1 }],
+						},
+					},
+				},
+			}
+		);
+		modal.onOpen();
+
+		const card = modal.contentEl.querySelector(".pp-property-card")!;
+		const options = card.querySelectorAll<HTMLLabelElement>(".pp-conflict-option");
+		const otherRadio = options[2].querySelector<HTMLInputElement>("input")!;
+		expect(card.querySelector(".pp-property-warning")?.textContent).toBe(
+			"Choose which status to keep. Notes differ: Note-A, Note-B"
+		);
+		expect(options[0].querySelector(".pp-conflict-sources")?.textContent).toBe("Note-A");
+		expect(options[2].querySelector(".pp-conflict-value")?.textContent).toBe("Other value…");
+		expect(card.querySelector(".pp-property-picker-host")).toBeNull();
+
+		otherRadio.click();
+
+		const host = card.querySelector<HTMLElement>(".pp-property-picker-host")!;
+		expect(host).not.toBeNull();
+		expect(host.hidden).toBe(false);
+		expect(modal.propertyStates.get("status")?.picker).not.toBeNull();
+		expect(modal.propertyStates.get("status")?.selected).toEqual([]);
+		modal.propertyStates.get("status")?.picker?.setValue("custom value");
+
+		const firstRadio = options[0].querySelector<HTMLInputElement>("input")!;
+		firstRadio.click();
+		expect(host.hidden).toBe(true);
+		expect(modal.propertyStates.get("status")?.selected).toEqual(["draft"]);
+		expect(modal.propertyStates.get("status")?.picker?.getValue()).toEqual(["custom value"]);
+		expect(modal.getSelectedProperties()).toEqual({ status: "draft" });
+
+		modal.contentEl.querySelector<HTMLButtonElement>(".pp-finish-button")!.click();
+		expect(onSubmit).toHaveBeenCalledWith({ status: "draft" });
+	});
+
+	it("treats conflict candidates as known and accepts typed date values without a new-entry modal", () => {
+		const { app } = createApp();
+		const catalog = createMockCatalog();
+		catalog.properties.push({
+			name: "modified_date",
+			kinds: ["string"],
+			values: ["2026-10-24T10:00:00Z"],
+		});
+		const modal = new SelectPropertiesModal(
+			app as any,
+			catalog,
+			{ modified_date: ["2026-10-24T10:00:00Z", "2026-10-25T10:00:00Z"] },
+			vi.fn(),
+			vi.fn()
+		);
+		modal.onOpen();
+
+		const card = modal.contentEl.querySelector(".pp-property-card")!;
+		card.querySelectorAll<HTMLInputElement>(".pp-conflict-option input")[2]!.click();
+		const picker = modal.propertyStates.get("modified_date")!.picker!;
+		const candidate = "2026-10-24T10:00:00Z";
+		picker.setValue(candidate);
+		const chip = picker.rootEl.querySelector<HTMLElement>(".commons-property-picker-chip");
+		expect(chip?.dataset.entry).toBeUndefined();
+		expect(chip?.querySelector(".commons-property-picker-new-badge")).toBeNull();
+		expect(picker.rootEl.querySelector<HTMLElement>(".commons-property-picker-status")?.hidden).toBe(true);
+
+		picker.setValue([]);
+		const suggest = obsidianMock.AbstractInputSuggest.instances.find(
+			(instance: any) => instance.inputEl === picker.inputEl
+		)!;
+		const typedDate = "2026-10-26T10:00:00Z";
+		const createOption = suggest.suggestions(typedDate).find((option: any) => option.kind === "create");
+		const confirmationModalCount = document.querySelectorAll(".pp-new-entry-modal").length;
+		suggest.select(createOption);
+
+		expect(modal.propertyStates.get("modified_date")?.selected).toEqual([typedDate]);
+		expect(document.querySelectorAll(".pp-new-entry-modal")).toHaveLength(confirmationModalCount);
 	});
 
 	it("when notes with a list property have multiple values, allows selecting one or all of them", () => {
@@ -236,7 +396,11 @@ describe("SelectPropertiesModal", () => {
 
 		const cards = Array.from(modal.contentEl.querySelectorAll(".pp-property-card"));
 		const titleCard = cards.find((c) => c.querySelector(".pp-property-name")?.textContent === "title")!;
-		titleCard.querySelector<HTMLButtonElement>(".pp-property-remove-btn")!.click();
+		const excludeButton = titleCard.querySelector<HTMLButtonElement>(".pp-property-remove-btn")!;
+		expect(excludeButton.textContent).toBe("Don't paste");
+		expect(excludeButton.title).toBe("Exclude this whole property from the paste");
+		expect(excludeButton.getAttribute("aria-label")).toBe("Exclude title");
+		excludeButton.click();
 
 		expect(modal.contentEl.querySelectorAll(".pp-property-card").length).toBe(1);
 
@@ -259,60 +423,108 @@ describe("SelectPropertiesModal", () => {
 		expect(onCancel).toHaveBeenCalled();
 	});
 
-	it("names the note when a property appears more than once in one note", () => {
+	it("shows a notice instead of a conflict when a scalar value is duplicated", () => {
 		const { app } = createApp();
 		const catalog = createMockCatalog();
-		const onSubmit = vi.fn();
 		const modal = new SelectPropertiesModal(
 			app as any,
 			catalog,
-			{ modified_date: ["2026-10-13T16:58:17", "2026-10-13T15:45:00"] },
-			onSubmit,
+			{ modified_date: ["2026-10-13T16:58:17", "2026-10-13T16:58:17"] },
 			vi.fn(),
-			{ modified_date: { duplicateIn: ["note-six"] } }
+			vi.fn(),
+			{
+				modified_date: {
+					valueSources: {
+						modified_date: {
+							"2026-10-13T16:58:17": [{ note: "Note-06", count: 2 }],
+						},
+					},
+				},
+			}
 		);
 		modal.onOpen();
 
-		const card = Array.from(modal.contentEl.querySelectorAll(".pp-property-card")).find(
-			(c) => c.querySelector(".pp-property-name")?.textContent === "modified_date"
-		)!;
-		expect(card.querySelector(".pp-property-warning")?.textContent).toContain(
-			"note-six has more than one modified_date value: select the one to keep"
+		const state = modal.propertyStates.get("modified_date")!;
+		const card = modal.contentEl.querySelector(".pp-property-card")!;
+		expect(state.hasConflict).toBe(false);
+		expect(state.selected).toEqual(["2026-10-13T16:58:17"]);
+		expect(card.querySelector(".pp-property-notice")?.textContent).toBe(
+			"Note-06 had modified_date twice with the same value; it will be pasted once."
 		);
-		const pills = card.querySelectorAll<HTMLButtonElement>(".pp-option-pill");
-		expect(pills.length).toBe(2);
-		pills[1].click();
-
-		modal.contentEl.querySelector<HTMLButtonElement>(".pp-finish-button")!.click();
-		expect(onSubmit).toHaveBeenCalledWith({ modified_date: "2026-10-13T15:45:00" });
+		expect(card.querySelector(".pp-property-warning")).toBeNull();
+		expect(card.querySelector(".pp-option-pill")).toBeNull();
 	});
 
-	it("treats duplicate list values such as tags as a pick-one conflict", () => {
+	it("keeps different scalar values as a conflict", () => {
 		const { app } = createApp();
-		const catalog = createMockCatalog();
-		const onSubmit = vi.fn();
 		const modal = new SelectPropertiesModal(
 			app as any,
-			catalog,
-			{ tags: ["a, b", "c"] },
-			onSubmit,
+			createMockCatalog(),
+			{ modified_date: ["first", "second"] },
 			vi.fn(),
-			{ tags: { duplicateIn: ["note-six"] } }
+			vi.fn()
 		);
 		modal.onOpen();
 
-		const card = Array.from(modal.contentEl.querySelectorAll(".pp-property-card")).find(
-			(c) => c.querySelector(".pp-property-name")?.textContent === "tags"
-		)!;
-		expect(card.querySelector(".pp-property-warning")?.textContent).toContain(
-			"note-six has more than one tags value"
-		);
-		const pills = card.querySelectorAll<HTMLButtonElement>(".pp-option-pill");
-		expect(pills.length).toBe(2);
-		pills[0].click();
+		expect(modal.propertyStates.get("modified_date")?.hasConflict).toBe(true);
+		expect(modal.contentEl.querySelectorAll(".pp-conflict-option")).toHaveLength(3);
+	});
 
-		modal.contentEl.querySelector<HTMLButtonElement>(".pp-finish-button")!.click();
-		expect(onSubmit).toHaveBeenCalledWith({ tags: ["a, b"] });
+	it("renders an option for each distinct scalar value", () => {
+		const { app } = createApp();
+		const modal = new SelectPropertiesModal(
+			app as any,
+			createMockCatalog(),
+			{ modified_date: ["first", "second", "third"] },
+			vi.fn(),
+			vi.fn()
+		);
+		modal.onOpen();
+
+		expect(modal.propertyStates.get("modified_date")?.hasConflict).toBe(true);
+		expect(modal.contentEl.querySelectorAll(".pp-conflict-option")).toHaveLength(4);
+	});
+
+	it("deduplicates repeated list values without creating a conflict", () => {
+		const { app } = createApp();
+		const modal = new SelectPropertiesModal(
+			app as any,
+			createMockCatalog(),
+			{ tags: ["a", "b", "a"] },
+			vi.fn(),
+			vi.fn(),
+			{
+				tags: {
+					valueSources: {
+						tags: {
+							a: [{ note: "Note-06", count: 2 }],
+							b: [{ note: "Note-06", count: 1 }],
+						},
+					},
+				},
+			}
+		);
+		modal.onOpen();
+
+		const state = modal.propertyStates.get("tags")!;
+		const card = modal.contentEl.querySelector(".pp-property-card")!;
+		expect(state.hasConflict).toBe(false);
+		expect(state.selected).toEqual(["a", "b"]);
+		expect(card.querySelectorAll(".pp-option-pill")).toHaveLength(2);
+		expect(card.querySelector(".pp-property-notice")?.textContent).toContain(
+			"Note-06 had tags twice with the same value; it will be pasted once."
+		);
+		expect(card.querySelector(".pp-list-candidate-sources")?.textContent).toBe("×2 in Note-06");
+		expect(
+			Array.from(card.querySelectorAll<HTMLElement>(".commons-property-picker-chip")).every(
+				(chip) => chip.dataset.entry === undefined
+			)
+		).toBe(true);
+		expect(card.querySelector<HTMLElement>(".commons-property-picker-status")?.hidden).toBe(true);
+		expect(
+			card.querySelector(".pp-property-notice")!.compareDocumentPosition(card.querySelector(".pp-options-container")!) &
+				Node.DOCUMENT_POSITION_FOLLOWING
+		).toBeTruthy();
 	});
 });
 
@@ -339,14 +551,14 @@ describe("PropertyPorter.selectPropertiesToPaste", () => {
 				(c: any) => c.querySelector(".pp-property-name")?.textContent === "status"
 			) as HTMLElement;
 			expect(statusCard.querySelector(".pp-property-warning")?.textContent).toContain(
-				"Conflicting values across a, b: select one"
+				"Choose which status to keep. Notes differ: a, b"
 			);
 
-			const pills = statusCard.querySelectorAll<HTMLButtonElement>(".pp-option-pill");
-			expect(pills.length).toBe(2);
+			const radios = statusCard.querySelectorAll<HTMLInputElement>('.pp-conflict-option input[type="radio"]');
+			expect(radios.length).toBe(3);
 
 			// Choose "published"
-			pills[1].click();
+			radios[1].click();
 
 			this.contentEl.querySelector(".pp-finish-button").click();
 		};

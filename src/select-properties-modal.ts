@@ -2,6 +2,7 @@ import { App, Modal, AbstractInputSuggest } from "obsidian";
 import {
 	isListProperty,
 	getPropertySuggestions,
+	getPropertyType,
 	normalizeTag,
 	ValuePicker,
 	type VaultMetadataCatalog,
@@ -14,6 +15,7 @@ export interface PropertyCardState {
 	candidates: string[];
 	selected: string[];
 	hasConflict: boolean;
+	notice?: string;
 	conflictContext?: ConflictCardContext;
 	cardEl?: HTMLElement;
 	picker?: ValuePicker;
@@ -27,17 +29,21 @@ export interface ConflictCardContext {
 	conflictNotes?: string[];
 	/** Note the clipboard value was copied from, when known. */
 	clipboardOrigin?: string;
-	/** Notes that contain more than one occurrence of the property. */
-	duplicateIn?: string[];
+	/** Notes and occurrence counts for each candidate value. */
+	valueSources?: Record<string, Record<string, { note: string; count: number }[]>>;
 }
 
-// Builds the warning line for a conflict card, naming the notes involved
-// so the user knows where each conflicting value came from.
 function conflictWarningText(state: PropertyCardState): string {
 	const ctx = state.conflictContext;
-	if (ctx?.duplicateIn?.length) {
-		const notes = ctx.duplicateIn.join(", ");
-		return `${notes} ${ctx.duplicateIn.length === 1 ? "has" : "have"} more than one ${state.name} value: select the one to keep`;
+	const sourceNotes = [
+		...new Set(
+			Object.values(ctx?.valueSources ?? {}).flatMap((values) =>
+				Object.values(values).flatMap((sources) => sources.map(({ note }) => note))
+			)
+		),
+	];
+	if (sourceNotes.length > 0) {
+		return `Choose which ${state.name} to keep. Notes differ: ${sourceNotes.join(", ")}`;
 	}
 	if (ctx?.clipboardOrigin && ctx.conflictNotes?.length) {
 		return `Conflicting values between the clipboard (from ${ctx.clipboardOrigin}) and ${ctx.conflictNotes.join(", ")}: select one`;
@@ -46,6 +52,23 @@ function conflictWarningText(state: PropertyCardState): string {
 		return `Conflicting values across ${ctx.conflictNotes.join(", ")}: select one`;
 	}
 	return "Conflicting values across notes: select one";
+}
+
+function duplicateNoticeText(
+	propertyName: string,
+	valueSources: NonNullable<ConflictCardContext["valueSources"]>[string]
+): string | undefined {
+	const repeatedSources = Object.values(valueSources ?? {}).flatMap((sources) =>
+		sources.filter((source) => source.count > 1)
+	);
+	if (repeatedSources.length === 0) return undefined;
+
+	return repeatedSources
+		.map(({ note, count }) => {
+			const occurrences = count === 2 ? "twice" : `${count} times`;
+			return `${note} had ${propertyName} ${occurrences} with the same value; it will be pasted once.`;
+		})
+		.join(" ");
 }
 
 export class PropertyNameSuggest extends AbstractInputSuggest<string> {
@@ -60,8 +83,8 @@ export class PropertyNameSuggest extends AbstractInputSuggest<string> {
 
 	getSuggestions(query: string): string[] {
 		const lower = query.trim().toLowerCase();
+		if (!lower) return [];
 		const available = this.getSuggestionsList();
-		if (!lower) return available.slice(0, 20);
 		return available.filter((name) => name.toLowerCase().includes(lower)).slice(0, 20);
 	}
 
@@ -118,12 +141,8 @@ export class SelectPropertiesModal extends Modal {
 			}
 
 			const context = this.conflictContext[name];
-			// A within-note duplicate is a conflict even for list properties such
-			// as tags, and even when both occurrences carry the same value: the
-			// user picks which value (or none) should survive.
-			const forceConflict = Boolean(context?.duplicateIn?.length);
-			const hasConflict = forceConflict || (!isList && candidates.length > 1);
-			const selected = isList && !hasConflict
+			const hasConflict = !isList && candidates.length > 1;
+			const selected = isList
 				? [...candidates]
 				: candidates.length > 0
 					? [candidates[0]]
@@ -135,6 +154,7 @@ export class SelectPropertiesModal extends Modal {
 				candidates,
 				selected,
 				hasConflict,
+				notice: duplicateNoticeText(name, context?.valueSources?.[name] ?? {}),
 				conflictContext: context,
 			});
 		}
@@ -208,7 +228,15 @@ export class SelectPropertiesModal extends Modal {
 		this.updateControls();
 
 		const win = ownerWindow(this.contentEl) ?? window;
-		setTimeoutIn(win, () => this.addPropertyInput?.focus(), 0);
+		setTimeoutIn(win, () => {
+			const hasConflict = Array.from(this.propertyStates.values()).some((state) => state.hasConflict);
+			if (hasConflict) {
+				const conflictInput = this.contentEl.querySelector<HTMLInputElement>(".pp-conflict-option input");
+				(conflictInput ?? this.doneButton)?.focus();
+				return;
+			}
+			this.addPropertyInput?.focus();
+		}, 0);
 	}
 
 	onClose(): void {
@@ -269,13 +297,20 @@ export class SelectPropertiesModal extends Modal {
 
 		const removeBtn = header.createEl("button", {
 			cls: "pp-property-remove-btn",
-			text: "Remove",
+			text: "Don't paste",
 			type: "button",
-			attr: { "aria-label": `Remove ${state.name}` },
+			attr: {
+				"aria-label": `Exclude ${state.name}`,
+				title: "Exclude this whole property from the paste",
+			},
 		});
 		removeBtn.addEventListener("click", () => {
 			this.removeProperty(state.name);
 		});
+
+		if (state.notice) {
+			cardEl.createDiv({ cls: "pp-property-notice", text: state.notice });
+		}
 
 		if (state.isList && !state.hasConflict) {
 			this.renderListBody(state, cardEl);
@@ -285,57 +320,108 @@ export class SelectPropertiesModal extends Modal {
 	}
 
 	private renderScalarBody(state: PropertyCardState, cardEl: HTMLElement): void {
-		let updatePills: (() => void) | undefined;
-
+		const isDateProperty = ["date", "datetime"].includes(
+			getPropertyType(this.catalog, state.name) ?? ""
+		);
 		if (state.hasConflict) {
 			cardEl.createDiv({
 				cls: "pp-property-warning",
 				text: conflictWarningText(state),
 			});
 
-			const optionsEl = cardEl.createDiv({ cls: "pp-options-container" });
-			const pillButtons: HTMLButtonElement[] = [];
+			const optionsEl = cardEl.createDiv({ cls: "pp-conflict-options" });
+			optionsEl.setAttribute("role", "radiogroup");
+			optionsEl.setAttribute("aria-label", `Choose ${state.name} value`);
+			let pickerHost: HTMLElement | null = null;
+
+			const ensurePicker = (): void => {
+				if (!pickerHost) {
+					pickerHost = cardEl.createDiv({ cls: "pp-property-picker-host" });
+				}
+				pickerHost.hidden = false;
+				if (state.picker) {
+					state.picker.setValue([]);
+					return;
+				}
+				state.picker = new ValuePicker(this.app, pickerHost, {
+					suggestions: getPropertySuggestions(this.catalog, state.name),
+					knownValues: state.candidates,
+					value: "",
+					multiple: false,
+					showSingleValueChip: true,
+					suppressNewBadge: isDateProperty,
+					confirmNewEntries: !isDateProperty,
+					allowCreate: true,
+					kind: "value",
+					context: state.name,
+					classPrefix: "pp",
+					placeholder: `Choose or type ${state.name}…`,
+					ariaLabel: `${state.name} value`,
+					onChange: (values) => {
+						state.selected = values.slice(0, 1);
+						this.updateControls();
+					},
+				});
+			};
 
 			for (const candidate of state.candidates) {
-				const pill = optionsEl.createEl("button", {
-					cls: [
-						"pp-option-pill",
-						state.selected[0] === candidate ? "is-selected" : "",
-					],
-					text: candidate,
-					type: "button",
+				const option = optionsEl.createEl("label", { cls: "pp-conflict-option" });
+				const radio = option.createEl("input", {
+					type: "radio",
+					attr: {
+						name: `pp-${state.name}`,
+						value: candidate,
+					},
 				});
-				pill.addEventListener("click", () => {
+				radio.checked = state.selected[0] === candidate;
+				option.createSpan({ cls: "pp-conflict-value", text: candidate });
+				const sources = state.conflictContext?.valueSources?.[state.name]?.[candidate] ?? [];
+				option.createSpan({
+					cls: "pp-conflict-sources",
+					text: sources.map(({ note }) => note).join(", "),
+				});
+				const selectCandidate = (): void => {
+					if (!radio.checked) return;
+					if (state.selected.length === 1 && state.selected[0] === candidate && !pickerHost?.hidden) return;
 					state.selected = [candidate];
-					state.picker?.setValue(candidate);
-					updatePills?.();
+					if (pickerHost) pickerHost.hidden = true;
 					this.updateControls();
-				});
-				pillButtons.push(pill);
+				};
+				radio.addEventListener("click", selectCandidate);
+				radio.addEventListener("change", selectCandidate);
 			}
 
-			updatePills = () => {
-				for (let i = 0; i < state.candidates.length; i++) {
-					const c = state.candidates[i];
-					const pill = pillButtons[i];
-					if (pill) {
-						if (state.selected[0] === c) {
-							pill.addClass("is-selected");
-						} else {
-							pill.removeClass("is-selected");
-						}
-					}
-				}
+			const otherOption = optionsEl.createEl("label", { cls: "pp-conflict-option" });
+			const otherRadio = otherOption.createEl("input", {
+				type: "radio",
+				attr: {
+					name: `pp-${state.name}`,
+					value: "other",
+				},
+			});
+			otherOption.createSpan({ cls: "pp-conflict-value", text: "Other value…" });
+			otherOption.createSpan({ cls: "pp-conflict-sources" });
+			const selectOther = (): void => {
+				if (!otherRadio.checked) return;
+				if (state.selected.length === 0 && pickerHost && !pickerHost.hidden) return;
+				state.selected = [];
+				ensurePicker();
+				this.updateControls();
 			};
-			state.updatePills = updatePills;
+			otherRadio.addEventListener("click", selectOther);
+			otherRadio.addEventListener("change", selectOther);
+			return;
 		}
 
 		const pickerHost = cardEl.createDiv({ cls: "pp-property-picker-host" });
 		state.picker = new ValuePicker(this.app, pickerHost, {
 			suggestions: getPropertySuggestions(this.catalog, state.name),
+			knownValues: state.candidates,
 			value: state.selected[0] ?? "",
 			multiple: false,
 			showSingleValueChip: true,
+			suppressNewBadge: isDateProperty,
+			confirmNewEntries: !isDateProperty,
 			allowCreate: true,
 			kind: "value",
 			context: state.name,
@@ -344,13 +430,15 @@ export class SelectPropertiesModal extends Modal {
 			ariaLabel: `${state.name} value`,
 			onChange: (values) => {
 				state.selected = values.slice(0, 1);
-				updatePills?.();
 				this.updateControls();
 			},
 		});
 	}
 
 	private renderListBody(state: PropertyCardState, cardEl: HTMLElement): void {
+		const isDateProperty = ["date", "datetime"].includes(
+			getPropertyType(this.catalog, state.name) ?? ""
+		);
 		let updatePills: (() => void) | undefined;
 
 		if (state.candidates.length > 0) {
@@ -384,11 +472,20 @@ export class SelectPropertiesModal extends Modal {
 
 			for (const candidate of state.candidates) {
 				const isSelected = state.selected.includes(candidate);
-				const pill = optionsEl.createEl("button", {
+				const optionEl = optionsEl.createDiv({ cls: "pp-list-option" });
+				const pill = optionEl.createEl("button", {
 					cls: ["pp-option-pill", isSelected ? "is-selected" : ""],
 					text: candidate,
 					type: "button",
 				});
+				const sources = state.conflictContext?.valueSources?.[state.name]?.[candidate] ?? [];
+				const totalCount = sources.reduce((total, source) => total + source.count, 0);
+				if (totalCount > 1) {
+					optionEl.createSpan({
+						cls: "pp-list-candidate-sources",
+						text: `×${totalCount} in ${sources.map(({ note }) => note).join(", ")}`,
+					});
+				}
 				pill.addEventListener("click", () => {
 					if (state.selected.includes(candidate)) {
 						state.selected = state.selected.filter((x) => x !== candidate);
@@ -422,8 +519,11 @@ export class SelectPropertiesModal extends Modal {
 		const pickerHost = cardEl.createDiv({ cls: "pp-property-picker-host" });
 		state.picker = new ValuePicker(this.app, pickerHost, {
 			suggestions: getPropertySuggestions(this.catalog, state.name),
+			knownValues: state.candidates,
 			value: state.selected,
 			multiple: true,
+			suppressNewBadge: isDateProperty,
+			confirmNewEntries: !isDateProperty,
 			allowCreate: true,
 			kind: "value",
 			context: state.name,
@@ -444,6 +544,12 @@ export class SelectPropertiesModal extends Modal {
 			state.selected = [];
 			state.picker?.setValue([]);
 			state.updatePills?.();
+			state.cardEl?.querySelectorAll<HTMLInputElement>('.pp-conflict-options input[type="radio"]')
+				.forEach((radio) => {
+					radio.checked = false;
+				});
+			const pickerHost = state.cardEl?.querySelector<HTMLElement>(".pp-property-picker-host");
+			if (state.hasConflict && pickerHost) pickerHost.hidden = true;
 		}
 		this.updateControls();
 	}
@@ -453,7 +559,7 @@ export class SelectPropertiesModal extends Modal {
 		this.submitted = true;
 		const result: Record<string, unknown> = {};
 		for (const [name, state] of this.propertyStates.entries()) {
-			const values = state.picker ? state.picker.getValue() : state.selected;
+			const values = state.hasConflict ? state.selected : state.picker ? state.picker.getValue() : state.selected;
 			if (values.length === 0) continue;
 			if (state.isList) {
 				result[name] = values;
@@ -468,7 +574,7 @@ export class SelectPropertiesModal extends Modal {
 	getSelectedProperties(): Record<string, unknown> {
 		const result: Record<string, unknown> = {};
 		for (const [name, state] of this.propertyStates.entries()) {
-			const values = state.picker ? state.picker.getValue() : state.selected;
+			const values = state.hasConflict ? state.selected : state.picker ? state.picker.getValue() : state.selected;
 			if (values.length === 0) continue;
 			if (state.isList) {
 				result[name] = values;
@@ -482,7 +588,7 @@ export class SelectPropertiesModal extends Modal {
 	private updateControls(): void {
 		let totalPropsWithValues = 0;
 		for (const state of this.propertyStates.values()) {
-			const values = state.picker ? state.picker.getValue() : state.selected;
+			const values = state.hasConflict ? state.selected : state.picker ? state.picker.getValue() : state.selected;
 			if (values.length > 0) totalPropsWithValues++;
 		}
 
