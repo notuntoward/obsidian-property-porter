@@ -214,7 +214,16 @@ describe("PropertyPorter", () => {
 			expect(plugin.settings.pasteMode).toBe("overwrite");
 			expect(plugin.settings.onlyInclude).toBe("status");
 			expect(plugin.settings.excludeKeys).toBe("aliases, created date, modified date");
-			expect(plugin.settings.autoClear).toBe(false);
+			expect(plugin.settings).not.toHaveProperty("autoClear");
+		});
+
+		it("drops a stale autoClear value left in stored data", async () => {
+			const { plugin } = createPlugin();
+			vi.spyOn(plugin, "loadData").mockResolvedValue({ autoClear: true });
+
+			await plugin.loadSettings();
+
+			expect(plugin.settings).not.toHaveProperty("autoClear");
 		});
 
 		it("persists settings and refreshes status bar", async () => {
@@ -480,17 +489,35 @@ describe("PropertyPorter", () => {
 			expect(spy).toHaveBeenCalledWith("Property Porter: Pasted properties into dest");
 		});
 
-		it("clears clipboard when autoClear is enabled", async () => {
-			const target = new obsidianMock.TFile("dest.md");
-			const { plugin } = createPlugin();
+		it("keeps the clipboard after a paste so it can be pasted again", async () => {
+			const t1 = new obsidianMock.TFile("one.md");
+			const t2 = new obsidianMock.TFile("two.md");
+			const { plugin, fileCache } = createPlugin();
 			await plugin.onload();
-			plugin.settings.autoClear = true;
 			plugin.clipboard = { tags: ["a"] };
 
-			await plugin.pasteProperties(target);
+			await plugin.pasteProperties(t1);
+			await plugin.pasteProperties(t2);
 
-			expect(plugin.clipboard).toEqual({});
-			expect(plugin.statusBarItem.textContent).toBe("");
+			expect(plugin.clipboard).toEqual({ tags: ["a"] });
+			expect(fileCache[t1.path].frontmatter).toEqual({ tags: ["a"] });
+			expect(fileCache[t2.path].frontmatter).toEqual({ tags: ["a"] });
+		});
+
+		it("does not share clipboard array references with pasted notes", async () => {
+			const t1 = new obsidianMock.TFile("one.md");
+			const t2 = new obsidianMock.TFile("two.md");
+			const { plugin, fileCache } = createPlugin();
+			await plugin.onload();
+			plugin.settings.pasteMode = "overwrite";
+			plugin.clipboard = { tags: ["a"] };
+
+			await plugin.pasteProperties(t1);
+			await plugin.pasteProperties(t2);
+			fileCache[t1.path].frontmatter.tags.push("mutated");
+
+			expect(fileCache[t2.path].frontmatter.tags).toEqual(["a"]);
+			expect(plugin.clipboard).toEqual({ tags: ["a"] });
 		});
 
 		it("shows notice when no target files exist", async () => {
@@ -594,6 +621,26 @@ describe("PropertyPorter", () => {
 			expect(fileCache[f1.path].frontmatter).toEqual({ tags: ["a"] });
 			expect(fileCache[f2.path].frontmatter).toEqual({ tags: ["a"] });
 			expect(fileCache[other.path]).toBeUndefined();
+		});
+
+		it("shows exactly one summary notice and keeps the clipboard", async () => {
+			const f1 = new obsidianMock.TFile("a.md");
+			const f2 = new obsidianMock.TFile("b.md");
+			const { plugin } = createPlugin({
+				leaves: [
+					{ file: f1, group: "g1" },
+					{ file: f2, group: "g1" },
+				],
+			});
+			await plugin.onload();
+			plugin.clipboard = { tags: ["a"] };
+			const spy = vi.spyOn(obsidianMock, "Notice");
+
+			await plugin.pasteIntoActiveTabGroup();
+
+			expect(spy).toHaveBeenCalledTimes(1);
+			expect(spy).toHaveBeenCalledWith("Property Porter: Pasted properties into 2 notes");
+			expect(plugin.clipboard).toEqual({ tags: ["a"] });
 		});
 
 		it("does not paste into duplicates of the same file in the group", async () => {

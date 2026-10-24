@@ -8,7 +8,6 @@ import {
 	Modal,
 	FileView,
 	WorkspaceLeaf,
-	WorkspaceParent,
 	type SettingDefinitionItem,
 } from "obsidian";
 import {
@@ -22,9 +21,8 @@ import {
 } from "./frontmatter";
 import {
 	buildNavigationModel,
+	getGroupForLeaf,
 	type NavigationModel,
-	type TabGroup,
-	type LeafLocation,
 } from "commons/workspace";
 import { setTimeoutIn, ownerWindow } from "commons/windows";
 import {
@@ -40,14 +38,12 @@ interface PropertyPorterSettings {
 	onlyInclude: string;
 	excludeKeys: string;
 	pasteMode: PasteMode;
-	autoClear: boolean;
 }
 
 const DEFAULT_SETTINGS: PropertyPorterSettings = {
 	onlyInclude: "tags",
 	excludeKeys: "aliases, created date, modified date",
 	pasteMode: "merge",
-	autoClear: false,
 };
 
 export const NOTICE_TIMEOUT_MS = 7000;
@@ -140,7 +136,10 @@ export default class PropertyPorter extends Plugin {
 	}
 
 	async loadSettings(): Promise<void> {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+		// `autoClear` was removed: paste never clears; copy always replaces.
+		const { autoClear: _legacyAutoClear, ...stored } =
+			((await this.loadData()) ?? {}) as Partial<PropertyPorterSettings> & { autoClear?: unknown };
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, stored);
 	}
 
 	async saveSettings(): Promise<void> {
@@ -246,22 +245,21 @@ export default class PropertyPorter extends Plugin {
 		const file = targetFile ?? (await this.pickTargetFile());
 		if (!file) return;
 
-		// Use Obsidian's native fileManager to safely read/write frontmatter
-		await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
-			const existingFm = stripPosition(frontmatter);
-			const merged = this.mergeFrontmatter(this.clipboard, existingFm);
+		await this.writeProperties(file);
+		new Notice(`Property Porter: Pasted properties into ${file.basename}`);
+	}
 
-			// Apply the merged properties back onto the mutated object
+	// Writes the clipboard into one file. Each call gets its own deep copy so
+	// pasted notes never share array/object references with the clipboard or
+	// with each other.
+	private async writeProperties(file: TFile): Promise<void> {
+		const payload = structuredClone(this.clipboard);
+		await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
+			const merged = this.mergeFrontmatter(payload, stripPosition(frontmatter));
 			for (const [key, value] of Object.entries(merged)) {
 				frontmatter[key] = value;
 			}
 		});
-
-		new Notice(`Property Porter: Pasted properties into ${file.basename}`);
-
-		if (this.settings.autoClear) {
-			this.clearClipboard();
-		}
 	}
 
 	async pasteIntoActive(): Promise<void> {
@@ -285,13 +283,7 @@ export default class PropertyPorter extends Plugin {
 		const activeLeaf = this.app.workspace.activeLeaf;
 		if (!activeLeaf) return [];
 
-		const model = buildNavigationModel(this.app, activeLeaf);
-		const activeWindow = activeLeaf.getContainer()?.win;
-		const activeParent = activeLeaf.parent;
-
-		const activeGroup = model.groups.find(
-			(g) => g.window === activeWindow && g.group === activeParent
-		);
+		const activeGroup = getGroupForLeaf(buildNavigationModel(this.app, activeLeaf), activeLeaf);
 
 		if (!activeGroup) return [];
 
@@ -323,17 +315,13 @@ export default class PropertyPorter extends Plugin {
 		}
 
 		for (const file of files) {
-			await this.pasteProperties(file);
+			await this.writeProperties(file);
 		}
 		new Notice(
 			`Property Porter: Pasted properties into ${files.length} note${
 				files.length === 1 ? "" : "s"
 			}`
 		);
-
-		if (this.settings.autoClear) {
-			this.clearClipboard();
-		}
 	}
 
 	async pickTargetFile(): Promise<TFile | null> {
@@ -709,14 +697,6 @@ export class PropertyPorterSettingTab extends PluginSettingTab {
 								skip: "Skip existing",
 								merge: "Merge",
 							},
-						},
-					},
-					{
-						name: "Auto-clear clipboard after successful paste",
-						desc: "Automatically clear copied properties after pasting.",
-						control: {
-							type: "toggle",
-							key: "autoClear" satisfies keyof PropertyPorterSettings,
 						},
 					},
 				],
