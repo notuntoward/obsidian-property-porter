@@ -99,21 +99,34 @@ export function deepMerge(source: unknown, destination: unknown): unknown {
 
 // Unions a sequence of frontmatter objects into a single result. List
 // (array) properties accumulate every distinct value across the inputs via
-// `mergeArrays`; scalar properties take the first non-empty value seen. Used
-// when collecting properties from many notes (e.g. an active tab group) into
-// one clipboard payload.
+// `mergeArrays`. For scalar properties, by default the first non-empty value seen
+// is kept; when `gatherConflicts` is true, conflicting scalar values are gathered
+// into an array of candidate values for conflict resolution.
 export function unionFrontmatter(
-	inputs: Record<string, unknown>[]
+	inputs: Record<string, unknown>[],
+	options?: { gatherConflicts?: boolean }
 ): Record<string, unknown> {
 	const result: Record<string, unknown> = {};
+	const gatherConflicts = options?.gatherConflicts ?? false;
 	for (const input of inputs) {
 		for (const [key, value] of Object.entries(input)) {
+			if (isEmptyPropertyValue(value)) continue;
+
 			if (key in result) {
 				const existing = result[key];
 				if (Array.isArray(existing) && Array.isArray(value)) {
 					result[key] = mergeArrays(value, existing);
+				} else if (gatherConflicts) {
+					const existingArr = Array.isArray(existing) ? existing : [existing];
+					const valueArr = Array.isArray(value) ? value : [value];
+					const merged = mergeArrays(valueArr, existingArr);
+					if (merged.length === 1 && !Array.isArray(existing) && !Array.isArray(value)) {
+						result[key] = merged[0];
+					} else {
+						result[key] = merged;
+					}
 				}
-				// scalar already set: keep the first value, ignore later
+				// scalar already set: keep the first value when gatherConflicts is false
 				continue;
 			}
 			result[key] = value;

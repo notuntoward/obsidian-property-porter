@@ -3,15 +3,30 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import * as obsidianMock from "obsidian";
-import { registerEmacsMotionKeys, fuzzyMatch } from "../src/utils/modal";
+import { registerEmacsMotionKeys } from "../src/utils/modal";
 import PropertyPorter, {
 	SuggestFilesModal,
+	FileSuggestModal,
 	PropertyPorterSettingTab,
 	MultiSelectSuggestModal,
 	NOTICE_NO_PROPERTIES_TO_PASTE,
 	NOTICE_CLEARED_COPIED_TAGS,
 	NOTICE_TIMEOUT_MS,
 } from "../src/main";
+
+function getInputSuggest(input: HTMLInputElement): any {
+	const suggestClass = obsidianMock.AbstractInputSuggest as any;
+	return suggestClass.instances.find((instance: any) => instance.inputEl === input);
+}
+
+function selectInputSuggestion(input: HTMLInputElement, query: string, value: string): void {
+	const suggester = getInputSuggest(input);
+	const option = suggester
+		.suggestions(query)
+		.find((candidate: any) => candidate.kind === "suggestion" && candidate.value === value);
+	expect(option).toBeDefined();
+	suggester.select(option);
+}
 
 function createApp(options: any = {}) {
 	const activeFile = options.activeFile ?? null;
@@ -48,15 +63,11 @@ function createApp(options: any = {}) {
 			},
 		},
 		metadataCache: {
-			getFileCache: (file: obsidianMock.TFile) =>
-				fileCache[file.path] ?? null,
+			getFileCache: (file: obsidianMock.TFile) => fileCache[file.path] ?? null,
 		},
 		vault: { getMarkdownFiles: () => markdownFiles },
 		fileManager: {
-			processFrontMatter: async (
-				file: obsidianMock.TFile,
-				processor: (fm: any) => void
-			) => {
+			processFrontMatter: async (file: obsidianMock.TFile, processor: (fm: any) => void) => {
 				const existing = fileCache[file.path]?.frontmatter ?? {};
 				const fm = { ...existing };
 				processor(fm);
@@ -110,10 +121,8 @@ describe("PropertyPorter", () => {
 
 			expect(loadSettings).toHaveBeenCalled();
 			expect(plugin.statusBarItem).toBeDefined();
-			expect(addCommand).toHaveBeenCalledTimes(8);
-			expect(addSettingTab).toHaveBeenCalledWith(
-				expect.any(PropertyPorterSettingTab)
-			);
+			expect(addCommand).toHaveBeenCalledTimes(9);
+			expect(addSettingTab).toHaveBeenCalledWith(expect.any(PropertyPorterSettingTab));
 		});
 
 		it("registered command callbacks delegate to plugin methods", async () => {
@@ -126,15 +135,9 @@ describe("PropertyPorter", () => {
 				return call?.[0].callback();
 			};
 
-			const copyProperties = vi
-				.spyOn(plugin, "copyProperties")
-				.mockResolvedValue();
-			const pasteProperties = vi
-				.spyOn(plugin, "pasteProperties")
-				.mockResolvedValue();
-			const pasteIntoActive = vi
-				.spyOn(plugin, "pasteIntoActive")
-				.mockResolvedValue();
+			const copyProperties = vi.spyOn(plugin, "copyProperties").mockResolvedValue();
+			const pasteProperties = vi.spyOn(plugin, "pasteProperties").mockResolvedValue();
+			const pasteIntoActive = vi.spyOn(plugin, "pasteIntoActive").mockResolvedValue();
 			const clearClipboard = vi.spyOn(plugin, "clearClipboard");
 
 			await run("copy-properties");
@@ -149,22 +152,31 @@ describe("PropertyPorter", () => {
 			run("clear-clipboard");
 			expect(clearClipboard).toHaveBeenCalled();
 
-			const selectTagsToPaste = vi
-				.spyOn(plugin, "selectTagsToPaste")
-				.mockResolvedValue();
+			const selectTagsToPaste = vi.spyOn(plugin, "selectTagsToPaste").mockResolvedValue();
 			await run("select-tags-to-paste");
 			expect(selectTagsToPaste).toHaveBeenCalled();
+
+			const selectPropertiesToPaste = vi.spyOn(plugin, "selectPropertiesToPaste").mockResolvedValue();
+			await run("select-properties-to-paste");
+			expect(selectPropertiesToPaste).toHaveBeenCalled();
 		});
 
-		it("registers the clear command with a discoverable 'Clear properties' name", async () => {
+		it("registers the select-properties-to-paste command with 'Select properties to paste' name", async () => {
 			const { plugin } = createPlugin();
 			const addCommand = vi.spyOn(plugin, "addCommand");
 			await plugin.onload();
 
-			const call = addCommand.mock.calls.find(
-				(c) => c[0].id === "clear-clipboard"
-			);
-			expect(call?.[0].name).toBe("Clear properties");
+			const call = addCommand.mock.calls.find((c) => c[0].id === "select-properties-to-paste");
+			expect(call?.[0].name).toBe("Select properties to paste");
+		});
+
+		it("registers the clear command with 'Clear properties clipboard' name", async () => {
+			const { plugin } = createPlugin();
+			const addCommand = vi.spyOn(plugin, "addCommand");
+			await plugin.onload();
+
+			const call = addCommand.mock.calls.find((c) => c[0].id === "clear-clipboard");
+			expect(call?.[0].name).toBe("Clear properties clipboard");
 		});
 
 		it("registers the tag-picker command with an accurate 'Select tags to paste' name, not the misleading 'properties' wording", async () => {
@@ -172,9 +184,7 @@ describe("PropertyPorter", () => {
 			const addCommand = vi.spyOn(plugin, "addCommand");
 			await plugin.onload();
 
-			const call = addCommand.mock.calls.find(
-				(c) => c[0].id === "select-tags-to-paste"
-			);
+			const call = addCommand.mock.calls.find((c) => c[0].id === "select-tags-to-paste");
 			expect(call?.[0].name).toBe("Select tags to paste");
 		});
 
@@ -203,18 +213,23 @@ describe("PropertyPorter", () => {
 
 			expect(plugin.settings.pasteMode).toBe("overwrite");
 			expect(plugin.settings.onlyInclude).toBe("status");
-			expect(plugin.settings.excludeKeys).toBe(
-				"aliases, created date, modified date"
-			);
-			expect(plugin.settings.autoClear).toBe(false);
+			expect(plugin.settings.excludeKeys).toBe("aliases, created date, modified date");
+			expect(plugin.settings).not.toHaveProperty("autoClear");
+		});
+
+		it("drops a stale autoClear value left in stored data", async () => {
+			const { plugin } = createPlugin();
+			vi.spyOn(plugin, "loadData").mockResolvedValue({ autoClear: true });
+
+			await plugin.loadSettings();
+
+			expect(plugin.settings).not.toHaveProperty("autoClear");
 		});
 
 		it("persists settings and refreshes status bar", async () => {
 			const { plugin } = createPlugin();
 			await plugin.onload();
-			const saveData = vi
-				.spyOn(plugin, "saveData")
-				.mockResolvedValue(undefined);
+			const saveData = vi.spyOn(plugin, "saveData").mockResolvedValue(undefined);
 			const update = vi.spyOn(plugin, "updateStatusBar");
 
 			plugin.settings.onlyInclude = "custom";
@@ -303,9 +318,7 @@ describe("PropertyPorter", () => {
 
 			expect(plugin.clipboard).toEqual({ tags: ["a", "b"] });
 			expect(plugin.statusBarItem.textContent).toBe("PP: 2");
-			expect(spy).toHaveBeenCalledWith(
-				"Property Porter: 2 properties copied"
-			);
+			expect(spy).toHaveBeenCalledWith("Property Porter: 2 properties copied");
 		});
 
 		it("uses singular wording when exactly one value is copied", async () => {
@@ -318,9 +331,7 @@ describe("PropertyPorter", () => {
 
 			await plugin.copyProperties();
 
-			expect(spy).toHaveBeenCalledWith(
-				"Property Porter: 1 property copied"
-			);
+			expect(spy).toHaveBeenCalledWith("Property Porter: 1 property copied");
 		});
 
 		it("counts individual values across multiple included properties", async () => {
@@ -340,9 +351,7 @@ describe("PropertyPorter", () => {
 			await plugin.copyProperties();
 
 			// 3 tags + 1 scalar status + 0 from the empty aliases array = 4
-			expect(spy).toHaveBeenCalledWith(
-				"Property Porter: 4 properties copied"
-			);
+			expect(spy).toHaveBeenCalledWith("Property Porter: 4 properties copied");
 			expect(plugin.statusBarItem.textContent).toBe("PP: 4");
 		});
 
@@ -356,9 +365,7 @@ describe("PropertyPorter", () => {
 
 			await plugin.copyProperties();
 
-			expect(spy).toHaveBeenCalledWith(
-				"Property Porter: 0 properties copied"
-			);
+			expect(spy).toHaveBeenCalledWith("Property Porter: 0 properties copied");
 			expect(plugin.statusBarItem.textContent).toBe("");
 		});
 
@@ -382,7 +389,7 @@ describe("PropertyPorter", () => {
 			await plugin.onload();
 			fileCache[source.path] = { frontmatter: { status: "from-source" } };
 			plugin.settings.onlyInclude = "status";
-			obsidianMock.FuzzySuggestModal.prototype.open = function (this: any) {
+			obsidianMock.SuggestModal.prototype.open = function (this: any) {
 				this.onChooseItem(source);
 			};
 			const spy = vi.spyOn(obsidianMock, "Notice");
@@ -390,9 +397,7 @@ describe("PropertyPorter", () => {
 			await plugin.copyPropertiesFrom();
 
 			expect(plugin.clipboard).toEqual({ status: "from-source" });
-			expect(spy).toHaveBeenCalledWith(
-				"Property Porter: 1 property copied"
-			);
+			expect(spy).toHaveBeenCalledWith("Property Porter: 1 property copied");
 		});
 
 		it("does nothing when there are no other markdown files to pick from", async () => {
@@ -410,9 +415,7 @@ describe("PropertyPorter", () => {
 			// pickTargetFile resolves null when no *other* markdown files
 			// exist, so the clipboard is left untouched.
 			expect(plugin.clipboard).toEqual({ a: 1 });
-			expect(spy).toHaveBeenCalledWith(
-				"Property Porter: No other markdown files found"
-			);
+			expect(spy).toHaveBeenCalledWith("Property Porter: No other markdown files found");
 		});
 	});
 
@@ -437,10 +440,7 @@ describe("PropertyPorter", () => {
 
 			await plugin.pasteProperties(new obsidianMock.TFile("dest.md"));
 
-			expect(spy).toHaveBeenCalledWith(
-				NOTICE_NO_PROPERTIES_TO_PASTE,
-				NOTICE_TIMEOUT_MS
-			);
+			expect(spy).toHaveBeenCalledWith(NOTICE_NO_PROPERTIES_TO_PASTE, NOTICE_TIMEOUT_MS);
 		});
 
 		it("shows notice when clipboard has a key but its value is effectively empty, and does not touch the target", async () => {
@@ -455,13 +455,8 @@ describe("PropertyPorter", () => {
 
 			await plugin.pasteProperties(target);
 
-			expect(spy).toHaveBeenCalledWith(
-				NOTICE_NO_PROPERTIES_TO_PASTE,
-				NOTICE_TIMEOUT_MS
-			);
-			expect(spy).not.toHaveBeenCalledWith(
-				expect.stringContaining("Pasted properties into")
-			);
+			expect(spy).toHaveBeenCalledWith(NOTICE_NO_PROPERTIES_TO_PASTE, NOTICE_TIMEOUT_MS);
+			expect(spy).not.toHaveBeenCalledWith(expect.stringContaining("Pasted properties into"));
 			expect(fileCache[target.path].frontmatter).toEqual({ title: "T" });
 		});
 
@@ -491,22 +486,38 @@ describe("PropertyPorter", () => {
 			await plugin.pasteProperties(target);
 
 			expect(fileCache[target.path].frontmatter).toEqual({ tags: ["b", "a"] });
-			expect(spy).toHaveBeenCalledWith(
-				"Property Porter: Pasted properties into dest"
-			);
+			expect(spy).toHaveBeenCalledWith("Property Porter: Pasted properties into dest");
 		});
 
-		it("clears clipboard when autoClear is enabled", async () => {
-			const target = new obsidianMock.TFile("dest.md");
-			const { plugin } = createPlugin();
+		it("keeps the clipboard after a paste so it can be pasted again", async () => {
+			const t1 = new obsidianMock.TFile("one.md");
+			const t2 = new obsidianMock.TFile("two.md");
+			const { plugin, fileCache } = createPlugin();
 			await plugin.onload();
-			plugin.settings.autoClear = true;
 			plugin.clipboard = { tags: ["a"] };
 
-			await plugin.pasteProperties(target);
+			await plugin.pasteProperties(t1);
+			await plugin.pasteProperties(t2);
 
-			expect(plugin.clipboard).toEqual({});
-			expect(plugin.statusBarItem.textContent).toBe("");
+			expect(plugin.clipboard).toEqual({ tags: ["a"] });
+			expect(fileCache[t1.path].frontmatter).toEqual({ tags: ["a"] });
+			expect(fileCache[t2.path].frontmatter).toEqual({ tags: ["a"] });
+		});
+
+		it("does not share clipboard array references with pasted notes", async () => {
+			const t1 = new obsidianMock.TFile("one.md");
+			const t2 = new obsidianMock.TFile("two.md");
+			const { plugin, fileCache } = createPlugin();
+			await plugin.onload();
+			plugin.settings.pasteMode = "overwrite";
+			plugin.clipboard = { tags: ["a"] };
+
+			await plugin.pasteProperties(t1);
+			await plugin.pasteProperties(t2);
+			fileCache[t1.path].frontmatter.tags.push("mutated");
+
+			expect(fileCache[t2.path].frontmatter.tags).toEqual(["a"]);
+			expect(plugin.clipboard).toEqual({ tags: ["a"] });
 		});
 
 		it("shows notice when no target files exist", async () => {
@@ -517,9 +528,7 @@ describe("PropertyPorter", () => {
 
 			await plugin.pasteProperties();
 
-			expect(spy).toHaveBeenCalledWith(
-				"Property Porter: No other markdown files found"
-			);
+			expect(spy).toHaveBeenCalledWith("Property Porter: No other markdown files found");
 		});
 
 		it("uses modal selection when no target provided", async () => {
@@ -531,7 +540,7 @@ describe("PropertyPorter", () => {
 			});
 			await plugin.onload();
 			plugin.clipboard = { tags: ["a"] };
-			obsidianMock.FuzzySuggestModal.prototype.open = function (this: any) {
+			obsidianMock.SuggestModal.prototype.open = function (this: any) {
 				this.onChooseItem(other);
 			};
 
@@ -575,10 +584,7 @@ describe("PropertyPorter", () => {
 
 			await plugin.pasteIntoActiveTabGroup();
 
-			expect(spy).toHaveBeenCalledWith(
-				NOTICE_NO_PROPERTIES_TO_PASTE,
-				NOTICE_TIMEOUT_MS
-			);
+			expect(spy).toHaveBeenCalledWith(NOTICE_NO_PROPERTIES_TO_PASTE, NOTICE_TIMEOUT_MS);
 		});
 
 		it("shows notice when the active tab group has no open files", async () => {
@@ -615,6 +621,26 @@ describe("PropertyPorter", () => {
 			expect(fileCache[f1.path].frontmatter).toEqual({ tags: ["a"] });
 			expect(fileCache[f2.path].frontmatter).toEqual({ tags: ["a"] });
 			expect(fileCache[other.path]).toBeUndefined();
+		});
+
+		it("shows exactly one summary notice and keeps the clipboard", async () => {
+			const f1 = new obsidianMock.TFile("a.md");
+			const f2 = new obsidianMock.TFile("b.md");
+			const { plugin } = createPlugin({
+				leaves: [
+					{ file: f1, group: "g1" },
+					{ file: f2, group: "g1" },
+				],
+			});
+			await plugin.onload();
+			plugin.clipboard = { tags: ["a"] };
+			const spy = vi.spyOn(obsidianMock, "Notice");
+
+			await plugin.pasteIntoActiveTabGroup();
+
+			expect(spy).toHaveBeenCalledTimes(1);
+			expect(spy).toHaveBeenCalledWith("Property Porter: Pasted properties into 2 notes");
+			expect(plugin.clipboard).toEqual({ tags: ["a"] });
 		});
 
 		it("does not paste into duplicates of the same file in the group", async () => {
@@ -703,9 +729,7 @@ describe("PropertyPorter", () => {
 			const result = await plugin.pickTargetFile();
 
 			expect(result).toBeNull();
-			expect(spy).toHaveBeenCalledWith(
-				"Property Porter: No other markdown files found"
-			);
+			expect(spy).toHaveBeenCalledWith("Property Porter: No other markdown files found");
 		});
 
 		it("opens modal and returns selected file", async () => {
@@ -715,7 +739,7 @@ describe("PropertyPorter", () => {
 				activeFile: active,
 				markdownFiles: [active, other],
 			});
-			obsidianMock.FuzzySuggestModal.prototype.open = function (this: any) {
+			obsidianMock.SuggestModal.prototype.open = function (this: any) {
 				this.onChooseItem(other);
 			};
 
@@ -730,10 +754,7 @@ describe("PropertyPorter", () => {
 			const { plugin } = createPlugin();
 			plugin.settings.pasteMode = "skip";
 
-			const result = plugin.mergeFrontmatter(
-				{ a: 1, b: 2 },
-				{ a: 3, c: 4 }
-			);
+			const result = plugin.mergeFrontmatter({ a: 1, b: 2 }, { a: 3, c: 4 });
 
 			expect(result).toEqual({ a: 3, b: 2, c: 4 });
 		});
@@ -741,12 +762,8 @@ describe("PropertyPorter", () => {
 		it("throws when extracted helpers are called on the plugin", () => {
 			const { plugin } = createPlugin();
 
-			expect(() => plugin.deepMerge({}, {})).toThrow(
-				"deepMerge is extracted"
-			);
-			expect(() => plugin.mergeArrays([], [])).toThrow(
-				"mergeArrays is extracted"
-			);
+			expect(() => plugin.deepMerge({}, {})).toThrow("deepMerge is extracted");
+			expect(() => plugin.mergeArrays([], [])).toThrow("mergeArrays is extracted");
 			expect(() => plugin.normalizeArrayItems([])).toThrow(
 				"normalizeArrayItems is extracted"
 			);
@@ -754,24 +771,17 @@ describe("PropertyPorter", () => {
 	});
 });
 
-describe("SuggestFilesModal", () => {
+describe("FileSuggestModal", () => {
 	it("lists all candidate files", () => {
-		const files = [
-			new obsidianMock.TFile("a.md"),
-			new obsidianMock.TFile("notes/b.md"),
-		];
-		const modal = new SuggestFilesModal(
-			new obsidianMock.App(),
-			files,
-			() => {}
-		);
+		const files = [new obsidianMock.TFile("a.md"), new obsidianMock.TFile("notes/b.md")];
+		const modal = new FileSuggestModal(new obsidianMock.App(), files, () => {});
 
 		expect(modal.getItems()).toEqual(files);
 	});
 
 	it("uses the file path as the suggestion text", () => {
 		const file = new obsidianMock.TFile("folder/note.md");
-		const modal = new SuggestFilesModal(new obsidianMock.App(), [], vi.fn());
+		const modal = new FileSuggestModal(new obsidianMock.App(), [], vi.fn());
 
 		expect(modal.getItemText(file)).toBe(file.path);
 	});
@@ -779,11 +789,7 @@ describe("SuggestFilesModal", () => {
 	it("invokes callback when suggestion is chosen", () => {
 		const file = new obsidianMock.TFile("x.md");
 		const onSelect = vi.fn();
-		const modal = new SuggestFilesModal(
-			new obsidianMock.App(),
-			[file],
-			onSelect
-		);
+		const modal = new FileSuggestModal(new obsidianMock.App(), [file], onSelect);
 
 		modal.onChooseItem(file);
 
@@ -792,11 +798,7 @@ describe("SuggestFilesModal", () => {
 
 	it("registers Emacs motion keys on open", () => {
 		const file = new obsidianMock.TFile("x.md");
-		const modal = new SuggestFilesModal(
-			new obsidianMock.App(),
-			[file],
-			() => {}
-		);
+		const modal = new FileSuggestModal(new obsidianMock.App(), [file], () => {});
 
 		modal.onOpen();
 
@@ -809,6 +811,17 @@ describe("SuggestFilesModal", () => {
 		expect(keys).toContain("E");
 		expect(keys).toContain("F");
 		expect(keys).toContain("B");
+	});
+
+	it("prioritizes note basename over folder path when suggesting files", () => {
+		const file1 = new obsidianMock.TFile("archive/meeting/unrelated.md");
+		const file2 = new obsidianMock.TFile("work/meeting.md");
+		const modal = new FileSuggestModal(new obsidianMock.App(), [file1, file2], vi.fn());
+
+		const suggestions = modal.getSuggestions("meeting");
+		expect(suggestions.length).toBe(2);
+		expect(suggestions[0].item).toBe(file2);
+		expect(suggestions[1].item).toBe(file1);
 	});
 });
 
@@ -832,12 +845,24 @@ describe("registerEmacsMotionKeys", () => {
 
 		registerEmacsMotionKeys(modal);
 
-		const ctrlNCall = scope.register.mock.calls.find(
-			(c) => c[0][0] === "Ctrl" && c[1] === "N",
-		);
+		const ctrlNCall = scope.register.mock.calls.find((c) => c[0][0] === "Ctrl" && c[1] === "N");
 		expect(ctrlNCall).toBeDefined();
 		ctrlNCall[2](new KeyboardEvent("keydown"));
-		expect(chooser.setSelectedItem).toHaveBeenCalledWith(1, true);
+		expect(chooser.setSelectedItem).toHaveBeenCalledWith(1);
+	});
+
+	it("falls back to assigning selectedItem safely if chooser.setSelectedItem throws", () => {
+		const { inputEl, scope, chooser } = createMockModal();
+		chooser.setSelectedItem = vi.fn().mockImplementation(() => {
+			throw new TypeError("t.instanceOf is not a function");
+		});
+		const modal = { inputEl, scope, chooser } as unknown as obsidianMock.SuggestModal<unknown>;
+
+		registerEmacsMotionKeys(modal);
+
+		const ctrlNCall = scope.register.mock.calls.find((c) => c[0][0] === "Ctrl" && c[1] === "N");
+		expect(() => ctrlNCall[2](new KeyboardEvent("keydown"))).not.toThrow();
+		expect(chooser.selectedItem).toBe(1);
 	});
 
 	it("registers Ctrl+P to move selection up", () => {
@@ -847,12 +872,10 @@ describe("registerEmacsMotionKeys", () => {
 
 		registerEmacsMotionKeys(modal);
 
-		const ctrlPCall = scope.register.mock.calls.find(
-			(c) => c[0][0] === "Ctrl" && c[1] === "P",
-		);
+		const ctrlPCall = scope.register.mock.calls.find((c) => c[0][0] === "Ctrl" && c[1] === "P");
 		expect(ctrlPCall).toBeDefined();
 		ctrlPCall[2](new KeyboardEvent("keydown"));
-		expect(chooser.setSelectedItem).toHaveBeenCalledWith(0, true);
+		expect(chooser.setSelectedItem).toHaveBeenCalledWith(0);
 	});
 
 	it("does not move selection down past the last item", () => {
@@ -863,9 +886,7 @@ describe("registerEmacsMotionKeys", () => {
 
 		registerEmacsMotionKeys(modal);
 
-		const ctrlNCall = scope.register.mock.calls.find(
-			(c) => c[0][0] === "Ctrl" && c[1] === "N",
-		);
+		const ctrlNCall = scope.register.mock.calls.find((c) => c[0][0] === "Ctrl" && c[1] === "N");
 		ctrlNCall[2](new KeyboardEvent("keydown"));
 		expect(chooser.setSelectedItem).not.toHaveBeenCalled();
 	});
@@ -877,9 +898,7 @@ describe("registerEmacsMotionKeys", () => {
 
 		registerEmacsMotionKeys(modal);
 
-		const ctrlPCall = scope.register.mock.calls.find(
-			(c) => c[0][0] === "Ctrl" && c[1] === "P",
-		);
+		const ctrlPCall = scope.register.mock.calls.find((c) => c[0][0] === "Ctrl" && c[1] === "P");
 		ctrlPCall[2](new KeyboardEvent("keydown"));
 		expect(chooser.setSelectedItem).not.toHaveBeenCalled();
 	});
@@ -892,9 +911,7 @@ describe("registerEmacsMotionKeys", () => {
 
 		registerEmacsMotionKeys(modal);
 
-		const ctrlACall = scope.register.mock.calls.find(
-			(c) => c[0][0] === "Ctrl" && c[1] === "A",
-		);
+		const ctrlACall = scope.register.mock.calls.find((c) => c[0][0] === "Ctrl" && c[1] === "A");
 		ctrlACall[2](new KeyboardEvent("keydown"));
 		expect(inputEl.selectionStart).toBe(0);
 		expect(inputEl.selectionEnd).toBe(0);
@@ -908,9 +925,7 @@ describe("registerEmacsMotionKeys", () => {
 
 		registerEmacsMotionKeys(modal);
 
-		const ctrlECall = scope.register.mock.calls.find(
-			(c) => c[0][0] === "Ctrl" && c[1] === "E",
-		);
+		const ctrlECall = scope.register.mock.calls.find((c) => c[0][0] === "Ctrl" && c[1] === "E");
 		ctrlECall[2](new KeyboardEvent("keydown"));
 		expect(inputEl.selectionStart).toBe(5);
 		expect(inputEl.selectionEnd).toBe(5);
@@ -924,9 +939,7 @@ describe("registerEmacsMotionKeys", () => {
 
 		registerEmacsMotionKeys(modal);
 
-		const ctrlFCall = scope.register.mock.calls.find(
-			(c) => c[0][0] === "Ctrl" && c[1] === "F",
-		);
+		const ctrlFCall = scope.register.mock.calls.find((c) => c[0][0] === "Ctrl" && c[1] === "F");
 		ctrlFCall[2](new KeyboardEvent("keydown"));
 		expect(inputEl.selectionStart).toBe(1);
 		expect(inputEl.selectionEnd).toBe(1);
@@ -940,169 +953,34 @@ describe("registerEmacsMotionKeys", () => {
 
 		registerEmacsMotionKeys(modal);
 
-		const ctrlBCall = scope.register.mock.calls.find(
-			(c) => c[0][0] === "Ctrl" && c[1] === "B",
-		);
+		const ctrlBCall = scope.register.mock.calls.find((c) => c[0][0] === "Ctrl" && c[1] === "B");
 		ctrlBCall[2](new KeyboardEvent("keydown"));
 		expect(inputEl.selectionStart).toBe(2);
 		expect(inputEl.selectionEnd).toBe(2);
 	});
 });
 
-describe("fuzzyMatch", () => {
-	it("returns null when query characters are not in order", () => {
-		expect(fuzzyMatch("xyz", "alpha")).toBeNull();
-	});
-
-	it("returns a score with matches when all query chars match in order", () => {
-		const result = fuzzyMatch("tg", "tags");
-		expect(result).not.toBeNull();
-		expect(result!.score).toBeGreaterThan(0);
-		expect(result!.matches).toBeDefined();
-	});
-
-	it("returns a higher score for consecutive matches than scattered ones", () => {
-		const consecutive = fuzzyMatch("ph", "alpha");
-		const scattered = fuzzyMatch("ph", "xiphophone");
-		expect(consecutive).not.toBeNull();
-		expect(scattered).not.toBeNull();
-		expect(consecutive!.score).toBeGreaterThan(scattered!.score);
-	});
-
-	it("returns a higher score for matches at word starts", () => {
-		const wordStart = fuzzyMatch("a", "alpha-beta");
-		const midWord = fuzzyMatch("b", "alpha-beta");
-		expect(wordStart!.score).toBeGreaterThan(midWord!.score);
-	});
-
-	it("returns score 0 with empty matches for an empty query", () => {
-		const result = fuzzyMatch("", "anything");
-		expect(result).not.toBeNull();
-		expect(result!.score).toBe(0);
-		expect(result!.matches).toEqual([]);
-	});
-
-	it("returns null for an empty target with a non-empty query", () => {
-		expect(fuzzyMatch("a", "")).toBeNull();
-	});
-
-	it("prefers shorter targets (lower length penalty)", () => {
-		const short = fuzzyMatch("a", "alpha");
-		const long = fuzzyMatch("a", "alpha-beta-gamma");
-		expect(short!.score).toBeGreaterThan(long!.score);
-	});
-});
-
 describe("MultiSelectSuggestModal", () => {
-	it("renders input, controls and the full list on open", () => {
+	it("wraps the shared picker and normalizes initial clipboard tags", () => {
 		const modal = new MultiSelectSuggestModal(
 			new obsidianMock.App(),
 			["alpha", "beta"],
-			"",
+			"#",
 			() => {},
-			() => {}
-		);
-		modal.onOpen();
-
-		expect(modal.inputEl).toBeInstanceOf(HTMLInputElement);
-		expect(modal.inputEl.placeholder).toContain("Type to filter");
-		const items = modal.contentEl.querySelectorAll(".pp-multi-select-item");
-		expect(items.length).toBe(2);
-		expect(items[0].textContent).toBe("alpha");
-		expect(items[1].textContent).toBe("beta");
-		const button = modal.contentEl.querySelector(".pp-finish-button");
-		expect(button.textContent).toBe("Finish selection (0)");
-	});
-
-	it("filters the list as the user types", () => {
-		const modal = new MultiSelectSuggestModal(
-			new obsidianMock.App(),
-			["alpha", "beta", "gamma"],
-			"",
 			() => {},
-			() => {}
+			["#alpha", "alpha"]
 		);
 		modal.onOpen();
 
-		modal.inputEl.value = "ga";
-		modal.inputEl.dispatchEvent(new Event("input"));
-
-		const items = modal.contentEl.querySelectorAll(".pp-multi-select-item");
-		expect(items.length).toBe(1);
-		expect(items[0].textContent).toBe("gamma");
-	});
-
-	it("ranks exact match first, then fuzzy matches by score", () => {
-		const modal = new MultiSelectSuggestModal(
-			new obsidianMock.App(),
-			["King-County", "Seattle", "a", "ai-generated", "archive"],
-			"",
-			() => {},
-			() => {}
-		);
-		modal.onOpen();
-
-		modal.inputEl.value = "a";
-		modal.inputEl.dispatchEvent(new Event("input"));
-
-		const items = Array.from(
-			modal.contentEl.querySelectorAll(".pp-multi-select-item")
-		).map((el: any) => el.textContent);
-		// "a" is an exact match and must rank first. "King-County"
-		// has no "a" in it at all and is correctly excluded.
-		// With fuzzy matching, shorter targets score higher, so
-		// "archive" ranks above "ai-generated".
-		expect(items[0]).toBe("a");
-		expect(items).toEqual(["a", "archive", "ai-generated", "Seattle"]);
-	});
-
-	it("Enter selects the exact match, not an earlier substring match", () => {
-		const onSubmit = vi.fn();
-		const modal = new MultiSelectSuggestModal(
-			new obsidianMock.App(),
-			["Seattle", "a"],
-			"",
-			onSubmit,
-			() => {}
-		);
-		modal.onOpen();
-
-		modal.inputEl.value = "a";
-		modal.inputEl.dispatchEvent(new Event("input"));
-		modal.inputEl.dispatchEvent(
-			new KeyboardEvent("keydown", { key: "Enter" })
-		);
-
-		expect(modal.getSelectedValues()).toEqual(["a"]);
-	});
-
-	it("clicking an item adds it, clears the input, and removes it from the list", () => {
-		const modal = new MultiSelectSuggestModal(
-			new obsidianMock.App(),
-			["alpha", "beta"],
-			"",
-			() => {},
-			() => {}
-		);
-		modal.onOpen();
-		modal.inputEl.value = "al";
-		modal.inputEl.dispatchEvent(new Event("input"));
-
-		const item = modal.contentEl.querySelector(".pp-multi-select-item");
-		item.dispatchEvent(
-			new MouseEvent("mousedown", { bubbles: true, cancelable: true })
-		);
-
+		expect(modal.inputEl.classList.contains("commons-property-picker-input")).toBe(true);
 		expect(modal.getSelectedValues()).toEqual(["alpha"]);
-		expect(modal.inputEl.value).toBe("");
-		const remaining = modal.contentEl.querySelectorAll(
-			".pp-multi-select-item"
+		expect(modal.contentEl.querySelectorAll(".commons-property-picker-chip")).toHaveLength(1);
+		expect(modal.contentEl.querySelector(".pp-finish-button").textContent).toBe(
+			"Finish selection (1)"
 		);
-		expect(remaining.length).toBe(1);
-		expect(remaining[0].textContent).toBe("beta");
 	});
 
-	it("chips display selected items with a prefix and support removal", () => {
+	it("adds known tags through the shared input suggester", () => {
 		const modal = new MultiSelectSuggestModal(
 			new obsidianMock.App(),
 			["alpha", "beta"],
@@ -1111,431 +989,119 @@ describe("MultiSelectSuggestModal", () => {
 			() => {}
 		);
 		modal.onOpen();
-		modal.addValue("alpha");
-		modal.addValue("beta");
 
-		const chips = modal.contentEl.querySelectorAll(".pp-selected-chip");
-		expect(chips.length).toBe(2);
-		expect(chips[0].textContent.replace(/\s+/g, "")).toBe("#alpha×");
-		expect(chips[1].textContent.replace(/\s+/g, "")).toBe("#beta×");
-
-		const label = modal.contentEl.querySelector(".pp-selected-chips-label");
-		expect(label.textContent).toBe("2 selected:");
-
-		chips[0]
-			.querySelector(".pp-selected-chip-remove")
-			.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-
-		expect(modal.getSelectedValues()).toEqual(["beta"]);
-	});
-
-	it("Enter on a filtered match adds the top result without submitting", () => {
-		const onSubmit = vi.fn();
-		const modal = new MultiSelectSuggestModal(
-			new obsidianMock.App(),
-			["alpha", "beta"],
-			"",
-			onSubmit,
-			() => {}
-		);
-		modal.onOpen();
-		modal.inputEl.value = "alpha";
-		modal.inputEl.dispatchEvent(new Event("input"));
-		modal.inputEl.dispatchEvent(
-			new KeyboardEvent("keydown", { key: "Enter" })
-		);
+		selectInputSuggestion(modal.inputEl, "al", "alpha");
 
 		expect(modal.getSelectedValues()).toEqual(["alpha"]);
-		expect(onSubmit).not.toHaveBeenCalled();
-	});
-
-	it("Enter with an unknown tag adds it verbatim", () => {
-		const onSubmit = vi.fn();
-		const modal = new MultiSelectSuggestModal(
-			new obsidianMock.App(),
-			["alpha", "beta"],
-			"",
-			onSubmit,
-			() => {}
-		);
-		modal.onOpen();
-		modal.inputEl.value = "brand-new-tag";
-		modal.inputEl.dispatchEvent(new Event("input"));
-		modal.inputEl.dispatchEvent(
-			new KeyboardEvent("keydown", { key: "Enter" })
-		);
-
-		expect(modal.getSelectedValues()).toEqual(["brand-new-tag"]);
-		expect(onSubmit).not.toHaveBeenCalled();
-	});
-
-	it("shows a create-new-tag row when the query matches nothing", () => {
-		const modal = new MultiSelectSuggestModal(
-			new obsidianMock.App(),
-			["alpha", "beta"],
-			"",
-			() => {},
-			() => {}
-		);
-		modal.onOpen();
-		modal.inputEl.value = "zzz";
-		modal.inputEl.dispatchEvent(new Event("input"));
-
-		const createRow = modal.contentEl.querySelector(".pp-create-item");
-		expect(createRow).not.toBeNull();
-		expect(createRow.textContent).toBe("Create new tag: zzz");
-
-		createRow.dispatchEvent(
-			new MouseEvent("mousedown", { bubbles: true, cancelable: true })
-		);
-		expect(modal.getSelectedValues()).toEqual(["zzz"]);
-	});
-
-	it("Enter with empty input and no selection does nothing", () => {
-		const onSubmit = vi.fn();
-		const modal = new MultiSelectSuggestModal(
-			new obsidianMock.App(),
-			["alpha"],
-			"",
-			onSubmit,
-			() => {}
-		);
-		modal.onOpen();
-		modal.inputEl.dispatchEvent(
-			new KeyboardEvent("keydown", { key: "Enter" })
-		);
-		expect(onSubmit).not.toHaveBeenCalled();
-	});
-
-	it("Enter with empty input and a selection finishes", () => {
-		const onSubmit = vi.fn();
-		const modal = new MultiSelectSuggestModal(
-			new obsidianMock.App(),
-			["alpha"],
-			"",
-			onSubmit,
-			() => {}
-		);
-		modal.onOpen();
-		modal.addValue("alpha");
-		modal.inputEl.dispatchEvent(
-			new KeyboardEvent("keydown", { key: "Enter" })
-		);
-		expect(onSubmit).toHaveBeenCalledWith(["alpha"]);
-	});
-
-	it("Finish selection button submits the current selection", () => {
-		const onSubmit = vi.fn();
-		const modal = new MultiSelectSuggestModal(
-			new obsidianMock.App(),
-			["alpha"],
-			"",
-			onSubmit,
-			() => {}
-		);
-		modal.onOpen();
-		modal.addValue("alpha");
-		modal.contentEl.querySelector(".pp-finish-button").click();
-		expect(onSubmit).toHaveBeenCalledWith(["alpha"]);
-	});
-
-	it("ArrowDown/ArrowUp move the active highlight", () => {
-		const modal = new MultiSelectSuggestModal(
-			new obsidianMock.App(),
-			["alpha", "beta", "gamma"],
-			"",
-			() => {},
-			() => {}
-		);
-		modal.onOpen();
-		modal.inputEl.dispatchEvent(
-			new KeyboardEvent("keydown", { key: "ArrowDown" })
-		);
-		let items = modal.contentEl.querySelectorAll(".pp-multi-select-item");
-		expect(items[1].classList.contains("is-active")).toBe(true);
-		expect(items[0].classList.contains("is-active")).toBe(false);
-
-		modal.inputEl.dispatchEvent(
-			new KeyboardEvent("keydown", { key: "ArrowUp" })
-		);
-		items = modal.contentEl.querySelectorAll(".pp-multi-select-item");
-		expect(items[0].classList.contains("is-active")).toBe(true);
-	});
-
-	it("pre-populates chips and excludes initial selections from the list", () => {
-		const modal = new MultiSelectSuggestModal(
-			new obsidianMock.App(),
-			["alpha", "beta", "gamma"],
-			"",
-			() => {},
-			() => {},
-			["alpha", "gamma"]
-		);
-		modal.onOpen();
-
-		expect(modal.getSelectedValues()).toEqual(["alpha", "gamma"]);
-		const chips = modal.contentEl.querySelectorAll(".pp-selected-chip");
-		expect(chips.length).toBe(2);
-		const items = modal.contentEl.querySelectorAll(".pp-multi-select-item");
-		expect(items.length).toBe(1);
-		expect(items[0].textContent).toBe("beta");
-	});
-
-	it("dedupes duplicate initial selections", () => {
-		const modal = new MultiSelectSuggestModal(
-			new obsidianMock.App(),
-			["alpha"],
-			"",
-			() => {},
-			() => {},
-			["alpha", "alpha"]
-		);
-		modal.onOpen();
-		expect(modal.getSelectedValues()).toEqual(["alpha"]);
-	});
-
-	it("Clear all button removes every selected chip and disables itself when empty", () => {
-		const modal = new MultiSelectSuggestModal(
-			new obsidianMock.App(),
-			["alpha", "beta"],
-			"",
-			() => {},
-			() => {},
-			["alpha", "beta"]
-		);
-		modal.onOpen();
-
-		const clearButton = modal.contentEl.querySelector(
-			".pp-clear-all-button"
-		) as HTMLButtonElement;
-		expect(clearButton.disabled).toBe(false);
-
-		clearButton.click();
-
-		expect(modal.getSelectedValues()).toEqual([]);
 		expect(
-			modal.contentEl.querySelectorAll(".pp-selected-chip").length
-		).toBe(0);
-		expect(clearButton.disabled).toBe(true);
+			modal.contentEl.querySelector(".commons-property-picker-chip").textContent
+		).toContain("alpha");
 	});
 
-	it("Clear all button is disabled when nothing is selected initially", () => {
+	it("offers an explicitly confirmed create option for unknown tags", () => {
 		const modal = new MultiSelectSuggestModal(
 			new obsidianMock.App(),
 			["alpha"],
-			"",
+			"#",
 			() => {},
 			() => {}
 		);
 		modal.onOpen();
-		const clearButton = modal.contentEl.querySelector(
-			".pp-clear-all-button"
-		) as HTMLButtonElement;
-		expect(clearButton.disabled).toBe(true);
+
+		const suggester = getInputSuggest(modal.inputEl);
+		const createOption = suggester
+			.suggestions("brand-new")
+			.find((candidate: any) => candidate.kind === "create");
+		const suggestionEl = obsidianMock.decorateEl(document.createElement("div"));
+		suggester.renderSuggestion(createOption, suggestionEl);
+
+		expect(createOption.value).toBe("brand-new");
+		expect(suggestionEl.textContent).toContain("Create new tag");
+		expect(suggestionEl.textContent).toContain("#brand-new");
 	});
 
-	it("Backspace on an empty input removes only the last selected tag", () => {
+	it("deduplicates normalized additions and supports clearing all selected tags", () => {
 		const modal = new MultiSelectSuggestModal(
 			new obsidianMock.App(),
-			["alpha", "beta"],
-			"",
+			["alpha"],
+			"#",
 			() => {},
-			() => {},
-			["alpha", "beta"]
+			() => {}
 		);
 		modal.onOpen();
-
-		modal.inputEl.dispatchEvent(
-			new KeyboardEvent("keydown", { key: "Backspace" })
-		);
+		modal.addValue("#alpha");
+		modal.addValue("alpha");
 
 		expect(modal.getSelectedValues()).toEqual(["alpha"]);
-	});
-
-	it("Ctrl+Backspace on an empty input clears all selected tags", () => {
-		const modal = new MultiSelectSuggestModal(
-			new obsidianMock.App(),
-			["alpha", "beta"],
-			"",
-			() => {},
-			() => {},
-			["alpha", "beta"]
-		);
-		modal.onOpen();
-
 		modal.inputEl.dispatchEvent(
 			new KeyboardEvent("keydown", { key: "Backspace", ctrlKey: true })
 		);
-
 		expect(modal.getSelectedValues()).toEqual([]);
 	});
 
-	it("Backspace with non-empty input does not remove any tag (normal text editing)", () => {
-		const modal = new MultiSelectSuggestModal(
-			new obsidianMock.App(),
-			["alpha", "beta"],
-			"",
-			() => {},
-			() => {},
-			["alpha", "beta"]
-		);
-		modal.onOpen();
-		modal.inputEl.value = "x";
-
-		modal.inputEl.dispatchEvent(
-			new KeyboardEvent("keydown", { key: "Backspace" })
-		);
-
-		expect(modal.getSelectedValues()).toEqual(["alpha", "beta"]);
-	});
-
-	it("onClose invokes onCancel when not submitted", () => {
+	it("finishes on empty Enter only when there is a selection", () => {
 		const onSubmit = vi.fn();
-		const onCancel = vi.fn();
 		const modal = new MultiSelectSuggestModal(
 			new obsidianMock.App(),
 			["alpha"],
-			"",
+			"#",
 			onSubmit,
-			onCancel
+			() => {}
 		);
 		modal.onOpen();
-		modal.addValue("alpha");
-		modal.onClose();
+
+		modal.inputEl.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
 		expect(onSubmit).not.toHaveBeenCalled();
-		expect(onCancel).toHaveBeenCalledTimes(1);
+
+		modal.addValue("alpha");
+		modal.inputEl.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+		expect(onSubmit).toHaveBeenCalledWith(["alpha"]);
 	});
 
-	it("submit closes the modal without invoking onCancel", () => {
+	it("Clear all followed by Finish submits an empty selection", () => {
 		const onSubmit = vi.fn();
-		const onCancel = vi.fn();
 		const modal = new MultiSelectSuggestModal(
 			new obsidianMock.App(),
 			["alpha"],
-			"",
+			"#",
+			onSubmit,
+			() => {},
+			["alpha"]
+		);
+		modal.onOpen();
+		modal.contentEl.querySelector(".pp-clear-all-button").click();
+		expect(modal.getSelectedValues()).toEqual([]);
+
+		modal.contentEl.querySelector(".pp-finish-button").click();
+		expect(onSubmit).toHaveBeenCalledWith([]);
+	});
+
+	it("cancels on close but does not cancel after submission", () => {
+		const onSubmit = vi.fn();
+		const onCancel = vi.fn();
+		const cancelled = new MultiSelectSuggestModal(
+			new obsidianMock.App(),
+			["alpha"],
+			"#",
 			onSubmit,
 			onCancel
 		);
-		modal.onOpen();
-		modal.addValue("alpha");
-		modal.submit();
+		cancelled.onOpen();
+		cancelled.close();
+		expect(onCancel).toHaveBeenCalledTimes(1);
+
+		const submitted = new MultiSelectSuggestModal(
+			new obsidianMock.App(),
+			["alpha"],
+			"#",
+			onSubmit,
+			onCancel
+		);
+		submitted.onOpen();
+		submitted.addValue("alpha");
+		submitted.submit();
 		expect(onSubmit).toHaveBeenCalledWith(["alpha"]);
-		expect(onCancel).not.toHaveBeenCalled();
-	});
-
-	it("Ctrl+N moves selection down like ArrowDown", () => {
-		const modal = new MultiSelectSuggestModal(
-			new obsidianMock.App(),
-			["alpha", "beta", "gamma"],
-			"",
-			() => {},
-			() => {}
-		);
-		modal.onOpen();
-		modal.inputEl.value = "";
-
-		modal.handleKeydown(
-			new KeyboardEvent("keydown", { key: "n", ctrlKey: true }),
-		);
-
-		expect(modal.activeIndex).toBe(1);
-	});
-
-	it("Ctrl+P moves selection up like ArrowUp", () => {
-		const modal = new MultiSelectSuggestModal(
-			new obsidianMock.App(),
-			["alpha", "beta", "gamma"],
-			"",
-			() => {},
-			() => {}
-		);
-		modal.onOpen();
-		modal.inputEl.value = "";
-		modal.activeIndex = 1;
-
-		modal.handleKeydown(
-			new KeyboardEvent("keydown", { key: "p", ctrlKey: true }),
-		);
-
-		expect(modal.activeIndex).toBe(0);
-	});
-
-	it("Ctrl+N does not move past the last item", () => {
-		const modal = new MultiSelectSuggestModal(
-			new obsidianMock.App(),
-			["alpha", "beta", "gamma"],
-			"",
-			() => {},
-			() => {}
-		);
-		modal.onOpen();
-		modal.inputEl.value = "";
-		modal.activeIndex = 2;
-
-		modal.handleKeydown(
-			new KeyboardEvent("keydown", { key: "n", ctrlKey: true }),
-		);
-
-		expect(modal.activeIndex).toBe(2);
-	});
-
-	it("Ctrl+P does not move past the first item", () => {
-		const modal = new MultiSelectSuggestModal(
-			new obsidianMock.App(),
-			["alpha", "beta", "gamma"],
-			"",
-			() => {},
-			() => {}
-		);
-		modal.onOpen();
-		modal.inputEl.value = "";
-		modal.activeIndex = 0;
-
-		modal.handleKeydown(
-			new KeyboardEvent("keydown", { key: "p", ctrlKey: true }),
-		);
-
-		expect(modal.activeIndex).toBe(0);
-	});
-
-	it("Ctrl+A moves cursor to beginning of input", () => {
-		const modal = new MultiSelectSuggestModal(
-			new obsidianMock.App(),
-			["alpha"],
-			"",
-			() => {},
-			() => {}
-		);
-		modal.onOpen();
-		modal.inputEl.value = "test";
-		modal.inputEl.setSelectionRange(4, 4);
-
-		modal.handleKeydown(
-			new KeyboardEvent("keydown", { key: "a", ctrlKey: true }),
-		);
-
-		expect(modal.inputEl.selectionStart).toBe(0);
-		expect(modal.inputEl.selectionEnd).toBe(0);
-	});
-
-	it("Ctrl+E moves cursor to end of input", () => {
-		const modal = new MultiSelectSuggestModal(
-			new obsidianMock.App(),
-			["alpha"],
-			"",
-			() => {},
-			() => {}
-		);
-		modal.onOpen();
-		modal.inputEl.value = "test";
-		modal.inputEl.setSelectionRange(0, 0);
-
-		modal.handleKeydown(
-			new KeyboardEvent("keydown", { key: "e", ctrlKey: true }),
-		);
-
-		expect(modal.inputEl.selectionStart).toBe(4);
-		expect(modal.inputEl.selectionEnd).toBe(4);
+		expect(onCancel).toHaveBeenCalledTimes(1);
 	});
 });
 
@@ -1595,18 +1161,19 @@ describe("selectTagsToPaste", () => {
 		expect(tags).toEqual(["a", "archive", "King-County", "Seattle"]);
 	});
 
-	it("warns and does nothing when onlyInclude is not exactly 'tags'", async () => {
+	it("opens and selects tags even when onlyInclude is configured for other properties", async () => {
 		const { plugin } = createPlugin();
 		await plugin.onload();
-		plugin.settings.onlyInclude = "status";
-		const spy = vi.spyOn(obsidianMock, "Notice");
+		plugin.settings.onlyInclude = "status, title";
+
+		obsidianMock.Modal.prototype.open = function (this: any) {
+			this.onOpen();
+			this.addValue("urgent");
+			this.submit();
+		};
 
 		await plugin.selectTagsToPaste();
-
-		expect(spy).toHaveBeenCalledWith(
-			expect.stringContaining("'Only include' to be exactly 'tags'")
-		);
-		expect(plugin.clipboard).toEqual({});
+		expect(plugin.clipboard).toEqual({ tags: ["urgent"] });
 	});
 
 	it("sets clipboard from selected tags and shows notice", async () => {
@@ -1630,9 +1197,7 @@ describe("selectTagsToPaste", () => {
 
 		expect(plugin.clipboard).toEqual({ tags: ["x", "z"] });
 		expect(plugin.statusBarItem.textContent).toBe("PP: 2");
-		expect(spy).toHaveBeenCalledWith(
-			expect.stringContaining("2 tags ready to paste")
-		);
+		expect(spy).toHaveBeenCalledWith(expect.stringContaining("2 tags ready to paste"));
 	});
 
 	it("does not change clipboard when user closes without selecting (true cancel)", async () => {
@@ -1672,9 +1237,7 @@ describe("selectTagsToPaste", () => {
 		await plugin.selectTagsToPaste();
 
 		expect(plugin.clipboard).toEqual({ tags: [] });
-		expect(spy).toHaveBeenCalledWith(
-			NOTICE_CLEARED_COPIED_TAGS
-		);
+		expect(spy).toHaveBeenCalledWith(NOTICE_CLEARED_COPIED_TAGS);
 	});
 
 	it("Clear all followed by Finish selection empties a previously accumulated clipboard", async () => {
@@ -1710,25 +1273,9 @@ describe("selectTagsToPaste", () => {
 
 		obsidianMock.Modal.prototype.open = function (this: any) {
 			this.onOpen();
-			const items = this.contentEl.querySelectorAll(
-				".pp-multi-select-item"
-			);
-			const byText = (text: string) =>
-				Array.from(items).find((el: any) => el.textContent === text);
-			byText("x").dispatchEvent(
-				new MouseEvent("mousedown", { bubbles: true, cancelable: true })
-			);
-			const remaining = this.contentEl.querySelectorAll(
-				".pp-multi-select-item"
-			);
-			Array.from(remaining)
-				.find((el: any) => el.textContent === "y")
-				?.dispatchEvent(
-					new MouseEvent("mousedown", {
-						bubbles: true,
-						cancelable: true,
-					})
-				);
+			selectInputSuggestion(this.inputEl, "x", "x");
+			selectInputSuggestion(this.inputEl, "y", "y");
+
 			this.contentEl.querySelector(".pp-finish-button").click();
 		};
 
@@ -1784,23 +1331,12 @@ describe("selectTagsToPaste", () => {
 		obsidianMock.Modal.prototype.open = function (this: any) {
 			this.onOpen();
 
-			this.inputEl.value = "alpha";
-			this.inputEl.dispatchEvent(new Event("input"));
-			this.inputEl.dispatchEvent(
-				new KeyboardEvent("keydown", { key: "Enter" })
-			);
-
-			this.inputEl.value = "gamma";
-			this.inputEl.dispatchEvent(new Event("input"));
-			this.inputEl.dispatchEvent(
-				new KeyboardEvent("keydown", { key: "Enter" })
-			);
+			selectInputSuggestion(this.inputEl, "alpha", "alpha");
+			selectInputSuggestion(this.inputEl, "gamma", "gamma");
 
 			this.inputEl.value = "";
 			this.inputEl.dispatchEvent(new Event("input"));
-			this.inputEl.dispatchEvent(
-				new KeyboardEvent("keydown", { key: "Enter" })
-			);
+			this.inputEl.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
 		};
 
 		await plugin.selectTagsToPaste();
@@ -1831,77 +1367,85 @@ describe("PropertyPorterSettingTab", () => {
 		vi.restoreAllMocks();
 	});
 
-	it("returns setting definitions with expected bindings and controls", async () => {
-		const { plugin } = createPlugin();
+	it("renders property pickers while retaining the persisted string settings", async () => {
+		const file = new obsidianMock.TFile("settings.md");
+		const { plugin, fileCache } = createPlugin({ markdownFiles: [file] });
+		fileCache[file.path] = { frontmatter: { status: "draft", aliases: ["old"] } };
 		await plugin.onload();
+		plugin.settings.onlyInclude = "tags";
+		plugin.settings.excludeKeys = "aliases, created date, modified date";
 
 		const tab = new PropertyPorterSettingTab(plugin.app, plugin);
 		const defs = tab.getSettingDefinitions();
+		expect(defs).toHaveLength(2);
+		expect(defs[0]).toMatchObject({
+			type: "group",
+			heading: "Property filters (non-tag commands)",
+		});
+		expect(defs[1]).toMatchObject({
+			type: "group",
+			heading: "Paste behavior",
+		});
 
-		expect(defs).toHaveLength(4);
-
-		const onlyIncludeDef = defs.find((d) => d.name === "Only include");
-		expect(onlyIncludeDef).toBeDefined();
-		expect(onlyIncludeDef.control).toEqual(
-			expect.objectContaining({
-				type: "text",
-				key: "onlyInclude",
-				placeholder: "tags, status",
-			})
+		const items = defs.flatMap((d: any) => (d.items ? d.items : [d]));
+		const includeDef = items.find((definition) => definition.name === "Only include");
+		const excludeDef = items.find((definition) => definition.name === "Exclude keys");
+		expect(includeDef.render).toBeTypeOf("function");
+		expect(excludeDef.render).toBeTypeOf("function");
+		expect(items.find((definition) => definition.name === "Paste mode").control.options).toEqual(
+			{
+				overwrite: "Overwrite",
+				skip: "Skip existing",
+				merge: "Merge",
+			}
 		);
 
-		const excludeKeysDef = defs.find((d) => d.name === "Exclude keys");
-		expect(excludeKeysDef).toBeDefined();
-		expect(excludeKeysDef.control).toEqual(
-			expect.objectContaining({
-				type: "text",
-				key: "excludeKeys",
-				placeholder: "aliases, created date, modified date",
-			})
-		);
+		const includeControl = obsidianMock.decorateEl(document.createElement("div"));
+		const excludeControl = obsidianMock.decorateEl(document.createElement("div"));
+		includeDef.render({ controlEl: includeControl }, {} as any);
+		excludeDef.render({ controlEl: excludeControl }, {} as any);
 
-		const pasteModeDef = defs.find((d) => d.name === "Paste mode");
-		expect(pasteModeDef).toBeDefined();
-		expect(pasteModeDef.control).toEqual(
-			expect.objectContaining({
-				type: "dropdown",
-				key: "pasteMode",
-				options: {
-					overwrite: "Overwrite",
-					skip: "Skip existing",
-					merge: "Merge",
-				},
-			})
-		);
-
-		const autoClearDef = defs.find((d) => d.name === "Auto-clear clipboard after successful paste");
-		expect(autoClearDef).toBeDefined();
-		expect(autoClearDef.control).toEqual(
-			expect.objectContaining({
-				type: "toggle",
-				key: "autoClear",
-			})
-		);
+		expect(includeControl.querySelector(".commons-property-picker")).not.toBeNull();
+		expect(excludeControl.querySelector(".commons-property-picker")).not.toBeNull();
+		expect(
+			includeControl
+				.querySelector(".commons-property-picker-input")
+				.getAttribute("aria-label")
+		).toBe("Only include properties");
+		expect(plugin.settings.onlyInclude).toBe("tags");
+		expect(plugin.settings.excludeKeys).toBe("aliases, created date, modified date");
 	});
 
-	it("evaluates disabled predicate on Exclude keys based on onlyInclude setting", async () => {
-		const { plugin } = createPlugin();
+	it("persists picker changes and disables Exclude keys until Only include is empty", async () => {
+		const file = new obsidianMock.TFile("settings.md");
+		const { plugin, fileCache } = createPlugin({ markdownFiles: [file] });
+		fileCache[file.path] = { frontmatter: { status: "draft" } };
 		await plugin.onload();
+		plugin.settings.onlyInclude = "";
 
 		const tab = new PropertyPorterSettingTab(plugin.app, plugin);
+		const defs = tab.getSettingDefinitions();
+		const items = defs.flatMap((d: any) => (d.items ? d.items : [d]));
+		const includeControl = obsidianMock.decorateEl(document.createElement("div"));
+		const excludeControl = obsidianMock.decorateEl(document.createElement("div"));
+		items.find((definition) => definition.name === "Only include").render(
+			{ controlEl: includeControl },
+			{} as any
+		);
+		items.find((definition) => definition.name === "Exclude keys").render(
+			{ controlEl: excludeControl },
+			{} as any
+		);
+		const input = includeControl.querySelector(".commons-property-picker-input");
+		const excludeFieldset = excludeControl.querySelector("fieldset");
+		expect(excludeFieldset.disabled).toBe(false);
 
-		plugin.settings.onlyInclude = "tags, status";
-		let defs = tab.getSettingDefinitions();
-		let excludeKeysDef = defs.find((d) => d.name === "Exclude keys");
-		expect(typeof excludeKeysDef.control.disabled).toBe("function");
-		expect(excludeKeysDef.control.disabled()).toBe(true);
+		selectInputSuggestion(input, "status", "status");
+		expect(plugin.settings.onlyInclude).toBe("status");
+		expect(excludeFieldset.disabled).toBe(true);
 
-		plugin.settings.onlyInclude = "   ";
-		defs = tab.getSettingDefinitions();
-		excludeKeysDef = defs.find((d) => d.name === "Exclude keys");
-		expect(excludeKeysDef.control.disabled()).toBe(false);
+		includeControl.querySelector(".commons-property-picker-remove").click();
+		expect(plugin.settings.onlyInclude).toBe("");
+		expect(excludeFieldset.disabled).toBe(false);
 	});
 });
-
-
-

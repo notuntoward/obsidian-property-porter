@@ -5,13 +5,9 @@ import {
 	Setting,
 	TFile,
 	Notice,
-	FuzzySuggestModal,
 	Modal,
 	FileView,
 	WorkspaceLeaf,
-	WorkspaceParent,
-	FuzzyMatch,
-	getAllTags,
 	type SettingDefinitionItem,
 } from "obsidian";
 import {
@@ -21,72 +17,49 @@ import {
 	isEmptyPropertyValue,
 	countPropertyValue,
 	parseCommaList,
-	stripHashTag,
 	type PasteMode,
 } from "./frontmatter";
-import { registerEmacsMotionKeys, fuzzyMatch, renderHighlightedText } from "./utils/modal";
+import {
+	buildNavigationModel,
+	getGroupForLeaf,
+	type NavigationModel,
+} from "commons/workspace";
+import { setTimeoutIn, ownerWindow } from "commons/windows";
+import {
+	collectVaultMetadata,
+	getPropertySuggestions,
+	normalizeTag,
+	ValuePicker,
+} from "commons/properties";
+import { FileSuggestModal } from "./utils/modal";
+import { SelectPropertiesModal } from "./select-properties-modal";
 
 interface PropertyPorterSettings {
 	onlyInclude: string;
 	excludeKeys: string;
 	pasteMode: PasteMode;
-	autoClear: boolean;
 }
 
 const DEFAULT_SETTINGS: PropertyPorterSettings = {
 	onlyInclude: "tags",
 	excludeKeys: "aliases, created date, modified date",
 	pasteMode: "merge",
-	autoClear: false,
 };
 
 export const NOTICE_TIMEOUT_MS = 7000;
 export const NOTICE_NO_PROPERTIES_TO_PASTE =
 	'Property Porter: No properties copied. Use "Copy properties" (not system clipboard).';
-export const NOTICE_CLEARED_COPIED_TAGS =
-	"Property Porter: No tags selected. Cleared copied tags.";
+export const NOTICE_CLEARED_COPIED_TAGS = "Property Porter: No tags selected. Cleared copied tags.";
+export const NOTICE_CLEARED_COPIED_PROPERTIES = "Property Porter: No properties selected. Cleared copied properties.";
 
 // Obsidian injects a positional cache object (`position`) into frontmatter
 // read from metadataCache/processFrontMatter; strip it before copy/paste so
 // we never write it back and corrupt the destination file's internal
 // tracking data.
-function stripPosition(
-	fm: Record<string, unknown>
-): Record<string, unknown> {
+function stripPosition(fm: Record<string, unknown>): Record<string, unknown> {
 	const copy = { ...fm };
 	delete copy.position;
 	return copy;
-}
-
-// ---------------------------------------------------------------------------
-// Canonical workspace model (inspired by next-tab-group)
-//
-// Every editor leaf is represented as a location that knows both its real
-// native window and its parent group. Tab groups are always built from leaves
-// that share both, so a group's identity is conceptually (window, parent).
-// ---------------------------------------------------------------------------
-
-interface LeafLocation {
-	leaf: WorkspaceLeaf;
-	window: Window | undefined;
-	group: WorkspaceParent | null;
-}
-
-interface TabGroupInfo {
-	group: WorkspaceParent;
-	leaves: WorkspaceLeaf[];
-	window: Window | undefined;
-}
-
-interface WindowInfo {
-	window: Window | undefined;
-	groups: TabGroupInfo[];
-}
-
-interface WorkspaceNavigationModel {
-	locations: LeafLocation[];
-	groups: TabGroupInfo[];
-	windows: WindowInfo[];
 }
 
 export default class PropertyPorter extends Plugin {
@@ -138,8 +111,14 @@ export default class PropertyPorter extends Plugin {
 
 		this.addCommand({
 			id: "clear-clipboard",
-			name: "Clear properties",
+			name: "Clear properties clipboard",
 			callback: () => this.clearClipboard(),
+		});
+
+		this.addCommand({
+			id: "select-properties-to-paste",
+			name: "Select properties to paste",
+			callback: () => this.selectPropertiesToPaste(),
 		});
 
 		this.addCommand({
@@ -157,7 +136,10 @@ export default class PropertyPorter extends Plugin {
 	}
 
 	async loadSettings(): Promise<void> {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+		// `autoClear` was removed: paste never clears; copy always replaces.
+		const { autoClear: _legacyAutoClear, ...stored } =
+			((await this.loadData()) ?? {}) as Partial<PropertyPorterSettings> & { autoClear?: unknown };
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, stored);
 	}
 
 	async saveSettings(): Promise<void> {
@@ -196,11 +178,7 @@ export default class PropertyPorter extends Plugin {
 		}
 
 		const fm = this.getParsedFrontmatter(source);
-		return filterFrontmatter(
-			fm,
-			this.settings.onlyInclude,
-			this.settings.excludeKeys
-		);
+		return filterFrontmatter(fm, this.settings.onlyInclude, this.settings.excludeKeys);
 	}
 
 	// Copies the given frontmatter onto the clipboard, refreshes the status
@@ -210,9 +188,7 @@ export default class PropertyPorter extends Plugin {
 		this.clipboard = fm;
 		this.updateStatusBar();
 		const count = this.countClipboardValues();
-		new Notice(
-			`Property Porter: ${count} propert${count === 1 ? "y" : "ies"} copied`
-		);
+		new Notice(`Property Porter: ${count} propert${count === 1 ? "y" : "ies"} copied`);
 	}
 
 	async copyProperties(): Promise<void> {
@@ -257,9 +233,7 @@ export default class PropertyPorter extends Plugin {
 	}
 
 	hasClipboardContent(): boolean {
-		return Object.values(this.clipboard).some(
-			(value) => !isEmptyPropertyValue(value)
-		);
+		return Object.values(this.clipboard).some((value) => !isEmptyPropertyValue(value));
 	}
 
 	async pasteProperties(targetFile?: TFile | null): Promise<void> {
@@ -268,25 +242,24 @@ export default class PropertyPorter extends Plugin {
 			return;
 		}
 
-		const file = targetFile ?? await this.pickTargetFile();
+		const file = targetFile ?? (await this.pickTargetFile());
 		if (!file) return;
 
-		// Use Obsidian's native fileManager to safely read/write frontmatter
-		await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
-			const existingFm = stripPosition(frontmatter);
-			const merged = this.mergeFrontmatter(this.clipboard, existingFm);
+		await this.writeProperties(file);
+		new Notice(`Property Porter: Pasted properties into ${file.basename}`);
+	}
 
-			// Apply the merged properties back onto the mutated object
+	// Writes the clipboard into one file. Each call gets its own deep copy so
+	// pasted notes never share array/object references with the clipboard or
+	// with each other.
+	private async writeProperties(file: TFile): Promise<void> {
+		const payload = structuredClone(this.clipboard);
+		await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
+			const merged = this.mergeFrontmatter(payload, stripPosition(frontmatter));
 			for (const [key, value] of Object.entries(merged)) {
 				frontmatter[key] = value;
 			}
 		});
-
-		new Notice(`Property Porter: Pasted properties into ${file.basename}`);
-
-		if (this.settings.autoClear) {
-			this.clearClipboard();
-		}
 	}
 
 	async pasteIntoActive(): Promise<void> {
@@ -298,106 +271,8 @@ export default class PropertyPorter extends Plugin {
 		await this.pasteProperties(active);
 	}
 
-	// ---------------------------------------------------------------------------
-	// Canonical workspace model helpers (inspired by next-tab-group)
-	// ---------------------------------------------------------------------------
-
-	private isSidebarLeaf(leaf: WorkspaceLeaf): boolean {
-		const root = leaf.getRoot();
-		const ws = this.app.workspace as unknown as {
-			leftSplit?: unknown;
-			rightSplit?: unknown;
-		};
-		return root === ws.leftSplit || root === ws.rightSplit;
-	}
-
-	private getEditorLeafLocations(): LeafLocation[] {
-		const locations: LeafLocation[] = [];
-
-		this.app.workspace.iterateAllLeaves((leaf) => {
-			if (this.isSidebarLeaf(leaf)) return;
-
-			locations.push({
-				leaf,
-				window: leaf.getContainer()?.win,
-				group: leaf.parent ?? null,
-			});
-		});
-
-		return locations;
-	}
-
-	private buildTabGroupInfos(
-		locations: LeafLocation[],
-		activeLeaf: WorkspaceLeaf | null,
-	): TabGroupInfo[] {
-		const byWindow = new Map<
-			Window | undefined,
-			Map<WorkspaceParent, WorkspaceLeaf[]>
-		>();
-
-		for (const location of locations) {
-			if (!location.group) continue;
-
-			let groupsInWindow = byWindow.get(location.window);
-			if (!groupsInWindow) {
-				groupsInWindow = new Map<WorkspaceParent, WorkspaceLeaf[]>();
-				byWindow.set(location.window, groupsInWindow);
-			}
-
-			const leaves = groupsInWindow.get(location.group);
-			if (leaves) {
-				leaves.push(location.leaf);
-			} else {
-				groupsInWindow.set(location.group, [location.leaf]);
-			}
-		}
-
-		const infos: TabGroupInfo[] = [];
-
-		for (const [groupWindow, groupsInWindow] of byWindow) {
-			for (const [group, leaves] of groupsInWindow) {
-				if (leaves.length === 0) continue;
-
-				infos.push({
-					group,
-					leaves,
-					window: groupWindow,
-				});
-			}
-		}
-
-		return infos;
-	}
-
-	private buildWindowInfos(groups: TabGroupInfo[]): WindowInfo[] {
-		const byWindow = new Map<Window | undefined, TabGroupInfo[]>();
-
-		for (const group of groups) {
-			const windowGroups = byWindow.get(group.window);
-			if (windowGroups) {
-				windowGroups.push(group);
-			} else {
-				byWindow.set(group.window, [group]);
-			}
-		}
-
-		const infos: WindowInfo[] = [];
-		for (const [win, groups] of byWindow) {
-			infos.push({ window: win, groups });
-		}
-
-		return infos;
-	}
-
-	private buildNavigationModel(
-		activeLeaf: WorkspaceLeaf | null,
-	): WorkspaceNavigationModel {
-		const locations = this.getEditorLeafLocations();
-		const groups = this.buildTabGroupInfos(locations, activeLeaf);
-		const windows = this.buildWindowInfos(groups);
-
-		return { locations, groups, windows };
+	buildNavigationModel(activeLeaf: WorkspaceLeaf | null = null): NavigationModel {
+		return buildNavigationModel(this.app, activeLeaf);
 	}
 
 	// Returns the markdown files open in the same canonical tab group
@@ -408,13 +283,7 @@ export default class PropertyPorter extends Plugin {
 		const activeLeaf = this.app.workspace.activeLeaf;
 		if (!activeLeaf) return [];
 
-		const model = this.buildNavigationModel(activeLeaf);
-		const activeWindow = activeLeaf.getContainer()?.win;
-		const activeParent = activeLeaf.parent;
-
-		const activeGroup = model.groups.find(
-			(g) => g.window === activeWindow && g.group === activeParent,
-		);
+		const activeGroup = getGroupForLeaf(buildNavigationModel(this.app, activeLeaf), activeLeaf);
 
 		if (!activeGroup) return [];
 
@@ -446,56 +315,34 @@ export default class PropertyPorter extends Plugin {
 		}
 
 		for (const file of files) {
-			await this.pasteProperties(file);
+			await this.writeProperties(file);
 		}
 		new Notice(
 			`Property Porter: Pasted properties into ${files.length} note${
 				files.length === 1 ? "" : "s"
 			}`
 		);
-
-		if (this.settings.autoClear) {
-			this.clearClipboard();
-		}
 	}
 
 	async pickTargetFile(): Promise<TFile | null> {
 		return new Promise((resolve) => {
-			const files = this.app.vault.getMarkdownFiles().filter(
-				(f) => f !== this.getActiveFile()
-			);
+			const files = this.app.vault
+				.getMarkdownFiles()
+				.filter((f) => f !== this.getActiveFile());
 			if (files.length === 0) {
 				new Notice("Property Porter: No other markdown files found");
 				resolve(null);
 				return;
 			}
 
-			new SuggestFilesModal(this.app, files, (file) => {
+			new FileSuggestModal(this.app, files, (file) => {
 				resolve(file);
 			}).open();
 		});
 	}
 
 	getKnownTagsForPicking(): string[] {
-		// Delegate to Obsidian's own tag extraction (getAllTags) instead of
-		// re-parsing frontmatter.tags by hand: it already covers the
-		// `tags`/`tag` frontmatter key aliases, both array and
-		// comma-separated string forms, and inline #tags in the note body.
-		const seen = new Set<string>();
-		const files = this.app.vault.getMarkdownFiles();
-		for (const file of files) {
-			const cache = this.app.metadataCache.getFileCache(file);
-			if (!cache) continue;
-			const tags = getAllTags(cache);
-			if (!tags) continue;
-			for (const tag of tags) {
-				const trimmed = stripHashTag(tag);
-				if (trimmed.length > 0) seen.add(trimmed);
-			}
-		}
-		return Array.from(seen).sort((a, b) =>
-			a.toLowerCase().localeCompare(b.toLowerCase())
-		);
+		return getPropertySuggestions(collectVaultMetadata(this.app), "tags");
 	}
 
 	getClipboardTags(): string[] {
@@ -509,17 +356,6 @@ export default class PropertyPorter extends Plugin {
 	}
 
 	async selectTagsToPaste(): Promise<void> {
-		const onlyList = parseCommaList(this.settings.onlyInclude);
-		const isTagsOnly =
-			onlyList.length === 1 && onlyList[0].toLowerCase() === "tags";
-
-		if (!isTagsOnly) {
-			new Notice(
-				"Property Porter: 'Select tags to paste' requires 'Only include' to be exactly 'tags' in settings"
-			);
-			return;
-		}
-
 		const knownTags = this.getKnownTagsForPicking();
 		const existingTags = this.getClipboardTags();
 		const result = await new Promise<{
@@ -530,8 +366,7 @@ export default class PropertyPorter extends Plugin {
 				this.app,
 				knownTags,
 				"",
-				(selectedItems) =>
-					resolve({ items: selectedItems, cancelled: false }),
+				(selectedItems) => resolve({ items: selectedItems, cancelled: false }),
 				() => resolve({ items: [], cancelled: true }),
 				existingTags
 			).open();
@@ -555,6 +390,53 @@ export default class PropertyPorter extends Plugin {
 			`Property Porter: ${selected.length} tag${
 				selected.length === 1 ? "" : "s"
 			} ready to paste`
+		);
+	}
+
+	async selectPropertiesToPaste(): Promise<void> {
+		const catalog = collectVaultMetadata(this.app);
+		const tabFiles = this.getActiveTabGroupFiles();
+		let initialProperties: Record<string, unknown> = {};
+
+		if (tabFiles.length > 1) {
+			const collected = tabFiles
+				.map((f) => this.getFilteredSourceFrontmatter(f))
+				.filter((fm): fm is Record<string, unknown> => fm !== null);
+			initialProperties = unionFrontmatter(collected, { gatherConflicts: true });
+		} else if (this.hasClipboardContent()) {
+			initialProperties = { ...this.clipboard };
+		} else {
+			const active = this.getActiveFile();
+			if (active) {
+				const fm = this.getFilteredSourceFrontmatter(active);
+				if (fm) initialProperties = { ...fm };
+			}
+		}
+
+		const result = await new Promise<{
+			properties: Record<string, unknown>;
+			cancelled: boolean;
+		}>((resolve) => {
+			new SelectPropertiesModal(
+				this.app,
+				catalog,
+				initialProperties,
+				(selected) => resolve({ properties: selected, cancelled: false }),
+				() => resolve({ properties: {}, cancelled: true })
+			).open();
+		});
+
+		if (result.cancelled) return;
+
+		this.clipboard = result.properties;
+		this.updateStatusBar();
+		const count = this.countClipboardValues();
+		if (count === 0) {
+			new Notice(NOTICE_CLEARED_COPIED_PROPERTIES);
+			return;
+		}
+		new Notice(
+			`Property Porter: ${count} propert${count === 1 ? "y" : "ies"} ready to paste`
 		);
 	}
 
@@ -584,45 +466,12 @@ export default class PropertyPorter extends Plugin {
 	}
 }
 
-export class SuggestFilesModal extends FuzzySuggestModal<TFile> {
-	constructor(app: App, private readonly files: TFile[], private readonly onSelect: (file: TFile) => void) {
-		super(app);
-	}
-
-	getItems(): TFile[] {
-		return this.files;
-	}
-
-	getItemText(file: TFile): string {
-		return file.path;
-	}
-
-	renderSuggestion(match: FuzzyMatch<TFile>, el: HTMLElement): void {
-		el.empty();
-		el.addClass("pp-nav-row");
-		renderHighlightedText(el, this.getItemText(match.item), match.match.matches);
-	}
-
-	onOpen(): void {
-		super.onOpen();
-		registerEmacsMotionKeys(this);
-	}
-
-	onChooseItem(file: TFile): void {
-		this.onSelect(file);
-	}
-}
+export { FileSuggestModal, FileSuggestModal as SuggestFilesModal, SelectPropertiesModal };
 
 export class MultiSelectSuggestModal extends Modal {
-	private readonly selected: string[] = [];
+	private picker: ValuePicker | null = null;
+	private selected: string[];
 	private submitted = false;
-	private query = "";
-	private activeIndex = 0;
-	private filtered: { value: string; matches: number[][] }[] = [];
-
-	private chipsContainerEl: HTMLElement | null = null;
-	private inputEl: HTMLInputElement | null = null;
-	private listEl: HTMLElement | null = null;
 	private hintEl: HTMLElement | null = null;
 	private doneButton: HTMLButtonElement | null = null;
 	private clearAllButton: HTMLButtonElement | null = null;
@@ -636,338 +485,221 @@ export class MultiSelectSuggestModal extends Modal {
 		initialSelected: string[] = []
 	) {
 		super(app);
-		for (const value of initialSelected) {
-			if (!this.selected.includes(value)) this.selected.push(value);
-		}
+		this.selected = [
+			...new Set(initialSelected.map((value) => normalizeTag(value).trim()).filter(Boolean)),
+		];
+	}
+
+	get inputEl(): HTMLInputElement {
+		if (!this.picker) throw new Error("Tag picker is not open");
+		return this.picker.inputEl;
 	}
 
 	getSelectedValues(): string[] {
-		return [...this.selected];
+		return this.picker?.getValue() ?? [...this.selected];
 	}
 
 	onOpen(): void {
-		const { contentEl } = this;
-		contentEl.empty();
-		contentEl.addClass("pp-multi-select-modal");
+		this.submitted = false;
+		this.contentEl.empty();
+		this.contentEl.addClass("pp-multi-select-modal");
 
-		this.chipsContainerEl = contentEl.createDiv({
-			cls: "pp-selected-chips-container",
+		const pickerHost = this.contentEl.createDiv({ cls: "pp-tag-picker" });
+		this.picker = new ValuePicker(this.app, pickerHost, {
+			suggestions: this.values,
+			value: this.selected,
+			multiple: true,
+			allowCreate: true,
+			kind: "value",
+			context: "tags",
+			classPrefix: "pp",
+			normalizeValue: normalizeTag,
+			placeholder: "Search tags or type a new tag…",
+			ariaLabel: "Tags to paste",
+			getCreateLabel: (value) =>
+				`Create new tag: ${this.prefix}${normalizeTag(value).trim()}`,
+			onChange: (values) => {
+				this.selected = values;
+				this.updateControls();
+			},
 		});
+		this.selected = this.picker.getValue();
+		this.inputEl.addEventListener("keydown", this.handleInputKeydown, true);
 
-		this.inputEl = contentEl.createEl("input", {
-			type: "text",
-			cls: "pp-multi-select-input",
-		});
-		this.inputEl.placeholder =
-			"Type to filter, Enter to add, Enter again to finish";
-
-		this.inputEl.addEventListener("input", () => {
-			this.query = this.inputEl?.value ?? "";
-			this.activeIndex = 0;
-			this.renderList();
-		});
-		this.inputEl.addEventListener("keydown", (e) => this.handleKeydown(e));
-
-		const controlsEl = contentEl.createDiv({
-			cls: "pp-multi-select-controls",
-		});
+		const controlsEl = this.contentEl.createDiv({ cls: "pp-multi-select-controls" });
 		this.hintEl = controlsEl.createDiv({ cls: "pp-multi-select-hint" });
-		const buttonsEl = controlsEl.createDiv({
-			cls: "pp-multi-select-buttons",
-		});
+		const buttonsEl = controlsEl.createDiv({ cls: "pp-multi-select-buttons" });
 		this.clearAllButton = buttonsEl.createEl("button", {
 			text: "Clear all",
 			cls: "pp-clear-all-button",
+			type: "button",
 		});
 		this.clearAllButton.addEventListener("click", () => this.clearAll());
 		this.doneButton = buttonsEl.createEl("button", {
 			text: "Finish selection (0)",
 			cls: ["mod-cta", "pp-finish-button"],
+			type: "button",
 		});
 		this.doneButton.addEventListener("click", () => this.submit());
+		this.updateControls();
 
-		this.listEl = contentEl.createDiv({ cls: "pp-multi-select-list" });
-
-		this.renderChips();
-		this.renderList();
-		this.updateHint();
-
-		window.setTimeout(() => this.inputEl?.focus(), 0);
+		const win = ownerWindow(this.contentEl) ?? window;
+		setTimeoutIn(win, () => this.picker?.inputEl.focus(), 0);
 	}
 
 	onClose(): void {
+		if (this.picker) {
+			this.picker.inputEl.removeEventListener("keydown", this.handleInputKeydown, true);
+			this.picker.destroy();
+			this.picker = null;
+		}
 		this.contentEl.empty();
 		if (!this.submitted) this.onCancel();
 	}
 
-	private getFiltered(query: string): { value: string; matches: number[][] }[] {
-		const q = query.trim();
-		const pool = this.values.filter((v) => !this.selected.includes(v));
-		if (q === "") return pool.map((v) => ({ value: v, matches: [] }));
-
-		const ranked: { value: string; matches: number[][]; score: number }[] = [];
-		for (const value of pool) {
-			const result = fuzzyMatch(q, value);
-			if (result === null) continue;
-			ranked.push({ value, matches: result.matches, score: result.score });
-		}
-		ranked.sort((a, b) => {
-			if (a.score !== b.score) return b.score - a.score;
-			return a.value.toLowerCase().localeCompare(b.value.toLowerCase());
-		});
-		return ranked.map((r) => ({ value: r.value, matches: r.matches }));
+	addValue(value: string): void {
+		const normalized = normalizeTag(value).trim();
+		if (!normalized) return;
+		if (!this.selected.includes(normalized)) this.selected.push(normalized);
+		this.picker?.setValue(this.selected);
+		this.updateControls();
 	}
 
-	private renderList(): void {
-		if (!this.listEl) return;
-		this.filtered = this.getFiltered(this.query);
-		if (this.activeIndex >= this.filtered.length) {
-			this.activeIndex = Math.max(0, this.filtered.length - 1);
-		}
-		this.listEl.empty();
-		this.filtered.forEach((entry, index) => {
-			const item = this.listEl!.createDiv({
-				cls: "pp-multi-select-item",
-			});
-			if (index === this.activeIndex) item.addClass("is-active");
-			const label = item.createDiv({ cls: "pp-multi-select-label" });
-			renderHighlightedText(label, `${this.prefix}${entry.value}`, entry.matches);
-			item.addEventListener("mousedown", (e) => {
-				e.preventDefault();
-				this.addValue(entry.value);
-			});
-			item.addEventListener("mouseenter", () => {
-				if (this.activeIndex === index) return;
-				this.activeIndex = index;
-				this.renderList();
-			});
-		});
-
-		// When the query doesn't match any known tag, surface a row that lets
-		// the user create the tag verbatim. Enter already adds the typed text
-		// in this case; this makes the affordance visible.
-		const typed = this.query.trim();
-		if (typed !== "" && this.filtered.length === 0) {
-			const createItem = this.listEl.createDiv({
-				cls: "pp-multi-select-item pp-create-item",
-			});
-			createItem.createSpan({
-				text: `Create new tag: ${this.prefix}${typed}`,
-			});
-			createItem.addEventListener("mousedown", (e) => {
-				e.preventDefault();
-				this.addValue(typed);
-			});
-		}
+	clearAll(): void {
+		this.selected = [];
+		this.picker?.setValue([]);
+		this.updateControls();
+		this.picker?.inputEl.focus();
 	}
 
-	private handleKeydown(e: KeyboardEvent): void {
-		if (e.key === "ArrowDown" || (e.ctrlKey && e.key === "n")) {
-			e.preventDefault();
-			if (this.filtered.length > 0) {
-				this.activeIndex = Math.min(
-					this.activeIndex + 1,
-					this.filtered.length - 1
-				);
-				this.renderList();
-			}
-			return;
-		}
-		if (e.key === "ArrowUp" || (e.ctrlKey && e.key === "p")) {
-			e.preventDefault();
-			if (this.filtered.length > 0) {
-				this.activeIndex = Math.max(this.activeIndex - 1, 0);
-				this.renderList();
-			}
-			return;
-		}
-		if (e.ctrlKey && e.key === "a") {
-			e.preventDefault();
-			if (this.inputEl) {
-				this.inputEl.focus();
-				this.inputEl.setSelectionRange(0, 0);
-			}
-			return;
-		}
-		if (e.ctrlKey && e.key === "e") {
-			e.preventDefault();
-			if (this.inputEl) {
-				this.inputEl.focus();
-				this.inputEl.setSelectionRange(
-					this.inputEl.value.length,
-					this.inputEl.value.length,
-				);
-			}
-			return;
-		}
-		if (e.key === "Enter") {
-			e.preventDefault();
-			const typed = (this.inputEl?.value ?? "").trim();
-			if (typed === "") {
-				if (this.selected.length > 0) this.submit();
-				return;
-			}
-			// When the typed text matches a suggestion, prefer the exact
-			// (properly-cased) value; otherwise add the tag verbatim so users
-			// can enter tags that don't yet exist anywhere in the vault.
-			if (this.filtered.length > 0) {
-				this.addValue(this.filtered[this.activeIndex].value);
-			} else {
-				this.addValue(typed);
-			}
-			return;
-		}
-		if (
-			e.key === "Backspace" &&
-			(this.inputEl?.value ?? "") === "" &&
-			this.selected.length > 0
-		) {
-			e.preventDefault();
-			if (e.ctrlKey || e.metaKey) {
-				this.clearAll();
-			} else {
-				this.removeValue(this.selected[this.selected.length - 1]);
-			}
-			return;
-		}
-	}
-
-	private addValue(value: string): void {
-		if (!this.selected.includes(value)) {
-			this.selected.push(value);
-		}
-		this.query = "";
-		if (this.inputEl) this.inputEl.value = "";
-		this.activeIndex = 0;
-		this.refreshSelectionUI();
-		this.inputEl?.focus();
-	}
-
-	private removeValue(value: string): void {
-		const idx = this.selected.indexOf(value);
-		if (idx >= 0) this.selected.splice(idx, 1);
-		this.refreshSelectionUI();
-	}
-
-	private clearAll(): void {
-		if (this.selected.length === 0) return;
-		this.selected.length = 0;
-		this.refreshSelectionUI();
-		this.inputEl?.focus();
-	}
-
-	// Every mutation of `selected` (add/remove/clear) needs the same three
-	// views kept in sync: the chip strip, the suggestion list (which
-	// excludes already-selected values), and the hint/button labels.
-	private refreshSelectionUI(): void {
-		this.renderChips();
-		this.renderList();
-		this.updateHint();
-	}
-
-	private renderChips(): void {
-		if (!this.chipsContainerEl) return;
-		this.chipsContainerEl.empty();
-		if (this.selected.length === 0) {
-			this.chipsContainerEl.style.display = "none";
-			return;
-		}
-		this.chipsContainerEl.style.display = "flex";
-		const label = this.chipsContainerEl.createDiv({
-			cls: "pp-selected-chips-label",
-		});
-		label.setText(`${this.selected.length} selected:`);
-		for (const value of this.selected) {
-			const chip = this.chipsContainerEl.createDiv({
-				cls: "pp-selected-chip",
-			});
-			chip.createSpan({ text: this.prefix + value });
-			const removeBtn = chip.createSpan({
-				cls: "pp-selected-chip-remove",
-				text: "×",
-			});
-			removeBtn.addEventListener("click", (e) => {
-				e.stopPropagation();
-				this.removeValue(value);
-			});
-		}
-	}
-
-	private updateHint(): void {
-		if (this.hintEl) {
-			const selectedText =
-				this.selected.length === 0
-					? "Type to filter, click or press Enter to add a tag."
-					: "Press Enter on an empty box, or click Finish selection, when done. Backspace removes the last tag; Ctrl/Cmd+Backspace clears all.";
-			this.hintEl.setText(selectedText);
-		}
-		if (this.doneButton) {
-			this.doneButton.setText(
-				`Finish selection (${this.selected.length})`
-			);
-		}
-		if (this.clearAllButton) {
-			this.clearAllButton.disabled = this.selected.length === 0;
-		}
-	}
-
-	private submit(): void {
+	submit(): void {
+		if (this.submitted) return;
 		this.submitted = true;
 		this.onSubmit(this.getSelectedValues());
 		this.close();
 	}
+
+	private readonly handleInputKeydown = (event: KeyboardEvent): void => {
+		if (this.inputEl.value.trim() !== "") return;
+
+		if (event.key === "Enter") {
+			event.preventDefault();
+			event.stopImmediatePropagation();
+			if (this.getSelectedValues().length > 0) this.submit();
+			return;
+		}
+
+		if (event.key === "Backspace" && (event.ctrlKey || event.metaKey)) {
+			event.preventDefault();
+			event.stopImmediatePropagation();
+			if (this.getSelectedValues().length > 0) this.clearAll();
+		}
+	};
+
+	private updateControls(): void {
+		const count = this.getSelectedValues().length;
+		this.hintEl?.setText(
+			count === 0
+				? "Choose existing tags or type a tag and confirm it before adding."
+				: "Empty Enter finishes. Backspace removes the last tag; Ctrl/Cmd+Backspace clears all."
+		);
+		if (this.doneButton) this.doneButton.setText(`Finish selection (${count})`);
+		if (this.clearAllButton) this.clearAllButton.disabled = count === 0;
+	}
 }
 
 export class PropertyPorterSettingTab extends PluginSettingTab {
-	constructor(app: App, private readonly plugin: PropertyPorter) {
+	constructor(
+		app: App,
+		private readonly plugin: PropertyPorter
+	) {
 		super(app, plugin);
 	}
 
 	private isExcludeKeysDisabled(): boolean {
-		return this.plugin.settings.onlyInclude.trim().length > 0;
+		return parseCommaList(this.plugin.settings.onlyInclude).length > 0;
 	}
 
 	getSettingDefinitions(): SettingDefinitionItem<keyof PropertyPorterSettings>[] {
+		const propertyNames = collectVaultMetadata(this.app).properties.map(({ name }) => name);
+		let excludeFieldset: HTMLFieldSetElement | null = null;
+
+		const propertyPickerDefinition = (key: "onlyInclude" | "excludeKeys") => {
+			const isIncludePicker = key === "onlyInclude";
+			return {
+				name: isIncludePicker ? "Only include" : "Exclude keys",
+				desc: isIncludePicker
+					? "Properties to copy (only for non-tag commands). Mutually exclusive with Exclude keys."
+					: "Properties to ignore (only for non-tag commands). Disabled when Only include is populated.",
+				render: (setting: Setting) => {
+					let pickerHost: HTMLElement = setting.controlEl;
+					let fieldset: HTMLFieldSetElement | null = null;
+					if (!isIncludePicker) {
+						fieldset = setting.controlEl.createEl("fieldset", {
+							cls: "pp-property-picker-fieldset",
+						});
+						fieldset.disabled = this.isExcludeKeysDisabled();
+						excludeFieldset = fieldset;
+						pickerHost = fieldset;
+					}
+
+					const picker = new ValuePicker(this.app, pickerHost, {
+						suggestions: propertyNames,
+						value: parseCommaList(this.plugin.settings[key]),
+						multiple: true,
+						allowCreate: true,
+						kind: "property",
+						classPrefix: "pp",
+						placeholder: isIncludePicker
+							? "Add properties to include…"
+							: "Add properties to exclude…",
+						ariaLabel: isIncludePicker
+							? "Only include properties"
+							: "Exclude properties",
+						onChange: (values) => {
+							this.plugin.settings[key] = values.join(", ");
+							if (isIncludePicker && excludeFieldset) {
+								excludeFieldset.disabled = this.isExcludeKeysDisabled();
+							}
+							void this.plugin.saveSettings();
+						},
+					});
+
+					return () => {
+						picker.destroy();
+						fieldset?.remove();
+					};
+				},
+			};
+		};
+
 		return [
 			{
-				name: "Only include",
-				desc: "Comma-separated list of properties to copy. Mutually exclusive with Exclude keys.",
-				control: {
-					type: "text",
-					key: "onlyInclude" satisfies keyof PropertyPorterSettings,
-					placeholder: "tags, status",
-				},
+				type: "group",
+				heading: "Property filters (non-tag commands)",
+				items: [
+					propertyPickerDefinition("onlyInclude"),
+					propertyPickerDefinition("excludeKeys"),
+				],
 			},
 			{
-				name: "Exclude keys",
-				desc: "Comma-separated list of properties to ignore. Disabled when Only include is populated.",
-				control: {
-					type: "text",
-					key: "excludeKeys" satisfies keyof PropertyPorterSettings,
-					placeholder: "aliases, created date, modified date",
-					disabled: () => this.isExcludeKeysDisabled(),
-				},
-			},
-			{
-				name: "Paste mode",
-				desc: "How copied properties merge into the destination note.",
-				control: {
-					type: "dropdown",
-					key: "pasteMode" satisfies keyof PropertyPorterSettings,
-					options: {
-						overwrite: "Overwrite",
-						skip: "Skip existing",
-						merge: "Merge",
+				type: "group",
+				heading: "Paste behavior",
+				items: [
+					{
+						name: "Paste mode",
+						desc: "How copied properties merge into the destination note.",
+						control: {
+							type: "dropdown",
+							key: "pasteMode" satisfies keyof PropertyPorterSettings,
+							options: {
+								overwrite: "Overwrite",
+								skip: "Skip existing",
+								merge: "Merge",
+							},
+						},
 					},
-				},
-			},
-			{
-				name: "Auto-clear clipboard after successful paste",
-				desc: "Automatically clear copied properties after pasting.",
-				control: {
-					type: "toggle",
-					key: "autoClear" satisfies keyof PropertyPorterSettings,
-				},
+				],
 			},
 		];
 	}
