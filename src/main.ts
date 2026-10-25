@@ -26,6 +26,8 @@ import {
 	getFrontmatterLines,
 	applyDuplicateResolution,
 	formatRawValue,
+	findPasteChanges,
+	type PasteChange,
 	type PasteMode,
 	type RawFrontmatter,
 	type DuplicateResolution,
@@ -33,16 +35,15 @@ import {
 import {
 	buildNavigationModel,
 	getGroupForLeaf,
+	getLeafFileKey,
 	type NavigationModel,
 } from "commons/workspace";
-import { setTimeoutIn, ownerWindow } from "commons/windows";
 import {
 	collectVaultMetadata,
-	getPropertySuggestions,
 	isListProperty,
-	normalizeTag,
 	ValuePicker,
 	collectValueSources,
+	setDeclaredPropertyWidget,
 	mergeValueSources,
 	mergeValueSourcesByMaximumCount,
 	type FrontmatterValueSources,
@@ -62,13 +63,14 @@ export class SourceRepairPermissionModal extends Modal {
 	}
 
 	onOpen(): void {
+		this.modalEl.addClass("pp-modal");
 		this.titleEl.setText(
 			this.files.length === 1
 				? "Repair duplicate properties in source note?"
 				: "Repair duplicate properties in source notes?"
 		);
 		this.contentEl.createEl("p", {
-			text: "Your chosen values will be copied either way. Allow Property Porter to rewrite these source notes, keeping only your chosen occurrences and removing any properties you cleared?",
+			text: "Your chosen values will be copied either way. Allow Property Porter to rewrite these source notes, keeping only your chosen occurrences? Properties you skipped are left as they are.",
 		});
 		const list = this.contentEl.createEl("ul");
 		for (const file of this.files) list.createEl("li", { text: file.path });
@@ -119,10 +121,70 @@ export class SourceRepairPermissionModal extends Modal {
 	}
 }
 
+export interface NotePasteChanges {
+	note: string;
+	changes: PasteChange[];
+}
+
+// Asks before an Overwrite or Skip paste changes or ignores existing values.
+// Esc or closing the dialog cancels, so nothing is written.
+export class PasteChangesConfirmModal extends Modal {
+	private answered = false;
+
+	constructor(
+		app: App,
+		private readonly mode: "overwrite" | "skip",
+		private readonly notes: NotePasteChanges[],
+		private readonly answer: (confirmed: boolean) => void
+	) {
+		super(app);
+	}
+
+	onOpen(): void {
+		const overwrite = this.mode === "overwrite";
+		this.modalEl.addClass("pp-modal");
+		this.titleEl.setText(overwrite ? "Overwrite existing properties?" : "Skip existing properties?");
+		this.contentEl.createEl("p", {
+			text: overwrite
+				? "These properties already have a different value and will be replaced."
+				: "These properties already have a different value and will be left as they are.",
+		});
+		const listEl = this.contentEl.createDiv({ cls: "pp-paste-changes" });
+		for (const { note, changes } of this.notes) {
+			listEl.createDiv({ cls: "pp-paste-changes-note", text: note });
+			const list = listEl.createEl("ul");
+			for (const { key, from, to } of changes) {
+				list.createEl("li", {
+					text: overwrite ? `${key}: ${from} → ${to}` : `${key}: keeping ${from}, not pasting ${to}`,
+				});
+			}
+		}
+		const buttonsEl = this.contentEl.createDiv({ cls: "pp-modal-buttons" });
+		const cancelButton = buttonsEl.createEl("button", { text: "Cancel", type: "button" });
+		cancelButton.addEventListener("click", () => this.finish(false));
+		const pasteButton = buttonsEl.createEl("button", { text: "Paste", cls: "mod-cta", type: "button" });
+		pasteButton.addEventListener("click", () => this.finish(true));
+		pasteButton.focus();
+	}
+
+	private finish(confirmed: boolean): void {
+		this.answered = true;
+		this.answer(confirmed);
+		this.close();
+	}
+
+	onClose(): void {
+		if (!this.answered) this.answer(false);
+		this.contentEl.empty();
+	}
+}
+
 interface PropertyPorterSettings {
 	onlyInclude: string;
 	excludeKeys: string;
 	pasteMode: PasteMode;
+	confirmOverwrite: boolean;
+	confirmSkip: boolean;
 }
 
 type FilterOverride = { include: string[]; exclude: string[] };
@@ -132,6 +194,8 @@ const DEFAULT_SETTINGS: PropertyPorterSettings = {
 	onlyInclude: "tags",
 	excludeKeys: "aliases, created date, modified date",
 	pasteMode: "merge",
+	confirmOverwrite: true,
+	confirmSkip: true,
 };
 
 const TAGS_FILTER_OVERRIDE: FilterOverride = { include: ["tags"], exclude: [] };
@@ -139,7 +203,6 @@ const TAGS_FILTER_OVERRIDE: FilterOverride = { include: ["tags"], exclude: [] };
 export const NOTICE_TIMEOUT_MS = 7000;
 export const NOTICE_NO_PROPERTIES_TO_PASTE =
 	'Property Porter: No properties copied. Use "Copy properties" (not system clipboard).';
-export const NOTICE_CLEARED_COPIED_TAGS = "Property Porter: No tags selected. Cleared copied tags.";
 export const NOTICE_CLEARED_COPIED_PROPERTIES = "Property Porter: No properties selected. Cleared copied properties.";
 
 function selectedClipboardEntries(payload: Record<string, unknown>): Array<[string, unknown]> {
@@ -181,6 +244,8 @@ export default class PropertyPorter extends Plugin {
 	 * conflicts can say where the clipboard value came from. */
 	clipboardOrigin: string | null = null;
 	clipboardKind: ClipboardKind = "properties";
+	/** Property types the user picked for new properties; applied on paste. */
+	private clipboardTypes: Record<string, string> = {};
 	private clipboardValueSources: FrontmatterValueSources = {};
 	statusBarItem: HTMLElement;
 
@@ -514,13 +579,13 @@ export default class PropertyPorter extends Plugin {
 				};
 			}
 			const keep: Record<string, unknown> = {};
-			const remove: string[] = [];
+			Object.assign(this.clipboardTypes, result.propertyTypes);
+			const skippedKeys: string[] = [];
 			const decisions: DuplicateResolution[] = [];
 			for (const key of Object.keys(conflicts)) {
-				if (!(key in result.properties)) {
-					// Cleared: remove the property from the note entirely.
-					remove.push(key);
-					decisions.push({ key, remove: true });
+				if (key in result.skipped || !(key in result.properties)) {
+					// Skipped: left out of the copy; the note keeps its duplicates untouched.
+					skippedKeys.push(key);
 					continue;
 				}
 				const chosen = result.properties[key];
@@ -542,9 +607,11 @@ export default class PropertyPorter extends Plugin {
 				selectedByFile.set(file, selected);
 			}
 
-			staged.push({ file, content: applyDuplicateResolution(content, decisions) });
+			if (decisions.length > 0) {
+				staged.push({ file, content: applyDuplicateResolution(content, decisions) });
+			}
 			const full: Record<string, unknown> = { ...freshFrontmatter, ...keep };
-			for (const key of remove) delete full[key];
+			for (const key of skippedKeys) delete full[key];
 			fullByFile.set(file, full);
 		}
 
@@ -689,8 +756,19 @@ export default class PropertyPorter extends Plugin {
 		this.clipboard = {};
 		this.clipboardOrigin = null;
 		this.clipboardValueSources = {};
+		this.clipboardTypes = {};
 		this.clipboardKind = "properties";
 		this.updateStatusBar();
+	}
+
+	// Gives new properties the type the user picked. Types the vault already
+	// knows are left alone, so a stale choice can never override them.
+	private applyClipboardTypes(payload: Record<string, unknown>): void {
+		const declared = collectVaultMetadata(this.app).declaredTypes ?? {};
+		for (const [name, widget] of Object.entries(this.clipboardTypes)) {
+			if (!(name in payload) || name.toLowerCase() in declared) continue;
+			setDeclaredPropertyWidget(this.app, name, widget);
+		}
 	}
 
 	hasClipboardContent(): boolean {
@@ -748,14 +826,63 @@ export default class PropertyPorter extends Plugin {
 			if (resolved === null) return; // cancelled: target stays untouched
 			payload = resolved;
 		}
-		await duplicates.commit();
 		const forceTagMerge =
 			this.clipboardKind === "tags" ||
 			filterOverride?.include.some((key) => ["tag", "tags"].includes(key.trim().toLowerCase())) === true;
+
+		// Overwrite and Skip silently change or ignore existing values; show
+		// exactly which ones, and ask first unless the user turned that off.
+		const noteChanges = await this.gatherPasteChanges(markdownFiles, overrides, payload, forceTagMerge);
+		const mode = this.settings.pasteMode;
+		const confirmChanges =
+			mode === "overwrite" ? this.settings.confirmOverwrite : mode === "skip" && this.settings.confirmSkip;
+		if (noteChanges.length > 0 && confirmChanges && mode !== "merge") {
+			const confirmed = await new Promise<boolean>((resolve) => {
+				new PasteChangesConfirmModal(this.app, mode, noteChanges, resolve).open();
+			});
+			if (!confirmed) return; // nothing written, notes stay untouched
+		}
+		await duplicates.commit();
+		this.applyClipboardTypes(payload);
 		for (const file of markdownFiles) {
 			await this.writeProperties(file, payload, forceTagMerge);
 		}
 		new Notice(pastedClipboardNotice(payload, markdownFiles.map(({ basename }) => basename)));
+		if (noteChanges.length > 0 && !confirmChanges && mode !== "merge") {
+			const count = noteChanges.reduce((sum, { changes }) => sum + changes.length, 0);
+			const properties = `${count} propert${count === 1 ? "y" : "ies"}`;
+			const notes = `${noteChanges.length} note${noteChanges.length === 1 ? "" : "s"}`;
+			new Notice(
+				mode === "overwrite"
+					? `Property Porter: Overwrote ${properties} in ${notes}.`
+					: `Property Porter: Skipped ${properties} that already had a different value in ${notes}.`,
+				NOTICE_TIMEOUT_MS
+			);
+		}
+	}
+
+	// The existing values an Overwrite or Skip paste would replace or ignore,
+	// per note. Tags pasted with a tags command are always unioned, so they
+	// never count as changes.
+	private async gatherPasteChanges(
+		files: TFile[],
+		overrides: Map<TFile, Record<string, unknown>>,
+		payload: Record<string, unknown>,
+		forceTagMerge: boolean
+	): Promise<NotePasteChanges[]> {
+		if (this.settings.pasteMode === "merge") return [];
+		const comparable = forceTagMerge
+			? Object.fromEntries(
+					Object.entries(payload).filter(([key]) => !["tag", "tags"].includes(key.toLowerCase()))
+				)
+			: payload;
+		const result: NotePasteChanges[] = [];
+		for (const file of files) {
+			const target = overrides.get(file) ?? (await this.getFreshParsedFrontmatter(file));
+			const changes = findPasteChanges(comparable, target, this.settings.pasteMode);
+			if (changes.length > 0) result.push({ note: file.basename, changes });
+		}
+		return result;
 	}
 
 	// Writes the clipboard into one file. Each call gets its own deep copy so
@@ -827,10 +954,14 @@ export default class PropertyPorter extends Plugin {
 		const seen = new Set<string>();
 
 		for (const leaf of activeGroup.leaves) {
-			if (!(leaf.view instanceof FileView)) continue;
-			const file = leaf.view.file;
-			if (file && !seen.has(file.path)) {
-				seen.add(file.path);
+			// Tabs not yet loaded after startup have a placeholder view, so the
+			// file comes from view state rather than `leaf.view`.
+			const loaded = leaf.view instanceof FileView ? leaf.view.file : null;
+			const path = loaded?.path ?? getLeafFileKey(leaf);
+			if (!path || seen.has(path)) continue;
+			const file = loaded ?? this.app.vault.getAbstractFileByPath(path);
+			if (file instanceof TFile) {
+				seen.add(path);
 				files.push(file);
 			}
 		}
@@ -872,20 +1003,6 @@ export default class PropertyPorter extends Plugin {
 		});
 	}
 
-	getKnownTagsForPicking(): string[] {
-		return getPropertySuggestions(collectVaultMetadata(this.app), "tags");
-	}
-
-	getClipboardTags(): string[] {
-		const value = this.clipboard["tags"];
-		if (!Array.isArray(value)) return [];
-		const seen = new Set<string>();
-		for (const v of value) {
-			if (typeof v === "string" && v.length > 0) seen.add(v);
-		}
-		return Array.from(seen);
-	}
-
 	private selectionModal: SelectPropertiesModal | null = null;
 
 	// Opens the shared property-selection modal seeded with `initial`.
@@ -897,7 +1014,12 @@ export default class PropertyPorter extends Plugin {
 		initial: Record<string, unknown>,
 		conflictContext: Record<string, ConflictCardContext> = {},
 		options: SelectPropertiesModalOptions = {}
-	): Promise<{ properties: Record<string, unknown>; cancelled: boolean }> {
+	): Promise<{
+		properties: Record<string, unknown>;
+		skipped: Record<string, unknown>;
+		propertyTypes: Record<string, string>;
+		cancelled: boolean;
+	}> {
 		const catalog = collectVaultMetadata(this.app);
 		this.selectionModal?.close();
 		return new Promise((resolve) => {
@@ -907,11 +1029,16 @@ export default class PropertyPorter extends Plugin {
 				initial,
 				(selected) => {
 					if (this.selectionModal === modal) this.selectionModal = null;
-					resolve({ properties: selected, cancelled: false });
+					resolve({
+						properties: selected,
+						skipped: modal.getSkippedProperties(),
+						propertyTypes: modal.getChosenTypes(),
+						cancelled: false,
+					});
 				},
 				() => {
 					if (this.selectionModal === modal) this.selectionModal = null;
-					resolve({ properties: {}, cancelled: true });
+					resolve({ properties: {}, skipped: {}, propertyTypes: {}, cancelled: true });
 				},
 				conflictContext,
 				options
@@ -945,6 +1072,7 @@ export default class PropertyPorter extends Plugin {
 		const context: Record<string, ConflictCardContext> = {};
 		for (const key of Object.keys(conflicts)) {
 			const notes: string[] = [];
+			const paths: string[] = [];
 			files.forEach((file, index) => {
 				const value = fulls[index]?.[key];
 				if (
@@ -954,10 +1082,11 @@ export default class PropertyPorter extends Plugin {
 					!isEmptyPropertyValue(value)
 				) {
 					notes.push(file.basename);
+					paths.push(file.path);
 				}
 			});
 			context[key] = {
-				...(notes.length > 0 ? { conflictNotes: notes } : {}),
+				...(notes.length > 0 ? { conflictNotes: notes, conflictPaths: paths } : {}),
 				...(valueSources[key] ? { valueSources: { [key]: valueSources[key] } } : {}),
 			};
 		}
@@ -982,6 +1111,7 @@ export default class PropertyPorter extends Plugin {
 		const targetFrontmatters = await Promise.all(
 			files.map(async (file) => ({
 				note: file.basename,
+				path: file.path,
 				frontmatter: overrides?.get(file) ?? (await this.getFreshParsedFrontmatter(file)),
 			}))
 		);
@@ -1004,7 +1134,7 @@ export default class PropertyPorter extends Plugin {
 		}
 
 		const catalog = collectVaultMetadata(this.app);
-		for (const { note, frontmatter: target } of targetFrontmatters) {
+		for (const { note, path, frontmatter: target } of targetFrontmatters) {
 			for (const [key, clipValue] of Object.entries(payload)) {
 				if (isEmptyPropertyValue(clipValue) || Array.isArray(clipValue)) continue;
 				if (isListProperty(catalog, key)) continue;
@@ -1032,6 +1162,8 @@ export default class PropertyPorter extends Plugin {
 				ctx.clipboardOrigin = this.clipboardOrigin ?? undefined;
 				ctx.conflictNotes ??= [];
 				if (!ctx.conflictNotes?.includes(note)) ctx.conflictNotes?.push(note);
+				ctx.conflictPaths ??= [];
+				if (!ctx.conflictPaths.includes(path)) ctx.conflictPaths.push(path);
 				context[key] = ctx;
 			}
 		}
@@ -1057,6 +1189,7 @@ export default class PropertyPorter extends Plugin {
 			}
 		);
 		if (result.cancelled) return null;
+		Object.assign(this.clipboardTypes, result.propertyTypes);
 		return result.properties;
 	}
 
@@ -1085,6 +1218,7 @@ export default class PropertyPorter extends Plugin {
 
 		const previousClipboard = this.clipboard;
 		this.clipboard = result.properties;
+		this.clipboardTypes = result.propertyTypes ?? {};
 		this.clipboardOrigin = null;
 		const previousSources = this.clipboardValueSources;
 		this.clipboardValueSources = Object.fromEntries(
@@ -1116,31 +1250,6 @@ export default class PropertyPorter extends Plugin {
 		await this.editPropertyClipboard();
 	}
 
-	async selectTagsToPaste(): Promise<void> {
-		const result = await new Promise<{ items: string[]; cancelled: boolean }>((resolve) => {
-			new MultiSelectSuggestModal(
-				this.app,
-				this.getKnownTagsForPicking(),
-				"",
-				(items) => resolve({ items, cancelled: false }),
-				() => resolve({ items: [], cancelled: true }),
-				this.getClipboardTags()
-			).open();
-		});
-		if (result.cancelled) return;
-
-		this.clipboard = { tags: result.items };
-		this.clipboardOrigin = null;
-		this.clipboardValueSources = {};
-		this.clipboardKind = "properties";
-		this.updateStatusBar();
-		if (result.items.length === 0) {
-			new Notice(NOTICE_CLEARED_COPIED_TAGS);
-			return;
-		}
-		new Notice(`Property Porter: ${clipboardDescription(this.clipboard)} ready to paste`);
-	}
-
 	mergeFrontmatter(
 		source: Record<string, unknown>,
 		destination: Record<string, unknown>
@@ -1169,152 +1278,19 @@ export default class PropertyPorter extends Plugin {
 
 export { FileSuggestModal, FileSuggestModal as SuggestFilesModal, SelectPropertiesModal };
 
-export class MultiSelectSuggestModal extends Modal {
-	private picker: ValuePicker | null = null;
-	private selected: string[];
-	private submitted = false;
-	private hintEl: HTMLElement | null = null;
-	private doneButton: HTMLButtonElement | null = null;
-	private clearAllButton: HTMLButtonElement | null = null;
-
-	constructor(
-		app: App,
-		private readonly values: string[],
-		private readonly prefix: string,
-		private readonly onSubmit: (selected: string[]) => void,
-		private readonly onCancel: () => void,
-		initialSelected: string[] = []
-	) {
-		super(app);
-		this.selected = [
-			...new Set(initialSelected.map((value) => normalizeTag(value).trim()).filter(Boolean)),
-		];
-	}
-
-	get inputEl(): HTMLInputElement {
-		if (!this.picker) throw new Error("Tag picker is not open");
-		return this.picker.inputEl;
-	}
-
-	getSelectedValues(): string[] {
-		return this.picker?.getValue() ?? [...this.selected];
-	}
-
-	onOpen(): void {
-		this.submitted = false;
-		this.contentEl.empty();
-		this.contentEl.addClass("pp-multi-select-modal");
-
-		const pickerHost = this.contentEl.createDiv({ cls: "pp-tag-picker" });
-		this.picker = new ValuePicker(this.app, pickerHost, {
-			suggestions: this.values,
-			value: this.selected,
-			multiple: true,
-			allowCreate: true,
-			kind: "value",
-			context: "tags",
-			classPrefix: "pp",
-			normalizeValue: normalizeTag,
-			placeholder: "Search tags or type a new tag…",
-			ariaLabel: "Tags to paste",
-			getCreateLabel: (value) =>
-				`Create new tag: ${this.prefix}${normalizeTag(value).trim()}`,
-			onChange: (values) => {
-				this.selected = values;
-				this.updateControls();
-			},
-		});
-		this.selected = this.picker.getValue();
-		this.inputEl.addEventListener("keydown", this.handleInputKeydown, true);
-
-		const controlsEl = this.contentEl.createDiv({ cls: "pp-multi-select-controls" });
-		this.hintEl = controlsEl.createDiv({ cls: "pp-multi-select-hint" });
-		const buttonsEl = controlsEl.createDiv({ cls: "pp-multi-select-buttons" });
-		this.clearAllButton = buttonsEl.createEl("button", {
-			text: "Clear all",
-			cls: "pp-clear-all-button",
-			type: "button",
-		});
-		this.clearAllButton.addEventListener("click", () => this.clearAll());
-		this.doneButton = buttonsEl.createEl("button", {
-			text: "Finish selection (0)",
-			cls: ["mod-cta", "pp-finish-button"],
-			type: "button",
-		});
-		this.doneButton.addEventListener("click", () => this.submit());
-		this.updateControls();
-
-		const win = ownerWindow(this.contentEl) ?? window;
-		setTimeoutIn(win, () => this.picker?.inputEl.focus(), 0);
-	}
-
-	onClose(): void {
-		if (this.picker) {
-			this.picker.inputEl.removeEventListener("keydown", this.handleInputKeydown, true);
-			this.picker.destroy();
-			this.picker = null;
-		}
-		this.contentEl.empty();
-		if (!this.submitted) this.onCancel();
-	}
-
-	addValue(value: string): void {
-		const normalized = normalizeTag(value).trim();
-		if (!normalized) return;
-		if (!this.selected.includes(normalized)) this.selected.push(normalized);
-		this.picker?.setValue(this.selected);
-		this.updateControls();
-	}
-
-	clearAll(): void {
-		this.selected = [];
-		this.picker?.setValue([]);
-		this.updateControls();
-		this.picker?.inputEl.focus();
-	}
-
-	submit(): void {
-		if (this.submitted) return;
-		this.submitted = true;
-		this.onSubmit(this.getSelectedValues());
-		this.close();
-	}
-
-	private readonly handleInputKeydown = (event: KeyboardEvent): void => {
-		if (this.inputEl.value.trim() !== "") return;
-
-		if (event.key === "Enter") {
-			event.preventDefault();
-			event.stopImmediatePropagation();
-			if (this.getSelectedValues().length > 0) this.submit();
-			return;
-		}
-
-		if (event.key === "Backspace" && (event.ctrlKey || event.metaKey)) {
-			event.preventDefault();
-			event.stopImmediatePropagation();
-			if (this.getSelectedValues().length > 0) this.clearAll();
-		}
-	};
-
-	private updateControls(): void {
-		const count = this.getSelectedValues().length;
-		this.hintEl?.setText(
-			count === 0
-				? "Choose existing tags or type a tag and confirm it before adding."
-				: "Empty Enter finishes. Backspace removes the last tag; Ctrl/Cmd+Backspace clears all."
-		);
-		if (this.doneButton) this.doneButton.setText(`Finish selection (${count})`);
-		if (this.clearAllButton) this.clearAllButton.disabled = count === 0;
-	}
-}
-
 export class PropertyPorterSettingTab extends PluginSettingTab {
 	constructor(
 		app: App,
 		private readonly plugin: PropertyPorter
 	) {
 		super(app, plugin);
+	}
+
+	setControlValue(key: string, value: unknown): void {
+		(this.plugin.settings as unknown as Record<string, unknown>)[key] = value;
+		void this.plugin.saveSettings();
+		// The confirm toggles only apply to some paste modes.
+		this.refreshDomState();
 	}
 
 	getSettingDefinitions(): SettingDefinitionItem<keyof PropertyPorterSettings>[] {
@@ -1388,6 +1364,24 @@ export class PropertyPorterSettingTab extends PluginSettingTab {
 								skip: "Skip existing",
 								merge: "Merge",
 							},
+						},
+					},
+					{
+						name: "Confirm before overwriting",
+						desc: "Before an Overwrite paste replaces existing values, list each note's changes and ask first. When off, a notice reports what was overwritten.",
+						visible: () => this.plugin.settings.pasteMode === "overwrite",
+						control: {
+							type: "toggle",
+							key: "confirmOverwrite" satisfies keyof PropertyPorterSettings,
+						},
+					},
+					{
+						name: "Confirm before skipping",
+						desc: "Before a Skip existing paste leaves different existing values unchanged, list each note's skipped properties and ask first. When off, a notice reports what was skipped.",
+						visible: () => this.plugin.settings.pasteMode === "skip",
+						control: {
+							type: "toggle",
+							key: "confirmSkip" satisfies keyof PropertyPorterSettings,
 						},
 					},
 				],

@@ -9,9 +9,7 @@ import PropertyPorter, {
 	SuggestFilesModal,
 	FileSuggestModal,
 	PropertyPorterSettingTab,
-	MultiSelectSuggestModal,
 	NOTICE_NO_PROPERTIES_TO_PASTE,
-	NOTICE_CLEARED_COPIED_TAGS,
 	NOTICE_TIMEOUT_MS,
 } from "../src/main";
 import { parseRawFrontmatter } from "../src/frontmatter";
@@ -399,6 +397,7 @@ describe("PropertyPorter", () => {
 			});
 			await plugin.onload();
 			plugin.settings.pasteMode = "overwrite";
+			plugin.settings.confirmOverwrite = false;
 			await plugin.copyPropertiesFromFiles([source], { include: ["tags"], exclude: [] });
 			vi.spyOn(plugin, "openPropertySelectionModal").mockResolvedValue({
 				properties: { tags: ["incoming"], status: "editor-added" },
@@ -458,6 +457,7 @@ describe("PropertyPorter", () => {
 			});
 			await plugin.onload();
 			plugin.settings.pasteMode = "skip";
+			plugin.settings.confirmSkip = false;
 			await plugin.copyPropertiesFromFiles([source], { include: ["tags"], exclude: [] });
 			plugin.clipboard = { tags: ["incoming"], status: "clipboard" };
 
@@ -873,7 +873,7 @@ describe("PropertyPorter", () => {
 
 			await plugin.copyProperties();
 
-			expect(warningText).toBe("Choose which modified_date value to keep.");
+			expect(warningText).toBe("Conflict: modified_date has different values. Pick one or skip it.");
 			// The note is repaired textually: only the chosen occurrence survives
 			// and every other line is preserved.
 			expect(fileContents[file.path]).toBe(
@@ -922,7 +922,7 @@ describe("PropertyPorter", () => {
 			expect(fileContents[file.path]).toBe(noteText);
 		});
 
-		it("removes the property from the note and the copy when the duplicate is cleared", async () => {
+		it("leaves the note's duplicate untouched when it is skipped in the copy", async () => {
 			const file = new obsidianMock.TFile("note-six.md");
 			const noteText = "---\ntitle: T\nmodified_date: 1\nmodified_date: 2\n---\n";
 			const { plugin, fileContents } = createPlugin({
@@ -936,19 +936,21 @@ describe("PropertyPorter", () => {
 
 			obsidianMock.Modal.prototype.open = function (this: any) {
 				this.onOpen();
+				document.body.appendChild(this.contentEl);
 				const card = Array.from(this.contentEl.querySelectorAll(".pp-property-card")).find(
 					(c: any) => c.querySelector(".pp-property-name")?.textContent === "modified_date"
 				) as HTMLElement;
 				void card;
-				// Exclude only the duplicate property, preserving the rest of
+				// Skip only the duplicate property, preserving the rest of
 				// the source properties selected for the clipboard.
-				card.querySelector(".pp-property-remove-btn").click();
+				card.querySelector(".pp-property-skip-checkbox").click();
 				this.contentEl.querySelector(".pp-finish-button").click();
 			};
 
 			await plugin.copyProperties();
 
-			expect(fileContents[file.path]).toBe("---\ntitle: T\n---\n");
+			// A skipped duplicate is only left out of the copy; the note is not edited.
+			expect(fileContents[file.path]).toBe(noteText);
 			expect(plugin.clipboard).toEqual({ title: "T" });
 		});
 
@@ -1010,7 +1012,7 @@ describe("PropertyPorter", () => {
 				// resolves the union's scalar collision with cross-note wording.
 				if (modalIndex <= 2) {
 					expect(card.querySelector(".pp-property-warning")?.textContent).toBe(
-						"Choose which status value to keep."
+						"Conflict: status has different values. Pick one or skip it."
 					);
 				}
 				const radios = card.querySelectorAll<HTMLInputElement>('.pp-conflict-option input[type="radio"]');
@@ -1281,6 +1283,7 @@ describe("PropertyPorter", () => {
 					status: {
 						clipboardOrigin: undefined,
 						conflictNotes: ["dest"],
+						conflictPaths: ["dest.md"],
 						valueSources: { status: { target: [{ note: "dest", count: 1 }] } },
 					},
 				},
@@ -1333,7 +1336,7 @@ describe("PropertyPorter", () => {
 					// Duplicate-resolution modal: pick the first modified_date.
 					const card = findCard("modified_date");
 					expect(card.querySelector(".pp-property-warning")?.textContent).toBe(
-						"Choose which modified_date value to keep."
+						"Conflict: modified_date has different values. Pick one or skip it."
 					);
 					const radios = card.querySelectorAll<HTMLInputElement>('.pp-conflict-option input[type="radio"]');
 					radios[0].click();
@@ -1352,7 +1355,7 @@ describe("PropertyPorter", () => {
 
 			await plugin.pasteProperties(target);
 
-			expect(secondWarning).toBe("Choose which status value to keep.");
+			expect(secondWarning).toBe("Conflict: status has different values. Pick one or skip it.");
 			// The target was repaired and then pasted into.
 			expect(modalIndex).toBe(2);
 			expect(fileContents[target.path]).toBe(
@@ -1403,7 +1406,7 @@ describe("PropertyPorter", () => {
 					this.contentEl.querySelector(".pp-finish-button").click();
 				} else {
 					// Merge-conflict modal is cancelled: nothing may be written.
-					expect(this.contentEl.textContent).toContain("Choose which status value to keep");
+					expect(this.contentEl.textContent).toContain("Conflict: status has different values. Pick one or skip it");
 					expect(this.contentEl.textContent).toContain("status");
 					this.close();
 				}
@@ -1440,6 +1443,7 @@ describe("PropertyPorter", () => {
 			const { plugin, fileCache } = createPlugin();
 			await plugin.onload();
 			plugin.settings.pasteMode = "overwrite";
+			plugin.settings.confirmOverwrite = false;
 			plugin.clipboard = { status: "clip" };
 			fileCache[target.path] = { frontmatter: { status: "target" } };
 			const modal = vi
@@ -1450,6 +1454,133 @@ describe("PropertyPorter", () => {
 
 			expect(modal).not.toHaveBeenCalled();
 			expect(fileCache[target.path].frontmatter).toEqual({ status: "clip" });
+		});
+
+		describe("confirming overwrite and skip pastes", () => {
+			function setup(mode: "overwrite" | "skip") {
+				const target = new obsidianMock.TFile("dest.md");
+				const made = createPlugin();
+				made.fileCache[target.path] = { frontmatter: { version: "2", kind: "note" } };
+				return { ...made, target, mode };
+			}
+
+			function answerDialog(button: "Paste" | "Cancel", seen: string[]) {
+				obsidianMock.Modal.prototype.open = function (this: any) {
+					this.onOpen();
+					seen.push(this.titleEl.textContent, this.contentEl.textContent);
+					const buttons = Array.from(this.contentEl.querySelectorAll("button")) as HTMLButtonElement[];
+					buttons.find((candidate) => candidate.textContent === button)!.click();
+				};
+			}
+
+			it("lists old and new values in overwrite mode and pastes once confirmed", async () => {
+				const { plugin, fileCache, target } = setup("overwrite");
+				await plugin.onload();
+				plugin.settings.pasteMode = "overwrite";
+				plugin.clipboard = { version: "4", kind: "note" };
+				const seen: string[] = [];
+				answerDialog("Paste", seen);
+
+				await plugin.pasteProperties(target);
+
+				expect(seen[0]).toBe("Overwrite existing properties?");
+				expect(seen[1]).toContain("dest");
+				expect(seen[1]).toContain("version: 2 → 4");
+				expect(seen[1]).not.toContain("kind");
+				expect(fileCache[target.path].frontmatter.version).toBe("4");
+			});
+
+			it("writes nothing when the overwrite confirmation is cancelled", async () => {
+				const { plugin, fileCache, target } = setup("overwrite");
+				await plugin.onload();
+				plugin.settings.pasteMode = "overwrite";
+				plugin.clipboard = { version: "4" };
+				answerDialog("Cancel", []);
+
+				await plugin.pasteProperties(target);
+
+				expect(fileCache[target.path].frontmatter.version).toBe("2");
+				expect(plugin.clipboard).toEqual({ version: "4" });
+			});
+
+			it("lists skipped values in skip mode and still pastes the new ones", async () => {
+				const { plugin, fileCache, target } = setup("skip");
+				await plugin.onload();
+				plugin.settings.pasteMode = "skip";
+				plugin.clipboard = { version: "4", added: "yes" };
+				const seen: string[] = [];
+				answerDialog("Paste", seen);
+
+				await plugin.pasteProperties(target);
+
+				expect(seen[0]).toBe("Skip existing properties?");
+				expect(seen[1]).toContain("version: keeping 2, not pasting 4");
+				expect(fileCache[target.path].frontmatter).toEqual({ version: "2", kind: "note", added: "yes" });
+			});
+
+			it("does not ask when nothing would change", async () => {
+				const { plugin, target } = setup("overwrite");
+				await plugin.onload();
+				plugin.settings.pasteMode = "overwrite";
+				plugin.clipboard = { version: "2", fresh: "x" };
+				const open = vi.fn();
+				obsidianMock.Modal.prototype.open = open;
+
+				await plugin.pasteProperties(target);
+
+				expect(open).not.toHaveBeenCalled();
+			});
+
+			it("shows a lasting notice instead of asking when the setting is off", async () => {
+				const { plugin, fileCache, target } = setup("overwrite");
+				await plugin.onload();
+				plugin.settings.pasteMode = "overwrite";
+				plugin.settings.confirmOverwrite = false;
+				plugin.clipboard = { version: "4" };
+				const open = vi.fn();
+				obsidianMock.Modal.prototype.open = open;
+				const notice = vi.spyOn(obsidianMock, "Notice");
+
+				await plugin.pasteProperties(target);
+
+				expect(open).not.toHaveBeenCalled();
+				expect(fileCache[target.path].frontmatter.version).toBe("4");
+				expect(notice).toHaveBeenCalledWith("Property Porter: Overwrote 1 property in 1 note.", 7000);
+			});
+
+			it("shows a lasting notice for skipped properties when confirming is off", async () => {
+				const { plugin, target } = setup("skip");
+				await plugin.onload();
+				plugin.settings.pasteMode = "skip";
+				plugin.settings.confirmSkip = false;
+				plugin.clipboard = { version: "4" };
+				const notice = vi.spyOn(obsidianMock, "Notice");
+
+				await plugin.pasteProperties(target);
+
+				expect(notice).toHaveBeenCalledWith(
+					"Property Porter: Skipped 1 property that already had a different value in 1 note.",
+					7000
+				);
+			});
+		});
+
+		it("shows each confirm setting only for its paste mode", async () => {
+			const { plugin } = createPlugin();
+			await plugin.onload();
+			const tab = new PropertyPorterSettingTab(plugin.app, plugin);
+			const items = tab.getSettingDefinitions().flatMap((d: any) => (d.items ? d.items : [d]));
+			const overwrite = items.find((d: any) => d.name === "Confirm before overwriting");
+			const skip = items.find((d: any) => d.name === "Confirm before skipping");
+
+			expect(plugin.settings.confirmOverwrite).toBe(true);
+			expect(plugin.settings.confirmSkip).toBe(true);
+			plugin.settings.pasteMode = "merge";
+			expect([overwrite.visible(), skip.visible()]).toEqual([false, false]);
+			plugin.settings.pasteMode = "overwrite";
+			expect([overwrite.visible(), skip.visible()]).toEqual([true, false]);
+			plugin.settings.pasteMode = "skip";
+			expect([overwrite.visible(), skip.visible()]).toEqual([false, true]);
 		});
 
 		it("shows notice when no target files exist", async () => {
@@ -1623,6 +1754,7 @@ describe("PropertyPorter", () => {
 					status: {
 						clipboardOrigin: undefined,
 						conflictNotes: ["a", "b"],
+						conflictPaths: ["a.md", "b.md"],
 						valueSources: {
 							status: {
 								one: [{ note: "a", count: 1 }],
@@ -1773,6 +1905,7 @@ describe("PropertyPorter", () => {
 				{
 					status: {
 						conflictNotes: ["a", "b"],
+						conflictPaths: ["a.md", "b.md"],
 						valueSources: {
 							status: {
 								one: [{ note: "a", count: 1 }],
@@ -1821,6 +1954,7 @@ describe("PropertyPorter", () => {
 				expect.objectContaining({
 					status: expect.objectContaining({
 						conflictNotes: ["a", "b"],
+						conflictPaths: ["a.md", "b.md"],
 					}),
 				}),
 				expect.objectContaining({ conflictNames: ["status"] })
@@ -2142,408 +2276,6 @@ describe("registerEmacsMotionKeys", () => {
 		ctrlBCall[2](new KeyboardEvent("keydown"));
 		expect(inputEl.selectionStart).toBe(2);
 		expect(inputEl.selectionEnd).toBe(2);
-	});
-});
-
-describe("MultiSelectSuggestModal", () => {
-	it("wraps the shared picker and normalizes initial clipboard tags", () => {
-		const modal = new MultiSelectSuggestModal(
-			new obsidianMock.App(),
-			["alpha", "beta"],
-			"#",
-			() => {},
-			() => {},
-			["#alpha", "alpha"]
-		);
-		modal.onOpen();
-
-		expect(modal.inputEl.classList.contains("commons-property-picker-input")).toBe(true);
-		expect(modal.getSelectedValues()).toEqual(["alpha"]);
-		expect(modal.contentEl.querySelectorAll(".commons-property-picker-chip")).toHaveLength(1);
-		expect(modal.contentEl.querySelector(".pp-finish-button").textContent).toBe(
-			"Finish selection (1)"
-		);
-	});
-
-	it("adds known tags through the shared input suggester", () => {
-		const modal = new MultiSelectSuggestModal(
-			new obsidianMock.App(),
-			["alpha", "beta"],
-			"#",
-			() => {},
-			() => {}
-		);
-		modal.onOpen();
-
-		selectInputSuggestion(modal.inputEl, "al", "alpha");
-
-		expect(modal.getSelectedValues()).toEqual(["alpha"]);
-		expect(
-			modal.contentEl.querySelector(".commons-property-picker-chip").textContent
-		).toContain("alpha");
-	});
-
-	it("offers an explicitly confirmed create option for unknown tags", () => {
-		const modal = new MultiSelectSuggestModal(
-			new obsidianMock.App(),
-			["alpha"],
-			"#",
-			() => {},
-			() => {}
-		);
-		modal.onOpen();
-
-		const suggester = getInputSuggest(modal.inputEl);
-		const createOption = suggester
-			.suggestions("brand-new")
-			.find((candidate: any) => candidate.kind === "create");
-		const suggestionEl = obsidianMock.decorateEl(document.createElement("div"));
-		suggester.renderSuggestion(createOption, suggestionEl);
-
-		expect(createOption.value).toBe("brand-new");
-		expect(suggestionEl.textContent).toContain("Create new tag");
-		expect(suggestionEl.textContent).toContain("#brand-new");
-	});
-
-	it("deduplicates normalized additions and supports clearing all selected tags", () => {
-		const modal = new MultiSelectSuggestModal(
-			new obsidianMock.App(),
-			["alpha"],
-			"#",
-			() => {},
-			() => {}
-		);
-		modal.onOpen();
-		modal.addValue("#alpha");
-		modal.addValue("alpha");
-
-		expect(modal.getSelectedValues()).toEqual(["alpha"]);
-		modal.inputEl.dispatchEvent(
-			new KeyboardEvent("keydown", { key: "Backspace", ctrlKey: true })
-		);
-		expect(modal.getSelectedValues()).toEqual([]);
-	});
-
-	it("finishes on empty Enter only when there is a selection", () => {
-		const onSubmit = vi.fn();
-		const modal = new MultiSelectSuggestModal(
-			new obsidianMock.App(),
-			["alpha"],
-			"#",
-			onSubmit,
-			() => {}
-		);
-		modal.onOpen();
-
-		modal.inputEl.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
-		expect(onSubmit).not.toHaveBeenCalled();
-
-		modal.addValue("alpha");
-		modal.inputEl.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
-		expect(onSubmit).toHaveBeenCalledWith(["alpha"]);
-	});
-
-	it("Clear all followed by Finish submits an empty selection", () => {
-		const onSubmit = vi.fn();
-		const modal = new MultiSelectSuggestModal(
-			new obsidianMock.App(),
-			["alpha"],
-			"#",
-			onSubmit,
-			() => {},
-			["alpha"]
-		);
-		modal.onOpen();
-		modal.contentEl.querySelector(".pp-clear-all-button").click();
-		expect(modal.getSelectedValues()).toEqual([]);
-
-		modal.contentEl.querySelector(".pp-finish-button").click();
-		expect(onSubmit).toHaveBeenCalledWith([]);
-	});
-
-	it("cancels on close but does not cancel after submission", () => {
-		const onSubmit = vi.fn();
-		const onCancel = vi.fn();
-		const cancelled = new MultiSelectSuggestModal(
-			new obsidianMock.App(),
-			["alpha"],
-			"#",
-			onSubmit,
-			onCancel
-		);
-		cancelled.onOpen();
-		cancelled.close();
-		expect(onCancel).toHaveBeenCalledTimes(1);
-
-		const submitted = new MultiSelectSuggestModal(
-			new obsidianMock.App(),
-			["alpha"],
-			"#",
-			onSubmit,
-			onCancel
-		);
-		submitted.onOpen();
-		submitted.addValue("alpha");
-		submitted.submit();
-		expect(onSubmit).toHaveBeenCalledWith(["alpha"]);
-		expect(onCancel).toHaveBeenCalledTimes(1);
-	});
-});
-
-describe("selectTagsToPaste", () => {
-	it("collects known frontmatter tags across the vault", () => {
-		const f1 = new obsidianMock.TFile("a.md");
-		const f2 = new obsidianMock.TFile("b.md");
-		const { plugin, fileCache } = createPlugin({
-			markdownFiles: [f1, f2],
-		});
-		fileCache[f1.path] = { frontmatter: { tags: ["alpha", "#beta"] } };
-		fileCache[f2.path] = { frontmatter: { tags: ["beta", "gamma"] } };
-
-		const tags = plugin.getKnownTagsForPicking();
-
-		expect(tags).toEqual(["alpha", "beta", "gamma"]);
-	});
-
-	it("also picks up inline #tags written in the note body, via Obsidian's getAllTags", () => {
-		const f1 = new obsidianMock.TFile("a.md");
-		const { plugin, fileCache } = createPlugin({
-			markdownFiles: [f1],
-		});
-		fileCache[f1.path] = {
-			frontmatter: { tags: ["alpha"] },
-			tags: [{ tag: "#inline-only" }],
-		};
-
-		const tags = plugin.getKnownTagsForPicking();
-
-		expect(tags).toEqual(["alpha", "inline-only"]);
-	});
-
-	it("supports the singular 'tag' frontmatter key alias", () => {
-		const f1 = new obsidianMock.TFile("a.md");
-		const { plugin, fileCache } = createPlugin({
-			markdownFiles: [f1],
-		});
-		fileCache[f1.path] = { frontmatter: { tag: "solo" } };
-
-		const tags = plugin.getKnownTagsForPicking();
-
-		expect(tags).toEqual(["solo"]);
-	});
-
-	it("sorts known tags case-insensitively", () => {
-		const f1 = new obsidianMock.TFile("a.md");
-		const { plugin, fileCache } = createPlugin({
-			markdownFiles: [f1],
-		});
-		fileCache[f1.path] = {
-			frontmatter: { tags: ["King-County", "Seattle", "a", "archive"] },
-		};
-
-		const tags = plugin.getKnownTagsForPicking();
-
-		expect(tags).toEqual(["a", "archive", "King-County", "Seattle"]);
-	});
-
-	it("opens and selects tags even when onlyInclude is configured for other properties", async () => {
-		const { plugin } = createPlugin();
-		await plugin.onload();
-		plugin.settings.onlyInclude = "status, title";
-
-		obsidianMock.Modal.prototype.open = function (this: any) {
-			this.onOpen();
-			this.addValue("urgent");
-			this.submit();
-		};
-
-		await plugin.selectTagsToPaste();
-		expect(plugin.clipboard).toEqual({ tags: ["urgent"] });
-	});
-
-	it("sets clipboard from selected tags and shows notice", async () => {
-		const file = new obsidianMock.TFile("a.md");
-		const { plugin, fileCache } = createPlugin({
-			markdownFiles: [file],
-		});
-		await plugin.onload();
-		fileCache[file.path] = { frontmatter: { tags: ["x", "y", "z"] } };
-		plugin.settings.onlyInclude = "tags";
-
-		obsidianMock.Modal.prototype.open = function (this: any) {
-			this.onOpen();
-			this.addValue("x");
-			this.addValue("z");
-			this.submit();
-		};
-
-		const spy = vi.spyOn(obsidianMock, "Notice");
-		await plugin.selectTagsToPaste();
-
-		expect(plugin.clipboard).toEqual({ tags: ["x", "z"] });
-		expect(plugin.statusBarItem.textContent).toBe("PP: 2");
-		expect(spy).toHaveBeenCalledWith(expect.stringContaining("2 tags ready to paste"));
-	});
-
-	it("does not change clipboard when user closes without selecting (true cancel)", async () => {
-		const { plugin } = createPlugin();
-		await plugin.onload();
-		plugin.settings.onlyInclude = "tags";
-		plugin.clipboard = { existing: 1 };
-
-		obsidianMock.Modal.prototype.open = function (this: any) {
-			this.onOpen();
-			this.onClose();
-		};
-
-		const spy = vi.spyOn(obsidianMock, "Notice");
-		await plugin.selectTagsToPaste();
-
-		expect(plugin.clipboard).toEqual({ existing: 1 });
-		expect(spy).not.toHaveBeenCalled();
-	});
-
-	it("warns explicitly and clears clipboard tags when Finish selection is clicked with nothing selected", async () => {
-		const { plugin } = createPlugin();
-		await plugin.onload();
-		plugin.settings.onlyInclude = "tags";
-		plugin.clipboard = { existing: 1 };
-
-		obsidianMock.Modal.prototype.open = function (this: any) {
-			this.onOpen();
-			// Explicit "Finish selection" click with zero tags picked,
-			// as opposed to Escape/close (a true cancel). This is how a
-			// user clears a previously accumulated selection: load the
-			// existing tags, "Clear all", then "Finish selection (0)".
-			this.contentEl.querySelector(".pp-finish-button").click();
-		};
-
-		const spy = vi.spyOn(obsidianMock, "Notice");
-		await plugin.selectTagsToPaste();
-
-		expect(plugin.clipboard).toEqual({ tags: [] });
-		expect(spy).toHaveBeenCalledWith(NOTICE_CLEARED_COPIED_TAGS);
-	});
-
-	it("Clear all followed by Finish selection empties a previously accumulated clipboard", async () => {
-		const { plugin } = createPlugin();
-		await plugin.onload();
-		plugin.settings.onlyInclude = "tags";
-		plugin.clipboard = { tags: ["alpha", "beta"] };
-
-		obsidianMock.Modal.prototype.open = function (this: any) {
-			this.onOpen();
-			// The modal should have been pre-populated from the clipboard.
-			expect(this.getSelectedValues()).toEqual(["alpha", "beta"]);
-			this.contentEl.querySelector(".pp-clear-all-button").click();
-			expect(this.getSelectedValues()).toEqual([]);
-			this.contentEl.querySelector(".pp-finish-button").click();
-		};
-
-		await plugin.selectTagsToPaste();
-
-		expect(plugin.clipboard).toEqual({ tags: [] });
-		expect(plugin.hasClipboardContent()).toBe(false);
-	});
-
-	it("end-to-end: selecting tags via real DOM clicks and pasting them via pasteIntoActive", async () => {
-		const active = new obsidianMock.TFile("active.md");
-		const { plugin, fileCache } = createPlugin({
-			activeFile: active,
-			markdownFiles: [active],
-		});
-		await plugin.onload();
-		fileCache[active.path] = { frontmatter: { tags: ["x", "y", "z"] } };
-		plugin.settings.onlyInclude = "tags";
-
-		obsidianMock.Modal.prototype.open = function (this: any) {
-			this.onOpen();
-			selectInputSuggestion(this.inputEl, "x", "x");
-			selectInputSuggestion(this.inputEl, "y", "y");
-
-			this.contentEl.querySelector(".pp-finish-button").click();
-		};
-
-		await plugin.selectTagsToPaste();
-		expect(plugin.clipboard).toEqual({ tags: ["x", "y"] });
-
-		await plugin.pasteIntoActive();
-		expect(fileCache[active.path].frontmatter).toEqual({
-			tags: ["x", "y", "z"],
-		});
-	});
-
-	it("end-to-end: selecting tags and pasting into another note", async () => {
-		const active = new obsidianMock.TFile("active.md");
-		const other = new obsidianMock.TFile("other.md");
-		const { plugin, fileCache } = createPlugin({
-			activeFile: active,
-			markdownFiles: [active, other],
-		});
-		await plugin.onload();
-		fileCache[active.path] = { frontmatter: { tags: ["a", "b"] } };
-		fileCache[other.path] = { frontmatter: { title: "Other" } };
-		plugin.settings.onlyInclude = "tags";
-
-		obsidianMock.Modal.prototype.open = function (this: any) {
-			this.onOpen();
-			this.addValue("a");
-			this.submit();
-		};
-
-		await plugin.selectTagsToPaste();
-		expect(plugin.clipboard).toEqual({ tags: ["a"] });
-
-		await plugin.pasteProperties(other);
-		expect(fileCache[other.path].frontmatter).toEqual({
-			title: "Other",
-			tags: ["a"],
-		});
-	});
-
-	it("end-to-end: narrowing-down workflow via real keydown events (filter, Enter, filter, Enter, empty Enter to finish)", async () => {
-		const active = new obsidianMock.TFile("active.md");
-		const { plugin, fileCache } = createPlugin({
-			activeFile: active,
-			markdownFiles: [active],
-		});
-		await plugin.onload();
-		fileCache[active.path] = {
-			frontmatter: { tags: ["alpha", "beta", "gamma", "delta"] },
-		};
-		plugin.settings.onlyInclude = "tags";
-
-		obsidianMock.Modal.prototype.open = function (this: any) {
-			this.onOpen();
-
-			selectInputSuggestion(this.inputEl, "alpha", "alpha");
-			selectInputSuggestion(this.inputEl, "gamma", "gamma");
-
-			this.inputEl.value = "";
-			this.inputEl.dispatchEvent(new Event("input"));
-			this.inputEl.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
-		};
-
-		await plugin.selectTagsToPaste();
-		expect(plugin.clipboard).toEqual({ tags: ["alpha", "gamma"] });
-	});
-
-	it("closing without submitting (Esc) leaves clipboard unchanged", async () => {
-		const { plugin } = createPlugin();
-		await plugin.onload();
-		plugin.settings.onlyInclude = "tags";
-		plugin.clipboard = { existing: 1 };
-
-		obsidianMock.Modal.prototype.open = function (this: any) {
-			this.onOpen();
-			this.addValue("a");
-			// Simulate Escape: real Obsidian's Modal.close() runs onClose()
-			// without submit() having been called.
-			this.close();
-		};
-
-		await plugin.selectTagsToPaste();
-		expect(plugin.clipboard).toEqual({ existing: 1 });
 	});
 });
 

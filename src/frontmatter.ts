@@ -155,6 +155,34 @@ export function unionFrontmatter(
 
 export type PasteMode = "overwrite" | "skip" | "merge";
 
+export interface PasteChange {
+	key: string;
+	/** The value already in the note. */
+	from: string;
+	/** The clipboard value that overwrites it, or is left unpasted in skip mode. */
+	to: string;
+}
+
+// The properties an Overwrite or Skip paste would replace or leave alone in a
+// note: only keys that already hold a different, non-empty value. Merge mode
+// resolves its own conflicts, so it reports nothing.
+export function findPasteChanges(
+	source: Record<string, unknown>,
+	destination: Record<string, unknown>,
+	pasteMode: PasteMode
+): PasteChange[] {
+	if (pasteMode === "merge") return [];
+	const changes: PasteChange[] = [];
+	for (const [key, value] of Object.entries(source)) {
+		const existing = destination[key];
+		if (isEmptyPropertyValue(value) || isEmptyPropertyValue(existing)) continue;
+		const from = formatRawValue(existing).trim();
+		const to = formatRawValue(value).trim();
+		if (from !== to) changes.push({ key, from, to });
+	}
+	return changes;
+}
+
 export function mergeFrontmatter(
 	source: Record<string, unknown>,
 	destination: Record<string, unknown>,
@@ -397,15 +425,13 @@ export function formatRawValue(value: unknown): string {
 
 export interface DuplicateResolution {
 	key: string;
-	/** The value to keep; absent together with `remove` means delete the key. */
-	keep?: unknown;
-	/** Remove every occurrence of the key from the note. */
-	remove?: boolean;
+	/** The value to keep; every other occurrence of the key is dropped. */
+	keep: unknown;
 }
 
 /**
  * Rewrites raw markdown content so each duplicated property key keeps only
- * the chosen occurrence (or none at all). The edit is purely textual: every
+ * the chosen occurrence. The edit is purely textual: every
  * other line of the file, including comments and unrelated frontmatter, is
  * preserved byte for byte.
  */
@@ -421,13 +447,6 @@ export function applyDuplicateResolution(
 	for (const decision of decisions) {
 		const dup = parsed.duplicates.find((candidate) => candidate.key === decision.key);
 		if (!dup) continue;
-
-		if (decision.remove || decision.keep === undefined) {
-			for (const [start, end] of dup.spans) {
-				for (let ln = start; ln <= end; ln++) dropLines.add(ln);
-			}
-			continue;
-		}
 
 		let keepIndex = dup.values.findIndex((value) =>
 			JSON.stringify(value) === JSON.stringify(decision.keep)

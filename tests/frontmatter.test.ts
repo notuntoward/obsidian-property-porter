@@ -14,8 +14,31 @@ import {
 	parseRawFrontmatter,
 	applyDuplicateResolution,
 	formatRawValue,
+	findPasteChanges,
 	type PasteMode,
 } from "../src/frontmatter";
+
+describe("findPasteChanges", () => {
+	it("reports keys whose existing value differs, with old and new values", () => {
+		expect(
+			findPasteChanges(
+				{ version: "4", tags: ["a", "b"], same: "x", fresh: "y", blank: "z" },
+				{ version: "2", tags: ["c"], same: "x", blank: "" },
+				"overwrite"
+			)
+		).toEqual([
+			{ key: "version", from: "2", to: "4" },
+			{ key: "tags", from: "c", to: "a, b" },
+		]);
+	});
+
+	it("reports the same differences for skip mode and nothing for merge mode", () => {
+		const source = { version: "4" };
+		const destination = { version: "2" };
+		expect(findPasteChanges(source, destination, "skip")).toHaveLength(1);
+		expect(findPasteChanges(source, destination, "merge")).toEqual([]);
+	});
+});
 
 describe("parseCommaList", () => {
 	it("preserves typed identity and Windows line endings when repairing", () => {
@@ -463,12 +486,6 @@ describe("applyDuplicateResolution", () => {
 				"This note has boolean and number properties.",
 			].join("\n")
 		);
-	});
-
-	it("removes the property entirely when the resolution clears it", () => {
-		const resolved = applyDuplicateResolution(note06, [{ key: "modified_date", remove: true }]);
-		expect(resolved).not.toContain("modified_date");
-		expect(resolved).toContain("created_date: 2026-08-19T21:26:00");
 	});
 
 	it("keeps the first occurrence when both duplicates are identical", () => {

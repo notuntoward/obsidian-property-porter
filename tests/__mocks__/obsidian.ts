@@ -1,6 +1,7 @@
 import { parseRawFrontmatter } from '../../src/frontmatter';
 export { AbstractInputSuggest } from 'commons/testing';
 export { Platform } from 'commons/testing';
+export { setIcon } from 'commons/testing';
 
 // Minimal mock of the type-only `obsidian` package so that unit tests can
 // resolve `import { ... } from "obsidian"` without the real Obsidian runtime.
@@ -172,6 +173,43 @@ export class Notice {
 		return this;
 	}
 	hide(): void {}
+}
+
+export class MenuItem {
+	title = "";
+	checked = false;
+	onClickCallback: (() => void) | null = null;
+	setTitle(title: string): this {
+		this.title = title;
+		return this;
+	}
+	setIcon(_icon: string | null): this {
+		return this;
+	}
+	setChecked(checked: boolean): this {
+		this.checked = checked;
+		return this;
+	}
+	onClick(callback: () => void): this {
+		this.onClickCallback = callback;
+		return this;
+	}
+}
+
+// Records the last opened menu so tests can pick an item.
+export class Menu {
+	static last: Menu | null = null;
+	items: MenuItem[] = [];
+	addItem(build: (item: MenuItem) => void): this {
+		const item = new MenuItem();
+		build(item);
+		this.items.push(item);
+		return this;
+	}
+	showAtPosition(_position: { x: number; y: number }): this {
+		Menu.last = this;
+		return this;
+	}
 }
 
 // Decorates a real jsdom element with the subset of Obsidian's HTMLElement

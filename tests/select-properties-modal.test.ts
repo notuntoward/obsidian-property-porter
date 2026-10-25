@@ -8,7 +8,7 @@ import PropertyPorter, {
 	SelectPropertiesModal,
 	NOTICE_CLEARED_COPIED_PROPERTIES,
 } from "../src/main";
-import { PropertyNameSuggest } from "../src/select-properties-modal";
+import { PropertyNameSuggest, addedStatusText, propertyTypeLabel } from "../src/select-properties-modal";
 import { parseRawFrontmatter } from "../src/frontmatter";
 import type { VaultMetadataCatalog } from "commons/properties";
 
@@ -224,7 +224,7 @@ describe("SelectPropertiesModal", () => {
 		expect(modal.propertyStates.get("status")?.picker).toBeDefined();
 	});
 
-	it("uses Alt+X to exclude the focused card, show a notice, and focus the next card", () => {
+	it("binds no Alt+X, Delete or Backspace shortcut", () => {
 		const { app } = createApp();
 		const modal = new SelectPropertiesModal(
 			app as any,
@@ -233,56 +233,18 @@ describe("SelectPropertiesModal", () => {
 			vi.fn(),
 			vi.fn()
 		);
-		const excludeShortcut = getModalShortcut(modal, ["Alt"], "X");
-		const notice = vi.spyOn(obsidianMock, "Notice");
+		const register = vi.spyOn(modal.scope, "register");
 		document.body.appendChild(modal.contentEl);
-		const firstPicker = modal.propertyStates.get("status")!.picker!;
-		const nextPicker = modal.propertyStates.get("title")!.picker!;
+		modal.onOpen();
+		const registered = register.mock.calls.map(([modifiers, key]) => `${modifiers.join("+")}|${key}`);
+		expect(registered).not.toContain("Alt|X");
+		expect(registered.some((entry) => /Backspace|Delete/.test(entry))).toBe(false);
 
-		excludeShortcut({ target: firstPicker.inputEl });
-
-		expect(modal.propertyStates.has("status")).toBe(false);
-		expect(document.activeElement).toBe(modal.propertyStates.get("title")!.cardEl);
-		expect(notice).toHaveBeenCalledWith("Property Porter: Excluded status");
-
-		excludeShortcut({ target: nextPicker.inputEl });
-		expect(modal.propertyStates.has("title")).toBe(false);
-		expect(document.activeElement).toBe(modal.contentEl.querySelector(".pp-add-property-row"));
-		expect(notice).toHaveBeenCalledWith("Property Porter: Excluded title");
-	});
-
-	it("uses Mod+Backspace to clear only when an input is empty or a radio is focused", () => {
-		const { app } = createApp();
-		const modal = new SelectPropertiesModal(
-			app as any,
-			createMockCatalog(),
-			{ status: "draft", title: "A New Hope" },
-			vi.fn(),
-			vi.fn()
-		);
-		const clearShortcut = getModalShortcut(modal, ["Mod"], "Backspace");
-		const input = modal.propertyStates.get("status")!.picker!.inputEl;
-		input.value = "keep";
-		clearShortcut({ target: input });
-		expect(modal.propertyStates.get("status")!.selected).toEqual(["draft"]);
-
-		input.value = "";
-		clearShortcut({ target: input });
-		expect(modal.propertyStates.get("status")!.picker!.getValue()).toEqual([]);
-		expect(modal.propertyStates.get("title")!.picker!.getValue()).toEqual([]);
-
-		const conflictModal = new SelectPropertiesModal(
-			app as any,
-			createMockCatalog(),
-			{ status: ["draft", "published"] },
-			vi.fn(),
-			vi.fn()
-		);
-		const clearRadioShortcut = getModalShortcut(conflictModal, ["Mod"], "Backspace");
-		const radio = conflictModal.contentEl.querySelector<HTMLInputElement>(".pp-conflict-option input")!;
-		clearRadioShortcut({ target: radio });
-		expect(conflictModal.propertyStates.get("status")!.selected).toEqual([]);
-		expect(radio.checked).toBe(false);
+		const row = modal.propertyStates.get("status")!.cardEl!;
+		row.focus();
+		key(row, "x", { altKey: true });
+		expect(modal.propertyStates.has("status")).toBe(true);
+		expect(modal.propertyStates.get("status")!.skipped).toBe(false);
 	});
 
 	it("does not submit on plain Enter while a suggestion dropdown is open", () => {
@@ -388,7 +350,7 @@ describe("SelectPropertiesModal", () => {
 		card.focus();
 		expect(hint.textContent).toContain("Enter choose value");
 		expect(hint.textContent).not.toContain("Enter edit");
-		modal.contentEl.querySelector<HTMLButtonElement>(".pp-property-remove-btn")!.focus();
+		modal.contentEl.querySelector<HTMLInputElement>(".pp-property-skip-checkbox")!.focus();
 		expect(hint.textContent).toContain("Esc done");
 	});
 
@@ -428,11 +390,10 @@ describe("SelectPropertiesModal", () => {
 		);
 		document.body.appendChild(modal.contentEl);
 		modal.onOpen();
-		const hints = Array.from(modal.contentEl.querySelectorAll(".pp-property-enter-hint")).map(
-			(el) => el.textContent
-		);
-		expect(hints).toContain("Enter to choose");
-		expect(hints).toContain("Enter to edit");
+		expect(modal.contentEl.querySelector(".pp-property-enter-hint")).toBeNull();
+		const hint = modal.contentEl.querySelector(".pp-keyboard-hint")!;
+		modal.propertyStates.get("status")!.cardEl!.focus();
+		expect(hint.textContent).toContain("Enter choose value");
 	});
 
 	it("renders non-conflict cards compact and keeps conflict cards stacked", () => {
@@ -569,7 +530,7 @@ describe("SelectPropertiesModal", () => {
 
 			const expected = [
 				modal.propertyStates.get("status")!.cardEl,
-				modal.contentEl.querySelector(".pp-clear-all-button"),
+				modal.contentEl.querySelector(".pp-skip-all-button"),
 				modal.contentEl.querySelector(".pp-finish-button"),
 				modal.contentEl.querySelector(".pp-add-property-row"),
 				modal.propertyStates.get("tags")!.cardEl,
@@ -645,7 +606,7 @@ describe("SelectPropertiesModal", () => {
 		pressEscape(modal);
 		expect(document.activeElement).toBe(state.cardEl);
 		key(state.cardEl!, "Tab");
-		expect(document.activeElement).toBe(modal.contentEl.querySelector(".pp-clear-all-button"));
+		expect(document.activeElement).toBe(modal.contentEl.querySelector(".pp-skip-all-button"));
 		expect(modal.contentEl.querySelector(".pp-add-property-row .pp-search-container")?.hasAttribute("hidden")).toBe(true);
 	});
 
@@ -767,8 +728,9 @@ describe("SelectPropertiesModal", () => {
 		const tagsCard = Array.from(cards).find((c) => c.querySelector(".pp-property-name")?.textContent === "tags");
 		const statusCard = Array.from(cards).find((c) => c.querySelector(".pp-property-name")?.textContent === "status");
 
-		expect(tagsCard?.querySelector(".pp-property-badge")?.textContent).toBe("Tags");
-		expect(statusCard?.querySelector(".pp-property-badge")?.textContent).toBe("Scalar");
+		expect(tagsCard?.querySelector(".pp-property-type")?.getAttribute("aria-label")).toBe("Tags");
+		expect(statusCard?.querySelector(".pp-property-type")?.getAttribute("aria-label")).toBe("Text");
+		expect(tagsCard?.querySelector(".pp-property-type")?.getAttribute("data-icon")).toBe("tags");
 	});
 
 	it("treats a clipboard-only scalar candidate as known to the value picker", () => {
@@ -824,7 +786,7 @@ describe("SelectPropertiesModal", () => {
 		const statusCard = modal.contentEl.querySelector(".pp-property-card")!;
 		expect(statusCard).not.toBeNull();
 		expect(statusCard.querySelector(".pp-property-warning")?.textContent).toBe(
-			"Choose which status value to keep."
+			"Conflict: status has different values. Pick one or skip it."
 		);
 
 		const group = statusCard.querySelector('[role="radiogroup"]')!;
@@ -841,12 +803,15 @@ describe("SelectPropertiesModal", () => {
 		expect(statusCard.querySelector(".pp-option-pill")).toBeNull();
 		expect(statusCard.querySelector(".pp-property-picker-host")).toBeNull();
 
-		expect(modal.contentEl.querySelector(".pp-conflict-section h3")?.textContent).toBe(
-			"Resolve Property Conflicts"
+		expect(modal.contentEl.querySelector(".pp-conflict-section .pp-section-title")?.textContent).toBe(
+			"Conflicts"
 		);
-		expect(modal.contentEl.querySelector(".pp-properties-section h3")?.textContent).toBe("Other properties");
+		expect(modal.contentEl.querySelector(".pp-conflict-info")?.textContent).toBe(
+			"Each property below has different values. Pick one, or skip it."
+		);
+		expect(modal.contentEl.querySelector(".pp-properties-section .pp-section-title")?.textContent).toBe("Other properties");
 		expect(modal.contentEl.querySelector(".pp-properties-section .pp-properties-info")?.textContent).toBe(
-			"These properties have no conflicts and need no action. Edit or exclude them only if you want."
+			"These properties have no conflicts and need no action. Edit or skip them only if you want."
 		);
 		const addPropertyRow = modal.contentEl.querySelector(".pp-properties-section .pp-add-property-row");
 		expect(addPropertyRow?.querySelector(".pp-add-property-label")?.textContent).toBe("+ Add property");
@@ -893,7 +858,7 @@ describe("SelectPropertiesModal", () => {
 		const card = modal.contentEl.querySelector(".pp-property-card")!;
 		const options = card.querySelectorAll<HTMLLabelElement>(".pp-conflict-option");
 		const otherRadio = options[2].querySelector<HTMLInputElement>("input")!;
-		expect(card.querySelector(".pp-property-warning")?.textContent).toBe("Choose which status value to keep.");
+		expect(card.querySelector(".pp-property-warning")?.textContent).toBe("Conflict: status has different values. Pick one or skip it.");
 		expect(card.querySelector(".pp-property-warning")?.textContent).not.toContain("Note-A");
 		expect(card.querySelector(".pp-property-warning")?.textContent).not.toContain("Note-B");
 		expect(options[0].querySelector(".pp-conflict-sources")?.textContent).toBe("Note-A");
@@ -1156,7 +1121,7 @@ describe("SelectPropertiesModal", () => {
 		modal.onOpen();
 
 		const castCard = modal.contentEl.querySelector(".pp-property-card")!;
-		expect(castCard.querySelector(".pp-property-badge")?.textContent).toBe("List");
+		expect(castCard.querySelector(".pp-property-type")?.getAttribute("aria-label")).toBe("List");
 		expect(castCard.querySelector(".pp-list-actions")).toBeNull();
 		expect(castCard.querySelector(".pp-options-container")).toBeNull();
 		const picker = modal.propertyStates.get("cast")?.picker!;
@@ -1190,7 +1155,7 @@ describe("SelectPropertiesModal", () => {
 		expect(modal.propertyStates.get("cast")?.picker?.rootEl.dataset.valueStyle).toBe("plain");
 	});
 
-	it("does not submit unresolved conflicts", () => {
+	it("lets Continue proceed with an unresolved conflict, leaving that property out", () => {
 		const { app } = createApp();
 		const onSubmit = vi.fn();
 		const modal = new SelectPropertiesModal(
@@ -1202,13 +1167,11 @@ describe("SelectPropertiesModal", () => {
 		);
 		modal.onOpen();
 
-		modal.clearAll();
+		modal.contentEl.querySelectorAll<HTMLInputElement>(".pp-conflict-option input")[2]!.click();
 		const acceptButton = modal.contentEl.querySelector<HTMLButtonElement>(".pp-finish-button")!;
-		expect(acceptButton.disabled).toBe(true);
-		modal.submit();
-		expect(onSubmit).not.toHaveBeenCalled();
-
-		expect(onSubmit).not.toHaveBeenCalled();
+		expect(acceptButton.disabled).toBe(false);
+		acceptButton.click();
+		expect(onSubmit).toHaveBeenCalledWith({});
 	});
 
 	it("keeps accept and keyboard guidance visible while the property list scrolls", () => {
@@ -1284,7 +1247,7 @@ describe("SelectPropertiesModal", () => {
 		expect(modal.contentEl.querySelectorAll(".pp-property-card").length).toBe(1);
 		const card = modal.contentEl.querySelector(".pp-property-card")!;
 		expect(card.querySelector(".pp-property-name")?.textContent).toBe("year");
-		expect(card.querySelector(".pp-property-badge")?.textContent).toBe("Scalar");
+		expect(card.querySelector(".pp-property-type")?.getAttribute("aria-label")).toBe("Number");
 	});
 
 	it("adds a suggested property through the shared ValuePicker and focuses its value input", () => {
@@ -1346,32 +1309,213 @@ describe("SelectPropertiesModal", () => {
 		expect(state?.picker?.inputEl).toBe(document.activeElement);
 	});
 
-	it("allows removing a property card with the remove button", () => {
-		const { app } = createApp();
-		const catalog = createMockCatalog();
-		const initial = {
-			status: "draft",
-			title: "A New Hope",
-		};
-		const onSubmit = vi.fn();
-		const modal = new SelectPropertiesModal(app as any, catalog, initial, onSubmit, vi.fn());
-		modal.onOpen();
+	describe("skipping properties", () => {
+		function openModal(initial: Record<string, unknown>, onSubmit = vi.fn(), onCancel = vi.fn()) {
+			const { app } = createApp();
+			const modal = new SelectPropertiesModal(app as any, createMockCatalog(), initial, onSubmit, onCancel);
+			document.body.appendChild(modal.contentEl);
+			modal.onOpen();
+			const card = (name: string) => modal.propertyStates.get(name)!.cardEl!;
+			const skipBox = (name: string) =>
+				card(name).querySelector<HTMLInputElement>(".pp-property-skip-checkbox")!;
+			const button = (cls: string) => modal.contentEl.querySelector<HTMLButtonElement>(cls)!;
+			const status = () => modal.contentEl.querySelector(".pp-multi-select-hint")!.textContent;
+			const hint = () => modal.contentEl.querySelector(".pp-keyboard-hint")!.textContent;
+			return { modal, card, skipBox, button, status, hint, onSubmit, onCancel };
+		}
 
-		expect(modal.contentEl.querySelectorAll(".pp-property-card").length).toBe(2);
+		it("replaces the X button with a Skip checkbox on non-conflict rows", () => {
+			const { card, skipBox } = openModal({ status: "draft" });
+			expect(card("status").querySelector(".pp-property-remove-btn")).toBeNull();
+			expect(skipBox("status").type).toBe("checkbox");
+			expect(skipBox("status").getAttribute("aria-label")).toBe("Skip property");
+			expect(skipBox("status").title).toBe("Skip property");
+		});
 
-		const cards = Array.from(modal.contentEl.querySelectorAll(".pp-property-card"));
-		const titleCard = cards.find((c) => c.querySelector(".pp-property-name")?.textContent === "title")!;
-		const excludeButton = titleCard.querySelector<HTMLButtonElement>(".pp-property-remove-btn")!;
-		expect(excludeButton.textContent).toBe("✕");
-		expect(excludeButton.title).toBe("Exclude this property from the selection");
-		expect(excludeButton.getAttribute("aria-label")).toBe("Exclude title");
-		excludeButton.click();
+		it("Space on the focused row toggles skipped and added", () => {
+			const { modal, card, skipBox } = openModal({ status: "draft", title: "A New Hope" });
+			card("status").focus();
+			const event = key(card("status"), " ");
+			expect(event.defaultPrevented).toBe(true);
+			expect(modal.propertyStates.get("status")!.skipped).toBe(true);
+			expect(card("status").classList.contains("is-skipped")).toBe(true);
+			expect(skipBox("status").checked).toBe(true);
+			expect(skipBox("status").title).toBe("Add back");
+			expect(card("status").querySelector(".pp-property-skipped-badge")).toBeNull();
+			expect(document.activeElement).toBe(card("status"));
 
-		expect(modal.contentEl.querySelectorAll(".pp-property-card").length).toBe(1);
+			key(card("status"), " ");
+			expect(modal.propertyStates.get("status")!.skipped).toBe(false);
+			expect(card("status").classList.contains("is-skipped")).toBe(false);
+			expect(skipBox("status").title).toBe("Skip property");
+		});
 
-		modal.contentEl.querySelector<HTMLButtonElement>(".pp-finish-button")!.click();
-		expect(onSubmit).toHaveBeenCalledWith({
-			status: "draft",
+		it("Space inside a value input types a space instead of toggling", () => {
+			const { modal } = openModal({ status: "draft" });
+			const input = modal.propertyStates.get("status")!.picker!.inputEl;
+			input.focus();
+			const event = key(input, " ");
+			expect(event.defaultPrevented).toBe(false);
+			expect(modal.propertyStates.get("status")!.skipped).toBe(false);
+		});
+
+		it("a mouse click toggles the state and leaves focus on the row", () => {
+			const { modal, card, skipBox } = openModal({ status: "draft" });
+			skipBox("status").focus();
+			skipBox("status").click();
+			expect(modal.propertyStates.get("status")!.skipped).toBe(true);
+			expect(document.activeElement).toBe(card("status"));
+			skipBox("status").click();
+			expect(modal.propertyStates.get("status")!.skipped).toBe(false);
+			expect(document.activeElement).toBe(card("status"));
+		});
+
+		it("keeps values on a skipped row and restores them when added back", () => {
+			const { modal, card, onSubmit, button } = openModal({ cast: ["Mark Hamill", "Carrie Fisher"], title: "x" });
+			card("cast").focus();
+			key(card("cast"), " ");
+			expect(modal.propertyStates.get("cast")!.picker!.getValue()).toEqual(["Mark Hamill", "Carrie Fisher"]);
+			key(card("cast"), " ");
+			button(".pp-finish-button").click();
+			expect(onSubmit).toHaveBeenCalledWith({ cast: ["Mark Hamill", "Carrie Fisher"], title: "x" });
+		});
+
+		it("leaves skipped properties out only when Continue is pressed", () => {
+			const { card, onSubmit, button } = openModal({ status: "draft", title: "x" });
+			card("title").focus();
+			key(card("title"), " ");
+			expect(onSubmit).not.toHaveBeenCalled();
+			button(".pp-finish-button").click();
+			expect(onSubmit).toHaveBeenCalledWith({ status: "draft" });
+		});
+
+		it("Skip all and Add all toggle every row without clearing values and set disabled states", () => {
+			const { modal, button } = openModal({ status: "draft", title: "x" });
+			expect(button(".pp-skip-all-button").disabled).toBe(false);
+			expect(button(".pp-add-all-button").disabled).toBe(true);
+
+			button(".pp-skip-all-button").click();
+			expect([...modal.propertyStates.values()].every((state) => state.skipped)).toBe(true);
+			expect(modal.propertyStates.get("status")!.picker!.getValue()).toEqual(["draft"]);
+			expect(button(".pp-skip-all-button").disabled).toBe(true);
+			expect(button(".pp-add-all-button").disabled).toBe(false);
+
+			button(".pp-add-all-button").click();
+			expect([...modal.propertyStates.values()].some((state) => state.skipped)).toBe(false);
+			expect(button(".pp-skip-all-button").disabled).toBe(false);
+			expect(button(".pp-add-all-button").disabled).toBe(true);
+		});
+
+		it("updates N, the Continue label and the status line live", () => {
+			const { card, button, status } = openModal({ status: "draft", title: "x", year: "1977" });
+			expect(button(".pp-finish-button").textContent).toBe("Continue (3)");
+			expect(status()).toBe("3 properties will be added to the note.");
+
+			card("year").focus();
+			key(card("year"), " ");
+			expect(button(".pp-finish-button").textContent).toBe("Continue (2)");
+			expect(status()).toBe("2 properties will be added. 1 skipped.");
+
+			card("title").focus();
+			key(card("title"), " ");
+			expect(status()).toBe("1 property will be added. 2 skipped.");
+			expect(button(".pp-finish-button").title).toBe("");
+
+			card("status").focus();
+			key(card("status"), " ");
+			expect(button(".pp-finish-button").textContent).toBe("Continue (0)");
+			expect(status()).toBe("No properties will be added. Continue will clear the copied properties.");
+			expect(button(".pp-finish-button").title).toBe("Close and clear copied properties");
+		});
+
+		it("labels property types with Obsidian's names", () => {
+			expect(propertyTypeLabel("tags", true)).toBe("Tags");
+			expect(propertyTypeLabel("x", true)).toBe("List");
+			expect(propertyTypeLabel("x", false, "number")).toBe("Number");
+			expect(propertyTypeLabel("x", false, "checkbox")).toBe("Checkbox");
+			expect(propertyTypeLabel("x", false, "date")).toBe("Date");
+			expect(propertyTypeLabel("x", false, "datetime")).toBe("Date & time");
+			expect(propertyTypeLabel("x", false, "text")).toBe("Text");
+			expect(propertyTypeLabel("x", false)).toBe("Text");
+		});
+
+		it("formats the single-property status without skips", () => {
+			expect(addedStatusText(1, 0)).toBe("1 property will be added to the note.");
+			expect(addedStatusText(0, 0)).toBe(
+				"No properties will be added. Continue will clear the copied properties."
+			);
+		});
+
+		it("Continue at N = 0 submits an empty selection and closes without cancelling", () => {
+			const { button, onSubmit, onCancel } = openModal({ status: "draft" });
+			button(".pp-skip-all-button").click();
+			button(".pp-finish-button").click();
+			expect(onSubmit).toHaveBeenCalledWith({});
+			expect(onCancel).not.toHaveBeenCalled();
+		});
+
+		it("Ctrl/Cmd+Enter continues", () => {
+			const { modal, onSubmit } = openModal({ status: "draft", title: "x" });
+			modal.propertyStates.get("title")!.skipped = true;
+			const handler = (modal.scope as any).handlers.find(
+				(candidate: any) => candidate.key === "Enter" && candidate.modifiers?.[0] === "Mod"
+			);
+			handler.fn(new KeyboardEvent("keydown", { key: "Enter" }));
+			expect(onSubmit).toHaveBeenCalledWith({ status: "draft" });
+		});
+
+		it("Esc cancels without submitting or changing skip states", () => {
+			const { modal, card, onSubmit, onCancel } = openModal({ status: "draft", title: "x" });
+			card("title").focus();
+			key(card("title"), " ");
+			pressEscape(modal);
+			expect(onCancel).toHaveBeenCalledTimes(1);
+			expect(onSubmit).not.toHaveBeenCalled();
+			expect(modal.propertyStates.get("title")!.skipped).toBe(true);
+			expect(modal.propertyStates.get("status")!.skipped).toBe(false);
+		});
+
+		it("words the footer hint by focus: Space skip, Space add back, none inside inputs", () => {
+			const { modal, card, hint } = openModal({ status: "draft", cast: ["Mark Hamill"] });
+			card("status").focus();
+			expect(hint()).toBe("Enter edit Tab next Space skip Ctrl/Cmd+Enter continue Esc cancel");
+			key(card("status"), " ");
+			expect(hint()).toContain("Space add back");
+			expect(hint()).not.toContain("Space skip");
+			modal.propertyStates.get("cast")!.picker!.inputEl.focus();
+			expect(hint()).not.toContain("Space");
+			expect(hint()).toContain("Ctrl/Cmd+Enter continue");
+		});
+
+		it("uses 'Enter choose value' on conflict rows", () => {
+			const { card, hint } = openModal({ status: ["draft", "published"] });
+			card("status").focus();
+			expect(hint()).toContain("Enter choose value");
+		});
+
+		it("conflict rows get the same bare Skip checkbox; a skipped conflict does not block Continue", () => {
+			const { modal, card, skipBox, hint, button, onSubmit } = openModal({
+				status: ["draft", "published"],
+				title: "x",
+			});
+			expect(card("status").querySelector(".pp-property-remove-btn")).toBeNull();
+			expect(card("status").querySelector(".pp-property-skip-text")).toBeNull();
+			expect(skipBox("status").getAttribute("aria-label")).toBe("Skip property");
+			card("status").focus();
+			expect(hint()).toContain("Space skip");
+			key(card("status"), " ");
+			expect(modal.propertyStates.get("status")!.skipped).toBe(true);
+			expect(hint()).toContain("Space add back");
+			expect(button(".pp-finish-button").disabled).toBe(false);
+			button(".pp-finish-button").click();
+			expect(onSubmit).toHaveBeenCalledWith({ title: "x" });
+		});
+
+		it("Skip all also skips conflict rows", () => {
+			const { modal, button } = openModal({ status: ["draft", "published"] });
+			button(".pp-skip-all-button").click();
+			expect(modal.propertyStates.get("status")!.skipped).toBe(true);
+			expect(button(".pp-skip-all-button").disabled).toBe(true);
 		});
 	});
 
@@ -1545,7 +1689,7 @@ describe("PropertyPorter.selectPropertiesToPaste", () => {
 				(c: any) => c.querySelector(".pp-property-name")?.textContent === "status"
 			) as HTMLElement;
 			expect(statusCard.querySelector(".pp-property-warning")?.textContent).toBe(
-				"Choose which status value to keep."
+				"Conflict: status has different values. Pick one or skip it."
 			);
 
 			const radios = statusCard.querySelectorAll<HTMLInputElement>('.pp-conflict-option input[type="radio"]');
@@ -1621,11 +1765,11 @@ describe("PropertyPorter.selectPropertiesToPaste", () => {
 		const first = plugin.openPropertySelectionModal({ tags: ["a"] });
 		const second = plugin.openPropertySelectionModal({ tags: ["b"] });
 
-		await expect(first).resolves.toEqual({ properties: {}, cancelled: true });
+		await expect(first).resolves.toEqual({ properties: {}, skipped: {}, propertyTypes: {}, cancelled: true });
 		const open = (plugin as any).selectionModal;
 		expect(open).not.toBeNull();
 		open.close();
-		await expect(second).resolves.toEqual({ properties: {}, cancelled: true });
+		await expect(second).resolves.toEqual({ properties: {}, skipped: {}, propertyTypes: {}, cancelled: true });
 		expect((plugin as any).selectionModal).toBeNull();
 	});
 
@@ -1713,12 +1857,120 @@ describe("PropertyPorter.selectPropertiesToPaste", () => {
 
 		obsidianMock.Modal.prototype.open = function (this: any) {
 			this.onOpen();
-			this.clearAll();
+			this.skipAll();
 			this.contentEl.querySelector(".pp-finish-button").click();
 		};
 
 		await plugin.selectPropertiesToPaste();
 		expect(plugin.clipboard).toEqual({});
 		expect(spy).toHaveBeenCalledWith(NOTICE_CLEARED_COPIED_PROPERTIES);
+	});
+});
+
+describe("SelectPropertiesModal Ctrl+N / Ctrl+P", () => {
+	function ctrlHandler(modal: SelectPropertiesModal, name: string) {
+		const handler = (modal.scope as any).handlers.find(
+			(candidate: any) => candidate.key === name && JSON.stringify(candidate.modifiers) === JSON.stringify(["Ctrl"])
+		);
+		expect(handler).toBeDefined();
+		return handler.fn as (event: KeyboardEvent) => boolean;
+	}
+
+	it("moves between rows like ArrowDown/ArrowUp and swallows the key", () => {
+		const { app } = createApp();
+		const modal = new SelectPropertiesModal(app as any, createMockCatalog(), { status: "draft", title: "A New Hope" }, vi.fn(), vi.fn());
+		document.body.appendChild(modal.contentEl);
+		modal.onOpen();
+		const first = modal.propertyStates.get("status")!.cardEl!;
+		const second = modal.propertyStates.get("title")!.cardEl!;
+		first.focus();
+
+		expect(ctrlHandler(modal, "n")(new KeyboardEvent("keydown", { key: "n", ctrlKey: true }))).toBe(false);
+		expect(document.activeElement).toBe(second);
+		ctrlHandler(modal, "p")(new KeyboardEvent("keydown", { key: "p", ctrlKey: true }));
+		expect(document.activeElement).toBe(first);
+		key(first, "ArrowDown");
+		expect(document.activeElement).toBe(second);
+	});
+
+	it("steps through conflict choices and leaves text inputs alone", () => {
+		const { app } = createApp();
+		const modal = new SelectPropertiesModal(app as any, createMockCatalog(), { status: ["draft", "published"], title: "A" }, vi.fn(), vi.fn());
+		document.body.appendChild(modal.contentEl);
+		modal.onOpen();
+		const radios = modal.contentEl.querySelectorAll<HTMLInputElement>(".pp-conflict-option input");
+		radios[0]!.focus();
+		ctrlHandler(modal, "n")(new KeyboardEvent("keydown", { key: "n", ctrlKey: true }));
+		expect(document.activeElement).toBe(radios[1]);
+		expect(modal.propertyStates.get("status")?.selected).toEqual(["published"]);
+		ctrlHandler(modal, "p")(new KeyboardEvent("keydown", { key: "p", ctrlKey: true }));
+		expect(radios[0]!.checked).toBe(true);
+
+		const input = modal.propertyStates.get("title")!.picker!.inputEl;
+		input.focus();
+		ctrlHandler(modal, "n")(new KeyboardEvent("keydown", { key: "n", ctrlKey: true }));
+		expect(document.activeElement).toBe(input);
+	});
+});
+
+describe("SelectPropertiesModal property type for new properties", () => {
+	function openWithNewProperty(name = "brandnew") {
+		const { app } = createApp();
+		const modal = new SelectPropertiesModal(app as any, createMockCatalog(), { status: "draft" }, vi.fn(), vi.fn());
+		document.body.appendChild(modal.contentEl);
+		modal.onOpen();
+		const state = modal.addProperty(name)!;
+		return { modal, state };
+	}
+
+	function choose(label: string): void {
+		const item = obsidianMock.Menu.last!.items.find((candidate) => candidate.title === label);
+		expect(item).toBeDefined();
+		item!.onClickCallback?.();
+	}
+
+	it("offers Obsidian's type choices on an unknown property only", () => {
+		const { modal, state } = openWithNewProperty();
+		const button = state.cardEl!.querySelector<HTMLButtonElement>("button.pp-property-type")!;
+		button.click();
+		expect(obsidianMock.Menu.last!.items.map((item) => item.title)).toEqual([
+			"Automatic", "Text", "List", "Number", "Checkbox", "Date", "Date & time",
+		]);
+		expect(modal.propertyStates.get("status")!.cardEl!.querySelector("button.pp-property-type")).toBeNull();
+	});
+
+	it("switches the editor to a list and reports the chosen widget", () => {
+		const { modal, state } = openWithNewProperty();
+		state.picker!.setValue(["a"]);
+		state.cardEl!.querySelector<HTMLButtonElement>("button.pp-property-type")!.click();
+		choose("List");
+		const next = modal.propertyStates.get("brandnew")!;
+		expect(next.isList).toBe(true);
+		expect(next.widget).toBe("multitext");
+		expect(modal.getChosenTypes()).toEqual({ brandnew: "multitext" });
+		choose("Automatic");
+		expect(modal.getChosenTypes()).toEqual({});
+	});
+
+	it("opens the type menu with T on the focused row", () => {
+		const { state } = openWithNewProperty();
+		obsidianMock.Menu.last = null;
+		state.cardEl!.focus();
+		key(state.cardEl!, "t");
+		expect(obsidianMock.Menu.last).not.toBeNull();
+	});
+});
+
+describe("SelectPropertiesModal conflict notes", () => {
+	it("names the notes with the conflict on the card", () => {
+		const { app } = createApp();
+		const modal = new SelectPropertiesModal(
+			app as any, createMockCatalog(), { status: ["a", "b"] }, vi.fn(), vi.fn(),
+			{ status: { conflictNotes: ["Alpha", "Beta"], conflictPaths: ["Alpha.md", "Beta.md"] } }
+		);
+		modal.onOpen();
+		expect(modal.contentEl.querySelector(".pp-conflict-notes")?.textContent).toBe(
+			"Notes with this conflict: Alpha, Beta"
+		);
 	});
 });

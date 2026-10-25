@@ -248,6 +248,27 @@ describe("canonical workspace model", () => {
 	});
 
 	describe("regression: getActiveTabGroupFiles", () => {
+		it("includes tabs that are not loaded yet after startup", () => {
+			const active = new obsidianMock.TFile("active.md");
+			const unloaded = new obsidianMock.TFile("unloaded.md");
+			const group = { id: "groupA", containerEl: {} };
+			const activeLeaf = leaf("active", active, group, globalThis.window, group);
+			const deferredLeaf = {
+				...leaf("deferred", null, group, globalThis.window, group),
+				view: {},
+				getViewState: () => ({ type: "markdown", state: { file: "unloaded.md" } }),
+			};
+
+			const { plugin, app } = createPlugin({ leaves: [activeLeaf, deferredLeaf], activeLeaf });
+			app.vault.getAbstractFileByPath = (path: string) =>
+				path === "unloaded.md" ? unloaded : null;
+
+			expect(plugin.getActiveTabGroupFiles().map((f: any) => f.path).sort()).toEqual([
+				"active.md",
+				"unloaded.md",
+			]);
+		});
+
 		it("still returns files for the active tab group in a simple main window", () => {
 			const active = new obsidianMock.TFile("active.md");
 			const f1 = new obsidianMock.TFile("a.md");

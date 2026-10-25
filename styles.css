@@ -1,17 +1,400 @@
-.pp-multi-select-modal {
-	display: flex;
-	flex-direction: column;
-	gap: 4px;
+/* Property Porter. Everything is scoped to the pp- prefix and uses Obsidian's
+   CSS variables, so it follows the active theme in light and dark mode. */
+
+/* Modal title: small, accent-colored, like the command palettes. */
+.modal.pp-modal .modal-title {
+	color: var(--text-accent);
+	font-size: var(--font-ui-medium);
+	font-weight: var(--font-medium);
 }
 
-.pp-tag-picker {
+.pp-visually-hidden {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	overflow: hidden;
+	clip-path: inset(50%);
+	white-space: nowrap;
+}
+
+/* Confirmation dialogs */
+.pp-modal-buttons {
+	display: flex;
+	gap: var(--size-4-2);
+	justify-content: flex-end;
+}
+
+.pp-paste-changes {
+	max-height: 50vh;
+	margin-bottom: var(--size-4-3);
+	overflow-y: auto;
+}
+
+.pp-paste-changes-note {
+	margin-top: var(--size-4-2);
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	font-weight: var(--font-semibold);
+}
+
+.pp-paste-changes ul {
+	margin: var(--size-4-1) 0;
+	padding-inline-start: var(--size-4-5);
+	font-size: var(--font-ui-small);
+}
+
+/* Property modal frame: header and footer stay put, the body scrolls. */
+.pp-select-properties-modal {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-2);
+	max-height: 80vh;
+	min-height: 0;
+	overflow: hidden;
+}
+
+.pp-clipboard-mode {
+	display: inline-block;
+	margin-inline-start: var(--size-4-2);
+	padding: 1px var(--size-2-3);
+	border-radius: var(--radius-s);
+	background: var(--background-modifier-hover);
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	font-weight: var(--font-normal);
+	vertical-align: middle;
+}
+
+.pp-select-properties-body {
+	display: flex;
+	flex: 1 1 auto;
+	flex-direction: column;
+	gap: var(--size-4-2);
+	min-height: 0;
+	overflow-y: auto;
+	/* Room for the focus ring, which the scroll area would otherwise clip. */
+	padding: var(--size-2-2);
+}
+
+.pp-select-properties-body > * {
+	flex-shrink: 0;
+}
+
+/* Sections are separated by a thin rule and spacing, not boxes. */
+.pp-conflict-section + .pp-properties-section {
+	margin-top: var(--size-4-1);
+	padding-top: var(--size-4-3);
+	border-top: 1px solid var(--background-modifier-border);
+}
+
+.pp-section-title {
+	margin: 0;
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	font-weight: var(--font-semibold);
+}
+
+.pp-conflict-info,
+.pp-properties-info {
+	margin: 0 0 var(--size-4-2);
+	color: var(--text-faint);
+	font-size: var(--font-ui-smaller);
+}
+
+.pp-properties-list {
+	display: flex;
+	flex-direction: column;
+	flex-shrink: 0;
+	gap: var(--size-2-1);
+}
+
+/* Rows: flat, as in the Properties panel. */
+.pp-property-card {
+	padding: var(--size-4-1) var(--size-4-2);
+	border-radius: var(--radius-s);
+}
+
+.pp-property-card:hover {
+	background: var(--background-modifier-hover);
+}
+
+.pp-property-header {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-2);
+}
+
+.pp-property-skip {
+	display: flex;
+	flex: 0 0 auto;
+	align-items: center;
+	cursor: pointer;
+}
+
+.pp-property-title-group {
+	display: flex;
+	min-width: 0;
+	align-items: center;
+	gap: var(--size-4-1);
+}
+
+.pp-property-type,
+.pp-property-warning {
+	display: inline-flex;
+	flex: 0 0 auto;
+	align-items: center;
+}
+
+.pp-property-type {
+	color: var(--text-faint);
+}
+
+.pp-property-warning {
+	color: var(--text-warning);
+}
+
+.pp-property-type .svg-icon,
+.pp-property-warning .svg-icon {
+	width: var(--icon-s);
+	height: var(--icon-s);
+	stroke-width: var(--icon-s-stroke-width);
+}
+
+.pp-property-name {
+	min-width: 0;
+	overflow-wrap: anywhere;
+	color: var(--text-normal);
+}
+
+.pp-property-notice,
+.pp-conflict-notes {
+	margin: var(--size-2-1) 0 var(--size-4-1);
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+}
+
+/* The type icon of a new property opens Obsidian's type menu. */
+button.pp-property-type.is-editable {
+	height: auto;
+	padding: var(--size-2-1);
+	border: 0;
+	background: transparent;
+	box-shadow: none;
+	cursor: pointer;
+}
+
+button.pp-property-type.is-editable:hover {
+	background: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+
+/* Tabs of the notes behind the focused conflict, modelled on Next Tab Group's
+ * dedupe markers: inset outline plus a tint, with the active tab's curved
+ * shoulders hidden so the outline stays clean. */
+body {
+	--pp-conflict-tab-color: var(--interactive-accent);
+	--pp-conflict-tab-tint: 18%;
+}
+
+body.theme-dark {
+	--pp-conflict-tab-color: var(--text-accent);
+	--pp-conflict-tab-tint: 35%;
+}
+
+.workspace-tab-header.pp-conflict-tab {
+	outline: 3px solid var(--pp-conflict-tab-color);
+	outline-offset: -3px;
+	background-color: color-mix(in srgb, var(--pp-conflict-tab-color) var(--pp-conflict-tab-tint), var(--background-secondary, transparent));
+	border-radius: var(--radius-s);
+	position: relative;
+	z-index: 2;
+}
+
+.workspace-tab-header.is-active.pp-conflict-tab::before,
+.workspace-tab-header.is-active.pp-conflict-tab::after {
+	display: none;
+}
+
+/* Conflict choices: radio, value, then the source notes in muted text. */
+.pp-conflict-options {
+	display: flex;
+	flex-direction: column;
+	margin-top: var(--size-2-1);
+	padding-inline-start: var(--size-4-6);
+}
+
+.pp-conflict-option {
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	gap: var(--size-4-2);
+	padding: var(--size-2-1) var(--size-4-2);
+	border-radius: var(--radius-s);
+	cursor: pointer;
+}
+
+.pp-conflict-option:hover,
+.pp-conflict-option:focus-within {
+	background: var(--background-modifier-hover);
+}
+
+.pp-conflict-option:has(:focus-visible) {
+	box-shadow: 0 0 0 var(--size-2-1) var(--background-modifier-border-focus);
+}
+
+.pp-conflict-value {
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+
+.pp-conflict-sources {
+	flex: 0 1 50%;
+	text-align: end;
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+}
+
+.pp-property-picker-host {
+	min-width: 0;
 	width: 100%;
 }
 
-.pp-modal-buttons {
-	display: flex;
-	gap: 8px;
-	justify-content: flex-end;
+.pp-property-picker-hint {
+	margin-top: var(--size-4-1);
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+}
+
+/* Compact rows: skip box, icon and name, then the value on one line.
+   Conflict rows stay stacked because they hold several options. */
+.pp-property-card.is-compact {
+	display: grid;
+	grid-template-columns: auto minmax(7rem, 11rem) minmax(0, 1fr);
+	align-items: center;
+	column-gap: var(--size-4-2);
+}
+
+.pp-property-card.is-compact > .pp-property-header {
+	display: contents;
+}
+
+.pp-property-card.is-compact .pp-property-notice,
+.pp-property-card.is-compact .pp-conflict-notes {
+	grid-column: 2 / -1;
+	margin: var(--size-2-1) 0 0;
+}
+
+.pp-property-card.is-compact .pp-property-picker-host {
+	grid-column: 3;
+	grid-row: 1;
+}
+
+/* Values: borderless until hover or focus, tags as Obsidian's small pills.
+   The picker's own styles come from commons, so only override them here. */
+.pp-select-properties-modal .commons-property-picker {
+	min-width: 0;
+	padding: 0 var(--size-2-2);
+	border-color: transparent;
+	background: transparent;
+}
+
+.pp-select-properties-modal .commons-property-picker:hover {
+	border-color: var(--background-modifier-border-hover);
+}
+
+.pp-select-properties-modal .commons-property-picker:focus-within {
+	border-color: var(--background-modifier-border-focus);
+	background: var(--background-primary);
+}
+
+.pp-select-properties-modal .commons-property-picker-chip:not(.is-plain) {
+	padding: var(--tag-padding-y) var(--tag-padding-x);
+	border-radius: var(--tag-radius);
+	font-size: var(--tag-size);
+}
+
+.pp-property-card.is-compact .commons-property-picker-input {
+	min-height: 0;
+}
+
+/* Skipped: muted, struck-through name. No badge, no dimming of the whole row. */
+.pp-property-card.is-skipped .pp-property-name {
+	color: var(--text-muted);
+	text-decoration: line-through;
+}
+
+.pp-property-card.is-skipped .pp-property-picker-host,
+.pp-property-card.is-skipped .pp-conflict-options,
+.pp-property-card.is-skipped .commons-property-picker-input {
+	color: var(--text-faint);
+}
+
+.pp-property-card.is-skipped .commons-property-picker-chip {
+	color: var(--text-faint);
+	background: transparent;
+}
+
+.pp-property-card.is-skipped .pp-property-warning {
+	color: var(--text-faint);
+}
+
+.pp-search-container {
+	width: 100%;
+	margin-bottom: var(--size-4-1);
+}
+
+.pp-search-input {
+	width: 100%;
+}
+
+.pp-add-property-row {
+	flex-shrink: 0;
+	padding: var(--size-4-1) var(--size-4-2);
+	border-radius: var(--radius-s);
+	cursor: pointer;
+}
+
+.pp-add-property-label {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+}
+
+.pp-add-property-row:hover .pp-add-property-label {
+	color: var(--text-normal);
+}
+
+.pp-add-property-row .pp-search-container {
+	margin-top: var(--size-4-2);
+}
+
+/* Focus: a full-width background whenever the row or anything in it has
+   focus, plus the theme's focus ring for keyboard focus. */
+.pp-property-card:focus,
+.pp-property-card:focus-within,
+.pp-add-property-row:focus,
+.pp-add-property-row:focus-within,
+.pp-property-card.is-open,
+.pp-add-property-row.is-open {
+	outline: none;
+	background: var(--background-modifier-hover);
+}
+
+.pp-property-card:focus-visible,
+.pp-add-property-row:focus-visible {
+	box-shadow: 0 0 0 var(--size-2-1) var(--background-modifier-border-focus);
+}
+
+/* Footer: status line, key hints, then the buttons. */
+.pp-select-properties-modal .pp-multi-select-controls {
+	position: sticky;
+	bottom: 0;
+	z-index: 1;
+	flex-shrink: 0;
+	margin-top: auto;
+	padding: var(--size-4-2) 0 var(--size-2-2);
+	border-top: 1px solid var(--background-modifier-border);
+	background: var(--background-primary);
 }
 
 .pp-multi-select-controls {
@@ -19,9 +402,8 @@
 	grid-template-columns: minmax(0, 1fr) auto;
 	grid-template-rows: auto auto;
 	align-items: center;
-	column-gap: 12px;
-	row-gap: 4px;
-	padding: 4px 0;
+	column-gap: var(--size-4-3);
+	row-gap: var(--size-2-1);
 }
 
 .pp-multi-select-hint {
@@ -37,303 +419,62 @@
 	min-width: 0;
 	color: var(--text-muted);
 	font-size: var(--font-ui-smaller);
-	white-space: normal;
+}
+
+.pp-hint-line {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0 var(--size-4-3);
+}
+
+/* Pairs wrap whole, never between a key and its action. */
+.pp-hint {
+	white-space: nowrap;
+}
+
+.pp-hint-key {
+	color: var(--text-normal);
+	font-weight: var(--font-semibold);
 }
 
 .pp-multi-select-buttons {
+	display: flex;
 	grid-column: 2;
 	grid-row: 1 / span 2;
-	display: flex;
-	gap: 8px;
 	flex-shrink: 0;
 	align-self: center;
+	gap: var(--size-4-2);
 }
 
-.pp-clear-all-button:disabled {
-	opacity: 0.5;
+.pp-skip-all-button:disabled,
+.pp-add-all-button:disabled {
+	opacity: var(--icon-opacity, 0.5);
 	cursor: not-allowed;
 }
 
-.pp-select-properties-modal {
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-        max-height: 80vh;
-        min-height: 0;
-        overflow: hidden;
+@media (max-width: 600px) {
+	.pp-multi-select-controls {
+		grid-template-columns: minmax(0, 1fr);
+		grid-template-rows: auto auto auto;
+	}
+
+	.pp-multi-select-buttons {
+		grid-column: 1;
+		grid-row: 3;
+		justify-content: flex-end;
+	}
+
+	.pp-property-card.is-compact {
+		grid-template-columns: auto minmax(0, 1fr);
+	}
+
+	.pp-property-card.is-compact .pp-property-picker-host {
+		grid-column: 2;
+		grid-row: 2;
+	}
 }
 
-.pp-clipboard-mode {
-        display: inline-block;
-        margin-inline-start: 8px;
-        padding: 1px 5px;
-        border-radius: var(--radius-s);
-        background: var(--background-modifier-hover);
-        font-size: var(--font-ui-smaller);
-        font-weight: var(--font-normal);
-        vertical-align: middle;
-}
-
-.pp-select-properties-modal .pp-multi-select-controls {
-        position: sticky;
-        bottom: 0;
-        z-index: 1;
-        flex-shrink: 0;
-        margin-top: auto;
-        padding: 8px 0 4px;
-        border-top: 1px solid var(--background-modifier-border);
-        background: var(--background-primary);
-}
-
-.pp-select-properties-body {
-        display: flex;
-        flex: 1 1 auto;
-        flex-direction: column;
-        gap: 8px;
-        min-height: 0;
-        overflow-y: auto;
-        /* Room for the focus ring, which the scroll area would otherwise clip. */
-        padding: 4px;
-}
-
-.pp-select-properties-body > * {
-        flex-shrink: 0;
-}
-
-.pp-conflict-section {
-        border-inline-start: 3px solid var(--text-warning);
-        border-radius: var(--radius-m);
-        padding: 4px 10px 8px;
-        background: var(--background-secondary);
-}
-
-.pp-conflict-section h3,
-.pp-properties-section h3 {
-        margin: 4px 0;
-        font-size: var(--font-ui-medium);
-}
-
-.pp-conflict-section h3 {
-        color: var(--text-warning);
-}
-
-.pp-properties-section {
-        border-inline-start: 3px solid var(--background-modifier-border);
-        border-radius: var(--radius-m);
-        padding: 4px 10px 8px;
-}
-
-.pp-conflict-info,
-.pp-properties-info {
-        color: var(--text-muted);
-        font-size: var(--font-ui-small);
-        margin: 0 0 6px;
-}
-
-.pp-properties-list {
-        display: flex;
-        flex-direction: column;
-        flex-shrink: 0;
-        gap: 5px;
-        padding-right: 4px;
-}
-
-.pp-property-card {
-        border: 1px solid var(--background-modifier-border);
-        border-radius: var(--radius-m);
-        padding: 6px 10px;
-        background: var(--background-secondary);
-}
-
-.pp-property-header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        margin-bottom: 4px;
-}
-
-.pp-property-title-group {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-}
-
-.pp-property-enter-hint {
-        display: none;
-        margin-left: auto;
-        margin-right: 8px;
-        font-size: var(--font-ui-smaller);
-        color: var(--text-faint);
-}
-
-.pp-property-card:focus > .pp-property-header .pp-property-enter-hint {
-        display: inline;
-}
-
-.pp-property-name {
-        font-weight: var(--font-semibold);
-        color: var(--text-normal);
-}
-
-.pp-property-badge {
-        font-size: var(--font-ui-smaller);
-        padding: 2px 6px;
-        border-radius: var(--radius-s);
-        background: var(--background-modifier-form-field);
-        color: var(--text-muted);
-}
-
-.pp-property-badge.is-list {
-        color: var(--text-accent);
-}
-
-.pp-property-remove-btn {
-        font-size: var(--font-ui-smaller);
-        padding: 2px 8px;
-        height: auto;
-}
-
-.pp-property-warning {
-        color: var(--text-warning);
-        font-size: var(--font-ui-small);
-        margin-bottom: 6px;
-}
-
-.pp-property-notice {
-        color: var(--text-muted);
-        font-size: var(--font-ui-small);
-        margin-bottom: 6px;
-}
-
-.pp-conflict-options {
-        display: flex;
-        flex-direction: column;
-        gap: 4px;
-}
-
-.pp-conflict-option {
-        display: flex;
-        flex-direction: row;
-        align-items: center;
-        gap: 8px;
-        padding: 4px 6px;
-        border-radius: var(--radius-s);
-        cursor: pointer;
-}
-
-.pp-conflict-option:hover {
-        background: var(--background-modifier-hover);
-}
-
-.pp-conflict-value {
-        flex: 1;
-}
-
-.pp-conflict-sources {
-        color: var(--text-muted);
-        font-size: var(--font-ui-smaller);
-}
-
-.pp-property-picker-host {
-        width: 100%;
-}
-
-/* Compact rows: name and type, editor and exclude button share one line.
-   Conflict cards stay stacked because they hold several options. */
-.pp-property-card.is-compact {
-        position: relative;
-        display: grid;
-        grid-template-columns: minmax(6rem, 9rem) minmax(0, 1fr) auto;
-        align-items: center;
-        column-gap: 10px;
-        padding: 4px 8px;
-}
-
-.pp-property-card.is-compact > .pp-property-header {
-        display: contents;
-}
-
-.pp-property-card.is-compact .pp-property-title-group {
-        grid-column: 1;
-        grid-row: 1;
-        flex-wrap: wrap;
-        gap: 2px 6px;
-}
-
-.pp-property-card.is-compact .pp-property-picker-host {
-        grid-column: 2;
-        grid-row: 1;
-}
-
-.pp-property-card.is-compact .pp-property-remove-btn {
-        grid-column: 3;
-        grid-row: 1;
-}
-
-.pp-property-card.is-compact .pp-property-notice {
-        grid-column: 1 / -1;
-        grid-row: 2;
-        margin: 2px 0 0;
-}
-
-.pp-property-card.is-compact .pp-property-enter-hint {
-        position: absolute;
-        top: 0;
-        right: 34px;
-        margin: 0;
-        font-size: 10px;
-}
-
-.pp-property-card.is-compact .commons-property-picker-input {
-        min-height: 0;
-}
-
-.pp-property-picker-hint {
-        color: var(--text-muted);
-        font-size: var(--font-ui-smaller);
-        margin-top: 4px;
-}
-
-.pp-search-container {
-        width: 100%;
-        margin-bottom: 4px;
-}
-
-.pp-add-property-row {
-        flex-shrink: 0;
-        padding: 4px 12px;
-        border-radius: var(--radius-m);
-        cursor: pointer;
-}
-
-.pp-add-property-label {
-        color: var(--text-muted);
-        font-size: var(--font-ui-small);
-}
-
-.pp-add-property-row:hover .pp-add-property-label {
-        color: var(--text-normal);
-}
-
-.pp-add-property-row .pp-search-container {
-        margin-top: 8px;
-}
-
-/* Highlighted (focused) and open (focus inside) rows, as in Obsidian's
-   properties editor. */
-.pp-property-card:focus,
-.pp-property-card:focus-within,
-.pp-add-property-row:focus,
-.pp-add-property-row:focus-within {
-        outline: none;
-        box-shadow: 0 0 0 2px var(--background-modifier-border-focus);
-}
-
-.pp-property-card.is-open,
-.pp-add-property-row.is-open {
-        background: var(--background-modifier-hover);
-}
-
-.pp-search-input {
-        width: 100%;
+/* No keyboard on mobile, so the shortcut hints would only take space. */
+.is-mobile .pp-keyboard-hint {
+	display: none;
 }
