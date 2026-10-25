@@ -886,26 +886,38 @@ export default class PropertyPorter extends Plugin {
 		return Array.from(seen);
 	}
 
+	private selectionModal: SelectPropertiesModal | null = null;
+
 	// Opens the shared property-selection modal seeded with `initial`.
 	// A scalar seeded with an array of candidates renders as a conflict the
 	// user must resolve. Returns the edited selection, or `cancelled: true`
-	// when the modal is dismissed without finishing.
+	// when the modal is dismissed without finishing. Only one such modal is
+	// open at a time (in any window); opening another cancels the older one.
 	async openPropertySelectionModal(
 		initial: Record<string, unknown>,
 		conflictContext: Record<string, ConflictCardContext> = {},
 		options: SelectPropertiesModalOptions = {}
 	): Promise<{ properties: Record<string, unknown>; cancelled: boolean }> {
 		const catalog = collectVaultMetadata(this.app);
+		this.selectionModal?.close();
 		return new Promise((resolve) => {
-			new SelectPropertiesModal(
+			const modal: SelectPropertiesModal = new SelectPropertiesModal(
 				this.app,
 				catalog,
 				initial,
-				(selected) => resolve({ properties: selected, cancelled: false }),
-				() => resolve({ properties: {}, cancelled: true }),
+				(selected) => {
+					if (this.selectionModal === modal) this.selectionModal = null;
+					resolve({ properties: selected, cancelled: false });
+				},
+				() => {
+					if (this.selectionModal === modal) this.selectionModal = null;
+					resolve({ properties: {}, cancelled: true });
+				},
 				conflictContext,
 				options
-			).open();
+			);
+			this.selectionModal = modal;
+			modal.open();
 		});
 	}
 
@@ -1060,6 +1072,7 @@ export default class PropertyPorter extends Plugin {
 			context,
 			{
 				title: "Edit property clipboard",
+				initialFocus: this.clipboardKind === "tags" ? "tags" : "add",
 				subtitle: this.clipboardKind === "tags" ? "Tag copy" : "Property copy",
 				subtitleHint:
 					this.clipboardKind === "tags"
@@ -1070,22 +1083,25 @@ export default class PropertyPorter extends Plugin {
 
 		if (result.cancelled) return;
 
+		const previousClipboard = this.clipboard;
 		this.clipboard = result.properties;
 		this.clipboardOrigin = null;
+		const previousSources = this.clipboardValueSources;
 		this.clipboardValueSources = Object.fromEntries(
-			Object.entries(this.clipboardValueSources)
-				.filter(([key]) => key in result.properties)
-				.map(([key, values]) => [
-					key,
-					Object.fromEntries(
-						Object.entries(values).filter(([value]) => {
-							const selected = result.properties[key];
-							return Array.isArray(selected)
-								? selected.some((item) => String(item).trim() === value)
-								: String(selected).trim() === value;
-						})
-					),
-				])
+			Object.entries(result.properties).flatMap(([key, selected]) => {
+				const previousValues = new Set(
+					[previousClipboard[key]].flat().map((item) => String(item).trim())
+				);
+				const kept = previousSources[key] ?? {};
+				const entries: Array<[string, (typeof kept)[string]]> = [];
+				for (const item of [selected].flat()) {
+					const value = String(item).trim();
+					if (kept[value]) entries.push([value, kept[value]]);
+					else if (!previousValues.has(value))
+						entries.push([value, [{ note: "Edited clipboard", count: 1 }]]);
+				}
+				return entries.length ? [[key, Object.fromEntries(entries)]] : [];
+			})
 		);
 		this.updateStatusBar();
 		const count = this.countClipboardValues();

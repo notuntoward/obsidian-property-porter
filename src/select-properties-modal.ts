@@ -45,6 +45,8 @@ export interface SelectPropertiesModalOptions {
 	/** Tooltip for the subtitle badge. */
 	subtitleHint?: string;
 	conflictNames?: readonly string[];
+	/** Where focus starts when nothing conflicts; defaults to the add-property row. */
+	initialFocus?: "tags" | "add";
 	finishText?: string;
 }
 
@@ -220,13 +222,13 @@ export class SelectPropertiesModal extends Modal {
 				cls: "pp-properties-info",
 				text: "These properties have no conflicts and need no action. Edit or exclude them only if you want.",
 			});
+			this.renderAddPropertyControl(section);
 			this.listContainerEl = section.createDiv({ cls: "pp-properties-list" });
 			for (const state of otherStates) this.renderPropertyCard(state, this.listContainerEl);
-			this.renderAddPropertyControl(section);
 		} else {
+			this.renderAddPropertyControl(bodyEl);
 			this.listContainerEl = bodyEl.createDiv({ cls: "pp-properties-list" });
 			for (const state of otherStates) this.renderPropertyCard(state, this.listContainerEl);
-			this.renderAddPropertyControl(bodyEl);
 		}
 
 		// Controls
@@ -257,7 +259,6 @@ export class SelectPropertiesModal extends Modal {
 			openClass: "is-open",
 			openRow: (row) => this.openRow(row),
 			onAccept: () => this.submit(),
-			isSuggestionOpen: () => !!this.contentEl.ownerDocument.querySelector(".suggestion-container"),
 		});
 		this.navigator.attach();
 		this.contentEl.addEventListener("focusin", this.handleModalFocus);
@@ -307,15 +308,17 @@ export class SelectPropertiesModal extends Modal {
 		setTimeoutIn(win, () => this.getInitialRow()?.focus(), 0);
 	}
 
-	// Conflicts come first, then tags (the usual reason to open this), then
-	// whatever is first, then the add-property row.
+	// Conflicts always come first. Otherwise a tag copy opens on tags and
+	// everything else on the add-property row.
 	private getInitialRow(): HTMLElement | null {
 		const states = Array.from(this.propertyStates.values());
-		const state =
-			states.find((candidate) => candidate.hasConflict) ??
-			states.find((candidate) => candidate.name === "tags") ??
-			states[0];
-		return state?.cardEl ?? this.addRowEl;
+		const conflict = states.find((candidate) => candidate.hasConflict);
+		if (conflict?.cardEl) return conflict.cardEl;
+		if (this.options.initialFocus === "tags") {
+			const tags = states.find((candidate) => candidate.name === "tags");
+			if (tags?.cardEl) return tags.cardEl;
+		}
+		return this.addRowEl ?? states[0]?.cardEl ?? null;
 	}
 
 	private openRow(row: HTMLElement): void {
@@ -416,7 +419,9 @@ export class SelectPropertiesModal extends Modal {
 	}
 
 	private renderPropertyCard(state: PropertyCardState, container: HTMLElement): void {
-		const cardEl = container.createDiv({ cls: "pp-property-card" });
+		const cardEl = container.createDiv({
+			cls: state.hasConflict ? "pp-property-card" : ["pp-property-card", "is-compact"],
+		});
 		cardEl.setAttribute("role", "group");
 		cardEl.tabIndex = 0;
 		state.cardEl = cardEl;
@@ -427,20 +432,33 @@ export class SelectPropertiesModal extends Modal {
 		nameEl.id = `pp-property-name-${++nextPropertyNameId}`;
 		cardEl.setAttribute("aria-labelledby", nameEl.id);
 
+		const scalarType = state.isList
+			? undefined
+			: getPropertyType(this.catalog, state.name, state.candidates);
 		const badgeText =
 			state.name === "tags" || state.name === "tag"
 				? "Tags"
 				: state.isList
 					? "List"
-					: "Scalar";
+					: scalarType === "date"
+						? "Date"
+						: scalarType === "datetime"
+							? "Date & time"
+							: "Scalar";
 		titleGroup.createSpan({
 			cls: ["pp-property-badge", state.isList ? "is-list" : "is-scalar"],
 			text: badgeText,
 		});
 
+		const enterHint = header.createSpan({
+			cls: "pp-property-enter-hint",
+			text: state.hasConflict ? "Enter to choose" : "Enter to edit",
+		});
+		enterHint.setAttribute("aria-hidden", "true");
+
 		const removeBtn = header.createEl("button", {
 			cls: "pp-property-remove-btn",
-			text: "Exclude",
+			text: "✕",
 			type: "button",
 			attr: {
 				"aria-label": `Exclude ${state.name}`,
@@ -641,6 +659,7 @@ export class SelectPropertiesModal extends Modal {
 			...this.buildPickerOptions(state, "list"),
 			value: state.selected,
 			multiple: true,
+			suggestOnEmpty: false,
 			selectedValueStyle: isTagProp ? "tag" : "plain",
 			focusInputAfterRemove: false,
 			allowCreate: true,
@@ -736,10 +755,12 @@ export class SelectPropertiesModal extends Modal {
 		const row = target.closest<HTMLElement>(".pp-property-card, .pp-add-property-row");
 		let hint: string;
 		if (row === target) {
+			const state = Array.from(this.propertyStates.values()).find((candidate) => candidate.cardEl === row);
+			const enterAction = state?.hasConflict ? "Enter choose value" : "Enter edit";
 			hint =
 				target === this.addRowEl
 					? "Enter add property · Tab next · Esc cancel"
-					: "Enter edit · Tab next · Alt+X exclude · Ctrl/Cmd+Enter save · Esc cancel";
+					: `${enterAction} · Tab next · Alt+X exclude · Ctrl/Cmd+Enter save · Esc cancel`;
 		} else if (row && target.matches('input[type="radio"]')) {
 			hint = "↑↓ or 1-9 choose · O other value · Esc done · Tab next";
 		} else if (row) {

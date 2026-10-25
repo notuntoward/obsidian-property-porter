@@ -352,6 +352,7 @@ describe("SelectPropertiesModal", () => {
 		expect(document.activeElement).toBe(input);
 		const dropdown = document.createElement("div");
 		dropdown.className = "suggestion-container";
+		dropdown.createDiv({ cls: "suggestion-item" });
 		document.body.appendChild(dropdown);
 		try {
 			(modal as any).navigator.leaveOpenRow(input);
@@ -385,9 +386,67 @@ describe("SelectPropertiesModal", () => {
 		modal.propertyStates.get("status")!.picker!.inputEl.focus();
 		expect(hint.textContent).toContain("Backspace");
 		card.focus();
-		expect(hint.textContent).toContain("Enter edit");
+		expect(hint.textContent).toContain("Enter choose value");
+		expect(hint.textContent).not.toContain("Enter edit");
 		modal.contentEl.querySelector<HTMLButtonElement>(".pp-property-remove-btn")!.focus();
 		expect(hint.textContent).toContain("Esc done");
+	});
+
+	it.each([
+		["clipboard editor", {}],
+		["conflict resolver", { conflictNames: ["status"] }],
+	])("places the add-property row above the property list in the %s", (_label, options: any) => {
+		const { app } = createApp();
+		const modal = new SelectPropertiesModal(
+			app as any,
+			createMockCatalog(),
+			{ status: ["draft", "published"], title: "x" },
+			vi.fn(),
+			vi.fn(),
+			{},
+			options
+		);
+		document.body.appendChild(modal.contentEl);
+		modal.onOpen();
+		const addRow = modal.contentEl.querySelector(".pp-add-property-row")!;
+		const list = modal.contentEl.querySelector(".pp-properties-list:not(.pp-conflicts-list)")!;
+		expect(addRow).not.toBeNull();
+		expect(addRow.parentElement).toBe(list.parentElement);
+		expect(addRow.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+	});
+
+	it("shows an Enter hint in each card header, worded for conflicts and plain rows", () => {
+		const { app } = createApp();
+		const modal = new SelectPropertiesModal(
+			app as any,
+			createMockCatalog(),
+			{ status: ["draft", "published"], title: "x" },
+			vi.fn(),
+			vi.fn(),
+			{},
+			{ conflictNames: ["status"] }
+		);
+		document.body.appendChild(modal.contentEl);
+		modal.onOpen();
+		const hints = Array.from(modal.contentEl.querySelectorAll(".pp-property-enter-hint")).map(
+			(el) => el.textContent
+		);
+		expect(hints).toContain("Enter to choose");
+		expect(hints).toContain("Enter to edit");
+	});
+
+	it("renders non-conflict cards compact and keeps conflict cards stacked", () => {
+		const { app } = createApp();
+		const modal = new SelectPropertiesModal(
+			app as any,
+			createMockCatalog(),
+			{ status: ["draft", "published"], tags: ["dev"] },
+			vi.fn(),
+			vi.fn()
+		);
+		modal.onOpen();
+		expect(modal.propertyStates.get("status")!.cardEl!.classList.contains("is-compact")).toBe(false);
+		expect(modal.propertyStates.get("tags")!.cardEl!.classList.contains("is-compact")).toBe(true);
 	});
 
 	it("opens with the first conflict row highlighted, not open", () => {
@@ -425,7 +484,10 @@ describe("SelectPropertiesModal", () => {
 		}
 	});
 
-	it("opens with the tags row highlighted when there is no conflict", () => {
+	it.each([
+		["tags", "tag copies"],
+		["add", "property copies"],
+	] as const)("opens on %s for %s when nothing conflicts", (initialFocus) => {
 		vi.useFakeTimers();
 		try {
 			const { app } = createApp();
@@ -436,15 +498,39 @@ describe("SelectPropertiesModal", () => {
 				vi.fn(),
 				vi.fn(),
 				{},
-				{ title: "Edit property clipboard" }
+				{ title: "Edit property clipboard", initialFocus }
 			);
 			document.body.appendChild(modal.contentEl);
 			modal.onOpen();
 			vi.runOnlyPendingTimers();
 
-			expect(document.activeElement).toBe(modal.propertyStates.get("tags")!.cardEl);
 			const addRow = modal.contentEl.querySelector(".pp-add-property-row")!;
-			expect(addRow.previousElementSibling?.classList.contains("pp-properties-list")).toBe(true);
+			expect(document.activeElement).toBe(
+				initialFocus === "tags" ? modal.propertyStates.get("tags")!.cardEl : addRow
+			);
+			expect(addRow.nextElementSibling?.classList.contains("pp-properties-list")).toBe(true);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("always opens a conflict resolver on the first conflict", () => {
+		vi.useFakeTimers();
+		try {
+			const { app } = createApp();
+			const modal = new SelectPropertiesModal(
+				app as any,
+				createMockCatalog(),
+				{ tags: ["dev"], status: ["draft", "published"] },
+				vi.fn(),
+				vi.fn(),
+				{},
+				{ conflictNames: ["status"], initialFocus: "tags" }
+			);
+			document.body.appendChild(modal.contentEl);
+			modal.onOpen();
+			vi.runOnlyPendingTimers();
+			expect(document.activeElement).toBe(modal.propertyStates.get("status")!.cardEl);
 		} finally {
 			vi.useRealTimers();
 		}
@@ -473,7 +559,9 @@ describe("SelectPropertiesModal", () => {
 				createMockCatalog(),
 				{ tags: ["dev"], status: "draft" },
 				vi.fn(),
-				vi.fn()
+				vi.fn(),
+				{},
+				{ initialFocus: "tags" }
 			);
 			document.body.appendChild(modal.contentEl);
 			modal.onOpen();
@@ -481,9 +569,9 @@ describe("SelectPropertiesModal", () => {
 
 			const expected = [
 				modal.propertyStates.get("status")!.cardEl,
-				modal.contentEl.querySelector(".pp-add-property-row"),
 				modal.contentEl.querySelector(".pp-clear-all-button"),
 				modal.contentEl.querySelector(".pp-finish-button"),
+				modal.contentEl.querySelector(".pp-add-property-row"),
 				modal.propertyStates.get("tags")!.cardEl,
 			];
 			for (const stop of expected) {
@@ -538,7 +626,7 @@ describe("SelectPropertiesModal", () => {
 		expect(onSubmit).toHaveBeenCalledWith({ tags: ["dev"] });
 	});
 
-	it("a newly added property opens for editing and joins the Tab cycle before the add row", () => {
+	it("a newly added property opens for editing and joins the Tab cycle after the other rows", () => {
 		const { app } = createApp();
 		const modal = new SelectPropertiesModal(
 			app as any,
@@ -557,8 +645,27 @@ describe("SelectPropertiesModal", () => {
 		pressEscape(modal);
 		expect(document.activeElement).toBe(state.cardEl);
 		key(state.cardEl!, "Tab");
-		expect(document.activeElement).toBe(modal.contentEl.querySelector(".pp-add-property-row"));
+		expect(document.activeElement).toBe(modal.contentEl.querySelector(".pp-clear-all-button"));
 		expect(modal.contentEl.querySelector(".pp-add-property-row .pp-search-container")?.hasAttribute("hidden")).toBe(true);
+	});
+
+	it("Escape after Enter on the add row returns to the row even with a stale suggestion container", () => {
+		const { app } = createApp();
+		const modal = new SelectPropertiesModal(app as any, createMockCatalog(), { tags: ["dev"] }, vi.fn(), vi.fn());
+		const close = vi.spyOn(modal, "close");
+		document.body.appendChild(modal.contentEl);
+		const stale = document.body.createDiv({ cls: "suggestion-container" });
+		modal.onOpen();
+		const addRow = modal.contentEl.querySelector<HTMLElement>(".pp-add-property-row")!;
+		openAddProperty(modal);
+		expect(document.activeElement).toBe(modal.inputEl);
+
+		pressEscape(modal);
+		expect(close).not.toHaveBeenCalled();
+		expect(document.activeElement).toBe(addRow);
+		key(addRow, "Tab");
+		expect(document.activeElement).not.toBe(addRow);
+		stale.remove();
 	});
 
 	it("clicking the add row or a card opens it for mouse users", () => {
@@ -743,7 +850,7 @@ describe("SelectPropertiesModal", () => {
 		);
 		const addPropertyRow = modal.contentEl.querySelector(".pp-properties-section .pp-add-property-row");
 		expect(addPropertyRow?.querySelector(".pp-add-property-label")?.textContent).toBe("+ Add property");
-		expect(addPropertyRow?.previousElementSibling?.classList.contains("pp-properties-list")).toBe(true);
+		expect(addPropertyRow?.nextElementSibling?.classList.contains("pp-properties-list")).toBe(true);
 
 		radios[1].click();
 		expect(radios[1].checked).toBe(true);
@@ -1255,7 +1362,7 @@ describe("SelectPropertiesModal", () => {
 		const cards = Array.from(modal.contentEl.querySelectorAll(".pp-property-card"));
 		const titleCard = cards.find((c) => c.querySelector(".pp-property-name")?.textContent === "title")!;
 		const excludeButton = titleCard.querySelector<HTMLButtonElement>(".pp-property-remove-btn")!;
-		expect(excludeButton.textContent).toBe("Exclude");
+		expect(excludeButton.textContent).toBe("✕");
 		expect(excludeButton.title).toBe("Exclude this property from the selection");
 		expect(excludeButton.getAttribute("aria-label")).toBe("Exclude title");
 		excludeButton.click();
@@ -1487,6 +1594,39 @@ describe("PropertyPorter.selectPropertiesToPaste", () => {
 		await plugin.selectPropertiesToPaste();
 
 		expect(plugin.clipboard).toEqual({ kept: "value" });
+	});
+
+	it("labels values added in the clipboard editor so conflict cards show a source", async () => {
+		const { plugin } = createPlugin();
+		await plugin.onload();
+		plugin.clipboard = { title: "a", status: "x" };
+		(plugin as any).clipboardValueSources = {
+			title: { a: [{ note: "Note A", count: 1 }] },
+		};
+		vi.spyOn(plugin as any, "openPropertySelectionModal").mockResolvedValue({
+			cancelled: false,
+			properties: { title: ["a", "b"].slice(1)[0], status: "x" },
+		});
+
+		await plugin.editPropertyClipboard();
+
+		const sources = (plugin as any).clipboardValueSources;
+		expect(sources.title).toEqual({ b: [{ note: "Edited clipboard", count: 1 }] });
+		expect(sources.status).toBeUndefined();
+	});
+
+	it("keeps a single selection modal open: a new one cancels the previous", async () => {
+		const { plugin } = createPlugin();
+		await plugin.onload();
+		const first = plugin.openPropertySelectionModal({ tags: ["a"] });
+		const second = plugin.openPropertySelectionModal({ tags: ["b"] });
+
+		await expect(first).resolves.toEqual({ properties: {}, cancelled: true });
+		const open = (plugin as any).selectionModal;
+		expect(open).not.toBeNull();
+		open.close();
+		await expect(second).resolves.toEqual({ properties: {}, cancelled: true });
+		expect((plugin as any).selectionModal).toBeNull();
 	});
 
 	it("shows a tag-only clipboard without adding unrelated properties", async () => {

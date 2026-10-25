@@ -92,13 +92,25 @@
         gap: 8px;
         min-height: 0;
         overflow-y: auto;
+        /* Room for the focus ring, which the scroll area would otherwise clip. */
+        padding: 4px;
+}
+
+.pp-select-properties-body > * {
+        flex-shrink: 0;
 }
 
 .pp-conflict-section {
         border-inline-start: 3px solid var(--text-warning);
         border-radius: var(--radius-m);
-        padding: 8px 10px;
+        padding: 4px 10px 8px;
         background: var(--background-secondary);
+}
+
+.pp-conflict-section h3,
+.pp-properties-section h3 {
+        margin: 4px 0;
+        font-size: var(--font-ui-medium);
 }
 
 .pp-conflict-section h3 {
@@ -108,28 +120,28 @@
 .pp-properties-section {
         border-inline-start: 3px solid var(--background-modifier-border);
         border-radius: var(--radius-m);
-        padding: 8px 10px;
+        padding: 4px 10px 8px;
 }
 
 .pp-conflict-info,
 .pp-properties-info {
         color: var(--text-muted);
         font-size: var(--font-ui-small);
-        margin: -4px 0 8px;
+        margin: 0 0 6px;
 }
 
 .pp-properties-list {
         display: flex;
         flex-direction: column;
-        gap: 10px;
-        min-height: 0;
+        flex-shrink: 0;
+        gap: 5px;
         padding-right: 4px;
 }
 
 .pp-property-card {
         border: 1px solid var(--background-modifier-border);
         border-radius: var(--radius-m);
-        padding: 10px 12px;
+        padding: 6px 10px;
         background: var(--background-secondary);
 }
 
@@ -137,13 +149,25 @@
         display: flex;
         align-items: center;
         justify-content: space-between;
-        margin-bottom: 8px;
+        margin-bottom: 4px;
 }
 
 .pp-property-title-group {
         display: flex;
         align-items: center;
         gap: 8px;
+}
+
+.pp-property-enter-hint {
+        display: none;
+        margin-left: auto;
+        margin-right: 8px;
+        font-size: var(--font-ui-smaller);
+        color: var(--text-faint);
+}
+
+.pp-property-card:focus > .pp-property-header .pp-property-enter-hint {
+        display: inline;
 }
 
 .pp-property-name {
@@ -214,6 +238,56 @@
         width: 100%;
 }
 
+/* Compact rows: name and type, editor and exclude button share one line.
+   Conflict cards stay stacked because they hold several options. */
+.pp-property-card.is-compact {
+        position: relative;
+        display: grid;
+        grid-template-columns: minmax(6rem, 9rem) minmax(0, 1fr) auto;
+        align-items: center;
+        column-gap: 10px;
+        padding: 4px 8px;
+}
+
+.pp-property-card.is-compact > .pp-property-header {
+        display: contents;
+}
+
+.pp-property-card.is-compact .pp-property-title-group {
+        grid-column: 1;
+        grid-row: 1;
+        flex-wrap: wrap;
+        gap: 2px 6px;
+}
+
+.pp-property-card.is-compact .pp-property-picker-host {
+        grid-column: 2;
+        grid-row: 1;
+}
+
+.pp-property-card.is-compact .pp-property-remove-btn {
+        grid-column: 3;
+        grid-row: 1;
+}
+
+.pp-property-card.is-compact .pp-property-notice {
+        grid-column: 1 / -1;
+        grid-row: 2;
+        margin: 2px 0 0;
+}
+
+.pp-property-card.is-compact .pp-property-enter-hint {
+        position: absolute;
+        top: 0;
+        right: 34px;
+        margin: 0;
+        font-size: 10px;
+}
+
+.pp-property-card.is-compact .commons-property-picker-input {
+        min-height: 0;
+}
+
 .pp-property-picker-hint {
         color: var(--text-muted);
         font-size: var(--font-ui-smaller);
@@ -226,7 +300,8 @@
 }
 
 .pp-add-property-row {
-        padding: 8px 12px;
+        flex-shrink: 0;
+        padding: 4px 12px;
         border-radius: var(--radius-m);
         cursor: pointer;
 }
