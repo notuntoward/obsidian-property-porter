@@ -70,20 +70,39 @@ export class SourceRepairPermissionModal extends Modal {
 		});
 		const list = this.contentEl.createEl("ul");
 		for (const file of this.files) list.createEl("li", { text: file.path });
+		this.contentEl.createEl("p", { text: "Press Esc to copy without repairing." });
 		const repairLabel = this.files.length === 1 ? "Repair note and copy" : "Repair notes and copy";
-		const repairButton = this.contentEl.createEl("button", {
+		const buttonsEl = this.contentEl.createDiv({ cls: "pp-modal-buttons" });
+		const repairButton = buttonsEl.createEl("button", {
 			text: repairLabel,
 			cls: "mod-cta",
 			type: "button",
 		});
 		repairButton.addEventListener("click", () => this.finish(true));
-		const copyButton = this.contentEl.createEl("button", {
+		const copyButton = buttonsEl.createEl("button", {
 			text: "Copy only",
 			type: "button",
 		});
 		copyButton.addEventListener("click", () => this.finish(false));
+		this.contentEl.addEventListener("keydown", this.handleButtonNavigation);
 		repairButton.focus();
 	}
+
+	private readonly handleButtonNavigation = (event: KeyboardEvent): void => {
+		if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+		const target = event.target;
+		if (!(target instanceof HTMLElement)) return;
+		const currentButton = target.closest<HTMLButtonElement>("button");
+		const buttons = Array.from(this.contentEl.querySelectorAll<HTMLButtonElement>(".pp-modal-buttons button"));
+		const currentIndex = currentButton ? buttons.indexOf(currentButton) : -1;
+		if (currentIndex < 0 || buttons.length < 2) return;
+		const nextIndex =
+			event.key === "ArrowRight"
+				? (currentIndex + 1) % buttons.length
+				: (currentIndex + buttons.length - 1) % buttons.length;
+		buttons[nextIndex]!.focus();
+		event.preventDefault();
+	};
 
 	private finish(allow: boolean): void {
 		this.answered = true;
@@ -92,6 +111,7 @@ export class SourceRepairPermissionModal extends Modal {
 	}
 
 	onClose(): void {
+		this.contentEl.removeEventListener("keydown", this.handleButtonNavigation);
 		if (!this.answered) this.answer(false);
 		this.contentEl.empty();
 	}

@@ -110,6 +110,18 @@ function getInputSuggest(input: HTMLInputElement): any {
 	);
 }
 
+function getModalShortcut(modal: SelectPropertiesModal, modifiers: string[], key: string): any {
+	const register = vi.spyOn(modal.scope, "register");
+	modal.onOpen();
+	const registration = register.mock.calls.find(
+		([registeredModifiers, registeredKey]) =>
+			registeredKey === key &&
+			JSON.stringify(registeredModifiers) === JSON.stringify(modifiers)
+	);
+	expect(registration).toBeDefined();
+	return registration?.[2];
+}
+
 const originalModalOpen = obsidianMock.Modal.prototype.open;
 
 afterEach(() => {
@@ -118,6 +130,220 @@ afterEach(() => {
 });
 
 describe("SelectPropertiesModal", () => {
+	it("registers Mod+Enter to submit and return false", () => {
+		const { app } = createApp();
+		const onSubmit = vi.fn();
+		const modal = new SelectPropertiesModal(
+			app as any,
+			createMockCatalog(),
+			{ status: "draft" },
+			onSubmit,
+			vi.fn()
+		);
+		const submitShortcut = getModalShortcut(modal, ["Mod"], "Enter");
+
+		expect(submitShortcut(new KeyboardEvent("keydown", { key: "Enter" }))).toBe(false);
+		expect(onSubmit).toHaveBeenCalledWith({ status: "draft" });
+	});
+
+	it("moves focus between property cards with Alt+ArrowUp and Alt+ArrowDown", () => {
+		const { app } = createApp();
+		const modal = new SelectPropertiesModal(
+			app as any,
+			createMockCatalog(),
+			{ status: "draft", title: "A New Hope" },
+			vi.fn(),
+			vi.fn()
+		);
+		const register = vi.spyOn(modal.scope, "register");
+		document.body.appendChild(modal.contentEl);
+		modal.onOpen();
+		const downRegistration = register.mock.calls.find(
+			([modifiers, key]) => key === "ArrowDown" && JSON.stringify(modifiers) === JSON.stringify(["Alt"])
+		);
+		const upRegistration = register.mock.calls.find(
+			([modifiers, key]) => key === "ArrowUp" && JSON.stringify(modifiers) === JSON.stringify(["Alt"])
+		);
+		expect(downRegistration).toBeDefined();
+		expect(upRegistration).toBeDefined();
+
+		const firstPicker = modal.propertyStates.get("status")!.picker!;
+		const secondPicker = modal.propertyStates.get("title")!.picker!;
+		firstPicker.inputEl.focus();
+		downRegistration?.[2](new KeyboardEvent("keydown", { key: "ArrowDown" }));
+		expect(document.activeElement).toBe(secondPicker.inputEl);
+		upRegistration?.[2](new KeyboardEvent("keydown", { key: "ArrowUp" }));
+		expect(document.activeElement).toBe(firstPicker.inputEl);
+	});
+
+	it("selects conflict candidates with number keys and opens Other value with O", () => {
+		const { app } = createApp();
+		const modal = new SelectPropertiesModal(
+			app as any,
+			createMockCatalog(),
+			{ status: ["draft", "published"] },
+			vi.fn(),
+			vi.fn()
+		);
+		modal.onOpen();
+		const radios = modal.contentEl.querySelectorAll<HTMLInputElement>(".pp-conflict-option input");
+		const selectSecond = new KeyboardEvent("keydown", { key: "2", bubbles: true, cancelable: true });
+		radios[0]!.dispatchEvent(selectSecond);
+		expect(selectSecond.defaultPrevented).toBe(true);
+		expect(radios[1]!.checked).toBe(true);
+		expect(modal.propertyStates.get("status")?.selected).toEqual(["published"]);
+
+		const outOfRange = new KeyboardEvent("keydown", { key: "3", bubbles: true, cancelable: true });
+		radios[1]!.dispatchEvent(outOfRange);
+		expect(outOfRange.defaultPrevented).toBe(false);
+		expect(radios[2]!.checked).toBe(false);
+
+		const selectOther = new KeyboardEvent("keydown", { key: "o", bubbles: true, cancelable: true });
+		radios[1]!.dispatchEvent(selectOther);
+		expect(selectOther.defaultPrevented).toBe(true);
+		expect(radios[2]!.checked).toBe(true);
+		expect(modal.propertyStates.get("status")?.picker).toBeDefined();
+	});
+
+	it("uses Alt+X to exclude the focused card, show a notice, and focus the next card", () => {
+		const { app } = createApp();
+		const modal = new SelectPropertiesModal(
+			app as any,
+			createMockCatalog(),
+			{ status: "draft", title: "A New Hope" },
+			vi.fn(),
+			vi.fn()
+		);
+		const excludeShortcut = getModalShortcut(modal, ["Alt"], "X");
+		const notice = vi.spyOn(obsidianMock, "Notice");
+		document.body.appendChild(modal.contentEl);
+		const firstPicker = modal.propertyStates.get("status")!.picker!;
+		const nextPicker = modal.propertyStates.get("title")!.picker!;
+
+		excludeShortcut({ target: firstPicker.inputEl });
+
+		expect(modal.propertyStates.has("status")).toBe(false);
+		expect(document.activeElement).toBe(nextPicker.inputEl);
+		expect(notice).toHaveBeenCalledWith("Property Porter: Excluded status");
+
+		excludeShortcut({ target: nextPicker.inputEl });
+		expect(modal.propertyStates.has("title")).toBe(false);
+		expect(document.activeElement).toBe(
+			modal.contentEl.querySelector(".pp-add-property-details > summary")
+		);
+		expect(notice).toHaveBeenCalledWith("Property Porter: Excluded title");
+	});
+
+	it("uses Mod+Backspace to clear only when an input is empty or a radio is focused", () => {
+		const { app } = createApp();
+		const modal = new SelectPropertiesModal(
+			app as any,
+			createMockCatalog(),
+			{ status: "draft", title: "A New Hope" },
+			vi.fn(),
+			vi.fn()
+		);
+		const clearShortcut = getModalShortcut(modal, ["Mod"], "Backspace");
+		const input = modal.propertyStates.get("status")!.picker!.inputEl;
+		input.value = "keep";
+		clearShortcut({ target: input });
+		expect(modal.propertyStates.get("status")!.selected).toEqual(["draft"]);
+
+		input.value = "";
+		clearShortcut({ target: input });
+		expect(modal.propertyStates.get("status")!.picker!.getValue()).toEqual([]);
+		expect(modal.propertyStates.get("title")!.picker!.getValue()).toEqual([]);
+
+		const conflictModal = new SelectPropertiesModal(
+			app as any,
+			createMockCatalog(),
+			{ status: ["draft", "published"] },
+			vi.fn(),
+			vi.fn()
+		);
+		const clearRadioShortcut = getModalShortcut(conflictModal, ["Mod"], "Backspace");
+		const radio = conflictModal.contentEl.querySelector<HTMLInputElement>(".pp-conflict-option input")!;
+		clearRadioShortcut({ target: radio });
+		expect(conflictModal.propertyStates.get("status")!.selected).toEqual([]);
+		expect(radio.checked).toBe(false);
+	});
+
+	it("does not submit on plain Enter while a suggestion dropdown is open", () => {
+		const { app } = createApp();
+		const onSubmit = vi.fn();
+		const modal = new SelectPropertiesModal(
+			app as any,
+			createMockCatalog(),
+			{ status: "draft" },
+			onSubmit,
+			vi.fn()
+		);
+		modal.onOpen();
+		const dropdown = document.createElement("div");
+		dropdown.className = "suggestion-container";
+		document.body.appendChild(dropdown);
+		try {
+			modal.inputEl!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+			expect(onSubmit).not.toHaveBeenCalled();
+		} finally {
+			dropdown.remove();
+		}
+	});
+
+	it("lets Escape close an open dropdown without closing the modal", () => {
+		const { app } = createApp();
+		const onCancel = vi.fn();
+		const modal = new SelectPropertiesModal(
+			app as any,
+			createMockCatalog(),
+			{ status: "draft" },
+			vi.fn(),
+			onCancel
+		);
+		document.body.appendChild(modal.contentEl);
+		modal.onOpen();
+		modal.contentEl.querySelector<HTMLDetailsElement>(".pp-add-property-details")!.open = true;
+		const input = modal.inputEl!;
+		const dropdown = document.createElement("div");
+		dropdown.className = "suggestion-container";
+		document.body.appendChild(dropdown);
+		input.addEventListener("keydown", (event) => {
+			if (event.key === "Escape") dropdown.remove();
+		});
+
+		input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+
+		expect(dropdown.isConnected).toBe(false);
+		expect(onCancel).not.toHaveBeenCalled();
+	});
+
+	it("labels property cards and updates live keyboard guidance for the focused control", () => {
+		const { app } = createApp();
+		const modal = new SelectPropertiesModal(
+			app as any,
+			createMockCatalog(),
+			{ status: ["draft", "published"] },
+			vi.fn(),
+			vi.fn()
+		);
+		document.body.appendChild(modal.contentEl);
+		modal.onOpen();
+		const card = modal.contentEl.querySelector<HTMLElement>(".pp-property-card")!;
+		const name = card.querySelector<HTMLElement>(".pp-property-name")!;
+		expect(card.getAttribute("role")).toBe("group");
+		expect(card.getAttribute("aria-labelledby")).toBe(name.id);
+		expect(modal.contentEl.querySelector(".pp-keyboard-hint")?.getAttribute("aria-live")).toBe("polite");
+
+		const hint = modal.contentEl.querySelector(".pp-keyboard-hint")!;
+		card.querySelector<HTMLInputElement>(".pp-conflict-option input")!.focus();
+		expect(hint.textContent).toContain("1-9");
+		card.querySelectorAll<HTMLInputElement>(".pp-conflict-option input")[2]!.click();
+		modal.propertyStates.get("status")!.picker!.inputEl.focus();
+		expect(hint.textContent).toContain("suggestions");
+		modal.contentEl.querySelector<HTMLButtonElement>(".pp-property-remove-btn")!.focus();
+		expect(hint.textContent).toContain("Alt+X");
+	});
+
 	it("focuses the finish button instead of the add-property input when a conflict exists", () => {
 		vi.useFakeTimers();
 		try {
@@ -258,6 +484,7 @@ describe("SelectPropertiesModal", () => {
 		const onCancel = vi.fn();
 
 		const modal = new SelectPropertiesModal(app as any, catalog, initial, onSubmit, onCancel);
+		const register = vi.spyOn(modal.scope, "register");
 		modal.onOpen();
 
 		const statusCard = modal.contentEl.querySelector(".pp-property-card")!;
@@ -296,9 +523,11 @@ describe("SelectPropertiesModal", () => {
 		expect(modal.propertyStates.get("status")?.selected).toEqual(["published"]);
 		expect(modal.getSelectedProperties()).toEqual({ status: "published" });
 
-		modal.contentEl.dispatchEvent(
-			new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true })
+		const modEnter = register.mock.calls.find(
+			([modifiers, key]) => key === "Enter" && JSON.stringify(modifiers) === JSON.stringify(["Mod"])
 		);
+		expect(modEnter).toBeDefined();
+		modEnter?.[2](new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true }));
 
 		expect(onSubmit).toHaveBeenCalledWith({
 			status: "published",
@@ -625,16 +854,15 @@ describe("SelectPropertiesModal", () => {
 		expect(modal.propertyStates.get("cast")?.picker?.rootEl.dataset.valueStyle).toBe("plain");
 	});
 
-	it("closes on Escape and cannot accept while a conflict has no selected value", () => {
+	it("does not submit unresolved conflicts", () => {
 		const { app } = createApp();
 		const onSubmit = vi.fn();
-		const onCancel = vi.fn();
 		const modal = new SelectPropertiesModal(
 			app as any,
 			createMockCatalog(),
 			{ status: ["draft", "published"] },
 			onSubmit,
-			onCancel
+			vi.fn()
 		);
 		modal.onOpen();
 
@@ -644,8 +872,6 @@ describe("SelectPropertiesModal", () => {
 		modal.submit();
 		expect(onSubmit).not.toHaveBeenCalled();
 
-		modal.contentEl.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-		expect(onCancel).toHaveBeenCalledOnce();
 		expect(onSubmit).not.toHaveBeenCalled();
 	});
 
@@ -658,12 +884,14 @@ describe("SelectPropertiesModal", () => {
 			vi.fn(),
 			vi.fn()
 		);
+		document.body.appendChild(modal.contentEl);
 		modal.onOpen();
 
 		expect(modal.contentEl.querySelector(".pp-select-properties-body")?.contains(
 			modal.contentEl.querySelector(".pp-properties-list")
 		)).toBe(true);
 		expect(modal.contentEl.querySelector(".pp-multi-select-controls")?.parentElement).toBe(modal.contentEl);
+		modal.contentEl.querySelector<HTMLButtonElement>(".pp-finish-button")!.focus();
 		expect(modal.contentEl.querySelector(".pp-keyboard-hint")?.textContent).toContain("Esc cancels");
 	});
 

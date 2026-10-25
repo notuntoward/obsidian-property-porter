@@ -220,6 +220,33 @@ describe("PropertyPorter", () => {
 			expect(document.activeElement).toBe(repairButton);
 		});
 
+		it("groups source repair buttons, supports Left/Right focus, and explains Escape", () => {
+			const { app } = createApp();
+			const file = new obsidianMock.TFile("source.md");
+			const answer = vi.fn();
+			const modal = new SourceRepairPermissionModal(app as any, [file], answer);
+			document.body.appendChild(modal.contentEl);
+			modal.onOpen();
+
+			const buttons = modal.contentEl.querySelectorAll<HTMLButtonElement>(".pp-modal-buttons button");
+			expect(buttons).toHaveLength(2);
+			expect(modal.contentEl.textContent).toContain("Press Esc to copy without repairing.");
+
+			buttons[0]!.focus();
+			const right = new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true });
+			buttons[0]!.dispatchEvent(right);
+			expect(right.defaultPrevented).toBe(true);
+			expect(document.activeElement).toBe(buttons[1]);
+
+			const left = new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true, cancelable: true });
+			buttons[1]!.dispatchEvent(left);
+			expect(left.defaultPrevented).toBe(true);
+			expect(document.activeElement).toBe(buttons[0]);
+
+			modal.close();
+			expect(answer).toHaveBeenCalledWith(false);
+		});
+
 		it("dismisses source repair permission without writing but still copies", async () => {
 			const file = new obsidianMock.TFile("dup.md");
 			const original = "---\nx: first\nx: second\n---\n";

@@ -1,4 +1,4 @@
-import { App, Modal, AbstractInputSuggest } from "obsidian";
+import { App, Modal, AbstractInputSuggest, Notice } from "obsidian";
 import {
 	isListProperty,
 	getPropertySuggestions,
@@ -12,6 +12,8 @@ import {
 	type VaultMetadataCatalog,
 } from "commons/properties";
 import { setTimeoutIn, ownerWindow } from "commons/windows";
+
+let nextPropertyNameId = 0;
 
 export interface PropertyCardState {
 	name: string;
@@ -214,6 +216,7 @@ export class SelectPropertiesModal extends Modal {
 		const controlsEl = this.contentEl.createDiv({ cls: "pp-multi-select-controls" });
 		this.hintEl = controlsEl.createDiv({ cls: "pp-multi-select-hint" });
 		this.keyboardHintEl = controlsEl.createDiv({ cls: "pp-keyboard-hint" });
+		this.keyboardHintEl.setAttribute("aria-live", "polite");
 		const buttonsEl = controlsEl.createDiv({ cls: "pp-multi-select-buttons" });
 
 		this.clearAllButton = buttonsEl.createEl("button", {
@@ -230,6 +233,42 @@ export class SelectPropertiesModal extends Modal {
 		});
 		this.doneButton.addEventListener("click", () => this.submit());
 		this.contentEl.addEventListener("keydown", this.handleModalKeyboard, true);
+		this.contentEl.addEventListener("focusin", this.handleModalFocus);
+		this.scope.register(["Mod"], "Enter", () => {
+			this.submit();
+			return false;
+		});
+		this.scope.register(["Alt"], "ArrowDown", () => {
+			this.focusCard(1);
+			return false;
+		});
+		this.scope.register(["Alt"], "ArrowUp", () => {
+			this.focusCard(-1);
+			return false;
+		});
+		this.scope.register(["Alt"], "X", (event) => {
+			const target = event.target;
+			if (!(target instanceof HTMLElement)) return;
+			const cardEl = target.closest<HTMLElement>(".pp-property-card");
+			const state = Array.from(this.propertyStates.values()).find(
+				(candidate) => candidate.cardEl === cardEl
+			);
+			if (!state) return;
+			this.removeProperty(state.name);
+			new Notice(`Property Porter: Excluded ${state.name}`);
+			return false;
+		});
+		this.scope.register(["Mod"], "Backspace", (event) => {
+			const target = event.target;
+			if (
+				!(target instanceof HTMLInputElement) ||
+				(target.type !== "radio" && target.value !== "")
+			) {
+				return;
+			}
+			this.clearAll();
+			return false;
+		});
 
 		this.updateControls();
 
@@ -280,6 +319,7 @@ export class SelectPropertiesModal extends Modal {
 
 	onClose(): void {
 		this.contentEl.removeEventListener("keydown", this.handleModalKeyboard, true);
+		this.contentEl.removeEventListener("focusin", this.handleModalFocus);
 		for (const state of this.propertyStates.values()) {
 			state.picker?.destroy();
 		}
@@ -313,19 +353,29 @@ export class SelectPropertiesModal extends Modal {
 	removeProperty(name: string): void {
 		const state = this.propertyStates.get(name);
 		if (!state) return;
+		const cards = Array.from(this.contentEl.querySelectorAll<HTMLElement>(".pp-property-card"));
+		const cardIndex = state.cardEl ? cards.indexOf(state.cardEl) : -1;
+		const nextCard = cards[cardIndex + 1];
+		const nextFocusTarget = nextCard
+			? this.getCardFocusTarget(nextCard)
+			: this.contentEl.querySelector<HTMLElement>(".pp-add-property-details > summary");
 		state.picker?.destroy();
 		state.cardEl?.remove();
 		this.propertyStates.delete(name);
 		this.updateControls();
+		nextFocusTarget?.focus();
 	}
 
 	private renderPropertyCard(state: PropertyCardState, container: HTMLElement): void {
 		const cardEl = container.createDiv({ cls: "pp-property-card" });
+		cardEl.setAttribute("role", "group");
 		state.cardEl = cardEl;
 
 		const header = cardEl.createDiv({ cls: "pp-property-header" });
 		const titleGroup = header.createDiv({ cls: "pp-property-title-group" });
-		titleGroup.createSpan({ cls: "pp-property-name", text: state.name });
+		const nameEl = titleGroup.createSpan({ cls: "pp-property-name", text: state.name });
+		nameEl.id = `pp-property-name-${++nextPropertyNameId}`;
+		cardEl.setAttribute("aria-labelledby", nameEl.id);
 
 		const badgeText =
 			state.name === "tags" || state.name === "tag"
@@ -417,6 +467,7 @@ export class SelectPropertiesModal extends Modal {
 				state.picker.inputEl.focus();
 			};
 
+			const candidateRadios: HTMLInputElement[] = [];
 			for (const candidate of state.candidates) {
 				const option = optionsEl.createEl("label", { cls: "pp-conflict-option" });
 				const radio = option.createEl("input", {
@@ -426,6 +477,7 @@ export class SelectPropertiesModal extends Modal {
 						value: candidate,
 					},
 				});
+				candidateRadios.push(radio);
 				radio.checked = state.selected[0] === candidate;
 				option.createSpan({ cls: "pp-conflict-value", text: candidate });
 				const sources = state.conflictContext?.valueSources?.[state.name]?.[candidate] ?? [];
@@ -465,6 +517,19 @@ export class SelectPropertiesModal extends Modal {
 			};
 			otherRadio.addEventListener("click", selectOther);
 			otherRadio.addEventListener("change", selectOther);
+			const handleConflictKeydown = (event: KeyboardEvent): void => {
+				const target = /^[1-9]$/.test(event.key)
+					? candidateRadios[Number(event.key) - 1]
+					: event.key.toLowerCase() === "o"
+						? otherRadio
+						: undefined;
+				if (!target) return;
+				event.preventDefault();
+				target.click();
+			};
+			for (const radio of [...candidateRadios, otherRadio]) {
+				radio.addEventListener("keydown", handleConflictKeydown);
+			}
 			return;
 		}
 
@@ -600,13 +665,48 @@ export class SelectPropertiesModal extends Modal {
 			this.doneButton.setText(`${this.options.finishText ?? "Save clipboard"} (${totalPropsWithValues})`);
 			this.doneButton.disabled = this.hasUnresolvedConflicts();
 		}
-		this.keyboardHintEl?.setText(
-			`Enter accepts when ready · Esc cancels`
-		);
 		if (this.clearAllButton) {
 			this.clearAllButton.disabled = totalPropsWithValues === 0;
 		}
 	}
+
+	focusCard(delta: 1 | -1): void {
+		const activeElement = this.contentEl.ownerDocument.activeElement;
+		if (!(activeElement instanceof HTMLElement)) return;
+		const currentCard = activeElement.closest<HTMLElement>(".pp-property-card");
+		if (!currentCard) return;
+		const cards = Array.from(this.contentEl.querySelectorAll<HTMLElement>(".pp-property-card"));
+		const currentIndex = cards.indexOf(currentCard);
+		const nextCard = cards[currentIndex + delta];
+		if (!nextCard) return;
+		this.getCardFocusTarget(nextCard)?.focus();
+	}
+
+	private getCardFocusTarget(cardEl: HTMLElement): HTMLElement | null {
+		return (
+			cardEl.querySelector<HTMLInputElement>('.pp-conflict-option input[type="radio"]') ??
+			cardEl.querySelector<HTMLInputElement>(".commons-property-picker-input") ??
+			cardEl.querySelector<HTMLButtonElement>("button")
+		);
+	}
+
+	private readonly handleModalFocus = (event: FocusEvent): void => {
+		const target = event.target;
+		if (!(target instanceof HTMLElement) || !this.keyboardHintEl) return;
+		if (target.matches('.pp-conflict-option input[type="radio"]')) {
+			this.keyboardHintEl.setText(
+				"1-9 choose a value · O choose Other value · Alt+ArrowUp/Down move between properties · Alt+X exclude · Mod+Backspace clear all · Mod+Enter submit · Esc cancels"
+			);
+		} else if (target.matches(".commons-property-picker-input")) {
+			this.keyboardHintEl.setText(
+				"Enter accepts when ready · Alt+ArrowUp/Down move between properties · Alt+X exclude · Mod+Backspace clear all · Mod+Enter submit · Esc closes suggestions"
+			);
+		} else if (target.matches("button")) {
+			this.keyboardHintEl.setText(
+				"Alt+ArrowUp/Down move between properties · Alt+X exclude · Mod+Backspace clear all · Mod+Enter submit · Esc cancels"
+			);
+		}
+	};
 
 	private getUnresolvedConflict(): PropertyCardState | undefined {
 		return Array.from(this.propertyStates.values()).find(
@@ -623,19 +723,8 @@ export class SelectPropertiesModal extends Modal {
 	}
 
 	private readonly handleModalKeyboard = (event: KeyboardEvent): void => {
-		if (event.key === "Escape") {
-			event.preventDefault();
-			event.stopPropagation();
-			this.close();
-			return;
-		}
-		if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
-			event.preventDefault();
-			event.stopPropagation();
-			this.submit();
-			return;
-		}
 		if (event.key !== "Enter") return;
+		if (document.querySelector(".suggestion-container")) return;
 		if (
 			event.target instanceof HTMLInputElement &&
 			event.target.matches('.pp-conflict-option input[type="radio"]')

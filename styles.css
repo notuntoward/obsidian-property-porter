@@ -8,6 +8,12 @@
 	width: 100%;
 }
 
+.pp-modal-buttons {
+	display: flex;
+	gap: 8px;
+	justify-content: flex-end;
+}
+
 .pp-multi-select-controls {
 	display: flex;
 	align-items: center;
