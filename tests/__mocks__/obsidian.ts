@@ -225,13 +225,26 @@ function createChild(parent: any, tag: string, options: any = {}): any {
 	return decorateEl(child);
 }
 
+export class Scope {
+	handlers: { modifiers: string[] | null; key: string | null; fn: (evt: any) => boolean | void }[] = [];
+	constructor(public parent?: Scope) {}
+	register(modifiers: string[] | null, key: string | null, fn: (evt: any) => boolean | void): any {
+		const handler = { modifiers, key, fn };
+		this.handlers.push(handler);
+		return handler;
+	}
+	unregister(handler: any): void {
+		this.handlers = this.handlers.filter((candidate) => candidate !== handler);
+	}
+}
+
 export class Modal {
 	app: any;
 	contentEl: any;
 	containerEl: any;
 	modalEl: any;
 	titleEl: any;
-	scope: { register(modifiers: string[] | null, key: string, fn: (evt: Event) => boolean): void };
+	scope: Scope;
 
 	constructor(app: any) {
 		this.app = app;
@@ -239,7 +252,7 @@ export class Modal {
 		this.modalEl = decorateEl(document.createElement("div"));
 		this.containerEl = decorateEl(document.createElement("div"));
 		this.titleEl = decorateEl(document.createElement("div"));
-		this.scope = { register: () => {} };
+		this.scope = new Scope();
 	}
 
 	open(): void {
@@ -253,16 +266,14 @@ export class Modal {
 }
 
 export class SuggestModal<T> extends Modal {
-	scope: { register(modifiers: string[], key: string, fn: (evt: Event) => boolean): void };
+	scope: Scope;
 	chooser: { selectedItem: number; values: T[]; setSelectedItem(index: number, scrollIntoView: boolean): void };
 	inputEl: HTMLInputElement;
 
 	constructor(app: any) {
 		super(app);
 		this.inputEl = document.createElement("input");
-		this.scope = {
-			register: vi.fn(),
-		};
+		this.scope = { register: vi.fn() } as unknown as Scope;
 		this.chooser = {
 			selectedItem: 0,
 			values: [],

@@ -7,6 +7,7 @@ import {
 	Notice,
 	Modal,
 	FileView,
+	type Menu,
 	WorkspaceLeaf,
 	parseYaml,
 	type SettingDefinitionItem,
@@ -14,6 +15,7 @@ import {
 import {
 	filterFrontmatter,
 	mergeFrontmatter,
+	mergeArrays,
 	unionFrontmatter,
 	isEmptyPropertyValue,
 	countPropertyValue,
@@ -123,11 +125,16 @@ interface PropertyPorterSettings {
 	pasteMode: PasteMode;
 }
 
+type FilterOverride = { include: string[]; exclude: string[] };
+type ClipboardKind = "properties" | "tags";
+
 const DEFAULT_SETTINGS: PropertyPorterSettings = {
 	onlyInclude: "tags",
 	excludeKeys: "aliases, created date, modified date",
 	pasteMode: "merge",
 };
+
+const TAGS_FILTER_OVERRIDE: FilterOverride = { include: ["tags"], exclude: [] };
 
 export const NOTICE_TIMEOUT_MS = 7000;
 export const NOTICE_NO_PROPERTIES_TO_PASTE =
@@ -173,6 +180,7 @@ export default class PropertyPorter extends Plugin {
 	/** Name of the note (or notes) the clipboard was copied from, so paste
 	 * conflicts can say where the clipboard value came from. */
 	clipboardOrigin: string | null = null;
+	clipboardKind: ClipboardKind = "properties";
 	private clipboardValueSources: FrontmatterValueSources = {};
 	statusBarItem: HTMLElement;
 
@@ -230,11 +238,42 @@ export default class PropertyPorter extends Plugin {
 			callback: () => this.editPropertyClipboard(),
 		});
 
+		this.addCommand({
+			id: "copy-tags-active-note",
+			name: "Copy tags from active note",
+			callback: () => this.copyProperties(TAGS_FILTER_OVERRIDE),
+		});
+
+		this.addCommand({
+			id: "copy-tags-tab-group",
+			name: "Copy tags from the active tab group",
+			callback: () => this.copyPropertiesFromActiveTabGroup(TAGS_FILTER_OVERRIDE),
+		});
+
+		this.registerEvent(
+			this.app.workspace.on("file-menu", (menu, file) => {
+				if (!(file instanceof TFile) || file.extension.toLowerCase() !== "md") return;
+				this.addTagMenuItems(menu, [file]);
+			})
+		);
+
+		this.registerEvent(
+			this.app.workspace.on("files-menu", (menu, files) => {
+				const markdownFiles = files.filter(
+					(file): file is TFile =>
+						file instanceof TFile && file.extension.toLowerCase() === "md"
+				);
+				if (markdownFiles.length === 0) return;
+				this.addTagMenuItems(menu, markdownFiles);
+			})
+		);
+
 		this.addSettingTab(new PropertyPorterSettingTab(this.app, this));
 	}
 
 	onunload(): void {
 		this.clipboard = {};
+		this.clipboardKind = "properties";
 		this.updateStatusBar();
 	}
 
@@ -271,7 +310,8 @@ export default class PropertyPorter extends Plugin {
 
 	updateStatusBar(): void {
 		const count = this.countClipboardValues();
-		this.statusBarItem.setText(count > 0 ? `PP: ${count}` : "");
+		const label = this.clipboardKind === "tags" ? " tags only" : "";
+		this.statusBarItem.setText(count > 0 ? `PP: ${count}${label}` : "");
 	}
 
 	getActiveFile(): TFile | null {
@@ -289,7 +329,10 @@ export default class PropertyPorter extends Plugin {
 		return this.parseFrontmatterContent(content, file);
 	}
 
-	getFilteredSourceFrontmatter(file?: TFile | null): Record<string, unknown> | null {
+	getFilteredSourceFrontmatter(
+		file?: TFile | null,
+		filterOverride?: FilterOverride
+	): Record<string, unknown> | null {
 		const source = file ?? this.getActiveFile();
 		if (!source) {
 			new Notice("Property Porter: No active file");
@@ -297,18 +340,51 @@ export default class PropertyPorter extends Plugin {
 		}
 
 		const fm = this.getParsedFrontmatter(source);
-		return filterFrontmatter(fm, this.settings.onlyInclude, this.settings.excludeKeys);
+		return this.filterFrontmatter(fm, filterOverride);
 	}
 
 	// Copies the given frontmatter onto the clipboard, refreshes the status
 	// bar, and reports how many values were copied. Shared by every copy
 	// command so the clipboard-selection rule stays in one place.
-	applyClipboard(fm: Record<string, unknown>, valueSources: FrontmatterValueSources = {}): void {
+	applyClipboard(
+		fm: Record<string, unknown>,
+		valueSources: FrontmatterValueSources = {},
+		clipboardKind: ClipboardKind = "properties"
+	): void {
 		this.clipboard = fm;
 		this.clipboardValueSources = valueSources;
+		this.clipboardKind = clipboardKind;
 		this.updateStatusBar();
 		const count = this.countClipboardValues();
+		if (clipboardKind === "tags") {
+			new Notice(`Property Porter: Copied ${count} tag${count === 1 ? "" : "s"}`);
+			return;
+		}
 		new Notice(`Property Porter: ${count} propert${count === 1 ? "y" : "ies"} copied`);
+	}
+
+	private filterFrontmatter(
+		frontmatter: Record<string, unknown>,
+		filterOverride?: FilterOverride
+	): Record<string, unknown> {
+		return filterFrontmatter(
+			frontmatter,
+			filterOverride?.include.join(", ") ?? this.settings.onlyInclude,
+			filterOverride?.exclude.join(", ") ?? this.settings.excludeKeys
+		);
+	}
+
+	private addTagMenuItems(menu: Menu, files: TFile[]): void {
+		menu.addItem((item) =>
+			item.setTitle("Copy tags").onClick(() => {
+				return this.copyPropertiesFromFiles(files, TAGS_FILTER_OVERRIDE);
+			})
+		);
+		menu.addItem((item) =>
+			item.setTitle("Paste tags").onClick(() => {
+				return this.pastePropertiesIntoFiles(files, TAGS_FILTER_OVERRIDE);
+			})
+		);
 	}
 
 	// Reads from the vault rather than metadataCache/cachedRead so commands see
@@ -363,7 +439,11 @@ export default class PropertyPorter extends Plugin {
 	// later dialog leaves every note untouched. Returns null when no note has
 	// duplicates; `cancelled: true` means a dialog was dismissed, aborting the
 	// operation with nothing written.
-	private async resolveDuplicateKeys(files: TFile[], askBeforeRepair = false): Promise<{
+	private async resolveDuplicateKeys(
+		files: TFile[],
+		askBeforeRepair = false,
+		filterOverride?: FilterOverride
+	): Promise<{
 		cancelled: boolean;
 		/** Post-repair frontmatter per note that had duplicates. */
 		fullByFile: Map<TFile, Record<string, unknown>>;
@@ -417,11 +497,7 @@ export default class PropertyPorter extends Plugin {
 				};
 			}
 
-			const copyCandidates = filterFrontmatter(
-				freshFrontmatter,
-				this.settings.onlyInclude,
-				this.settings.excludeKeys
-			);
+			const copyCandidates = this.filterFrontmatter(freshFrontmatter, filterOverride);
 			const initial = { ...(askBeforeRepair ? copyCandidates : {}), ...conflicts };
 			const conflictNames = Object.keys(conflicts);
 			const result = await this.openPropertySelectionModal(initial, context, {
@@ -492,69 +568,83 @@ export default class PropertyPorter extends Plugin {
 		});
 	}
 
-	async copyProperties(): Promise<void> {
+	async copyProperties(filterOverride?: FilterOverride): Promise<void> {
 		const source = this.getActiveFile();
 		if (!source) {
 			new Notice("Property Porter: No active file");
 			return;
 		}
-		const duplicates = await this.resolveDuplicateKeys([source], true);
+		const duplicates = await this.resolveDuplicateKeys([source], true, filterOverride);
 		if (duplicates?.cancelled) return;
 		const full = duplicates.fullByFile.get(source) ?? (await this.getFreshParsedFrontmatter(source));
 		const filtered =
 			duplicates.selectedByFile.get(source) ??
-			filterFrontmatter(full, this.settings.onlyInclude, this.settings.excludeKeys);
+			this.filterFrontmatter(full, filterOverride);
 		await duplicates.commit();
 		this.clipboardOrigin = source.basename;
 		this.applyClipboard(
 			filtered,
-			collectValueSources([{ note: source.basename, frontmatter: filtered }])
+			collectValueSources([{ note: source.basename, frontmatter: filtered }]),
+			this.getClipboardKind(filterOverride)
 		);
 	}
 
 	// Copies properties from a note the user picks via the same file selector
 	// used by "Paste properties into another note", then applies the same
 	// copy logic as `copyProperties`.
-	async copyPropertiesFrom(): Promise<void> {
+	async copyPropertiesFrom(filterOverride?: FilterOverride): Promise<void> {
 		const file = await this.pickTargetFile();
 		if (!file) return;
-		const duplicates = await this.resolveDuplicateKeys([file], true);
+		const duplicates = await this.resolveDuplicateKeys([file], true, filterOverride);
 		if (duplicates?.cancelled) return;
 		const full = duplicates.fullByFile.get(file) ?? (await this.getFreshParsedFrontmatter(file));
 		const filtered =
 			duplicates.selectedByFile.get(file) ??
-			filterFrontmatter(full, this.settings.onlyInclude, this.settings.excludeKeys);
+			this.filterFrontmatter(full, filterOverride);
 		await duplicates.commit();
 		this.clipboardOrigin = file.basename;
-		this.applyClipboard(filtered, collectValueSources([{ note: file.basename, frontmatter: filtered }]));
+		this.applyClipboard(
+			filtered,
+			collectValueSources([{ note: file.basename, frontmatter: filtered }]),
+			this.getClipboardKind(filterOverride)
+		);
 	}
 
 	// Collects properties from every note in the active tab group, reusing the
 	// same group resolution and per-note filtering as the other commands, then
 	// unions them into a single clipboard payload (list properties accumulate
 	// every distinct value across the notes).
-	async copyPropertiesFromActiveTabGroup(): Promise<void> {
+	async copyPropertiesFromActiveTabGroup(filterOverride?: FilterOverride): Promise<void> {
 		const files = this.getActiveTabGroupFiles();
 		if (files.length === 0) {
 			new Notice("Property Porter: No markdown files in the active tab group");
 			return;
 		}
+		await this.copyPropertiesFromFiles(files, filterOverride);
+	}
 
-		const duplicates = await this.resolveDuplicateKeys(files, true);
+	async copyPropertiesFromFiles(files: TFile[], filterOverride?: FilterOverride): Promise<void> {
+		const markdownFiles = this.uniqueMarkdownFiles(files);
+		if (markdownFiles.length === 0) {
+			new Notice("Property Porter: No markdown files selected");
+			return;
+		}
+
+		const duplicates = await this.resolveDuplicateKeys(markdownFiles, true, filterOverride);
 		if (duplicates?.cancelled) return; // leave every note and the clipboard untouched
 
 		const fulls: Record<string, unknown>[] = [];
-		for (const file of files) {
+		for (const file of markdownFiles) {
 			const full = duplicates.fullByFile.get(file);
 			if (!full) throw new Error(`Missing frontmatter snapshot for ${file.path}`);
 			fulls.push(full);
 		}
-		const collected = files.map((file, index) =>
+		const collected = markdownFiles.map((file, index) =>
 			duplicates.selectedByFile.get(file) ??
-			filterFrontmatter(fulls[index], this.settings.onlyInclude, this.settings.excludeKeys)
+			this.filterFrontmatter(fulls[index], filterOverride)
 		);
 		const valueSources = collectValueSources(
-			files.map((file, index) => ({ note: file.basename, frontmatter: collected[index] }))
+			markdownFiles.map((file, index) => ({ note: file.basename, frontmatter: collected[index] }))
 		);
 
 		// Gather scalar collisions across the group and resolve them in one
@@ -563,23 +653,43 @@ export default class PropertyPorter extends Plugin {
 		const union = unionFrontmatter(collected, { gatherConflicts: true });
 		const conflicts = this.extractScalarConflicts(union);
 		if (Object.keys(conflicts).length > 0) {
-			const context = this.buildCrossNoteConflictContext(files, fulls, conflicts, valueSources);
+			const context = this.buildCrossNoteConflictContext(markdownFiles, fulls, conflicts, valueSources);
 			const resolved = await this.resolveConflicts({ ...union }, conflicts, context);
 			if (resolved === null) return; // cancelled: notes stay unrepaired, clipboard untouched
 			await duplicates.commit();
-			this.clipboardOrigin = files.map((file) => file.basename).join(", ");
-			this.applyClipboard(resolved, valueSources);
+			this.clipboardOrigin = markdownFiles.map((file) => file.basename).join(", ");
+			this.applyClipboard(resolved, valueSources, this.getClipboardKind(filterOverride));
 			return;
 		}
 		await duplicates.commit();
-		this.clipboardOrigin = files.map((file) => file.basename).join(", ");
-		this.applyClipboard(union, valueSources);
+		this.clipboardOrigin = markdownFiles.map((file) => file.basename).join(", ");
+		this.applyClipboard(union, valueSources, this.getClipboardKind(filterOverride));
+	}
+
+	private getClipboardKind(filterOverride?: FilterOverride): ClipboardKind {
+		return filterOverride?.include.length === 1 &&
+			filterOverride.include[0]?.trim().toLowerCase() === "tags" &&
+			filterOverride.exclude.length === 0
+			? "tags"
+			: "properties";
+	}
+
+	private uniqueMarkdownFiles(files: TFile[]): TFile[] {
+		const seen = new Set<string>();
+		return files.filter((file) => {
+			if (!(file instanceof TFile) || file.extension.toLowerCase() !== "md" || seen.has(file.path)) {
+				return false;
+			}
+			seen.add(file.path);
+			return true;
+		});
 	}
 
 	clearClipboard(): void {
 		this.clipboard = {};
 		this.clipboardOrigin = null;
 		this.clipboardValueSources = {};
+		this.clipboardKind = "properties";
 		this.updateStatusBar();
 	}
 
@@ -587,7 +697,10 @@ export default class PropertyPorter extends Plugin {
 		return Object.values(this.clipboard).some((value) => !isEmptyPropertyValue(value));
 	}
 
-	async pasteProperties(targetFile?: TFile | null): Promise<void> {
+	async pasteProperties(
+		targetFile?: TFile | null,
+		filterOverride?: FilterOverride
+	): Promise<void> {
 		if (!this.hasClipboardContent()) {
 			new Notice(NOTICE_NO_PROPERTIES_TO_PASTE, NOTICE_TIMEOUT_MS);
 			return;
@@ -595,31 +708,54 @@ export default class PropertyPorter extends Plugin {
 
 		const file = targetFile ?? (await this.pickTargetFile());
 		if (!file) return;
+		await this.pastePropertiesIntoFiles([file], filterOverride);
+	}
+
+	async pastePropertiesIntoFiles(files: TFile[], filterOverride?: FilterOverride): Promise<void> {
+		if (!this.hasClipboardContent()) {
+			new Notice(NOTICE_NO_PROPERTIES_TO_PASTE, NOTICE_TIMEOUT_MS);
+			return;
+		}
+		const markdownFiles = this.uniqueMarkdownFiles(files);
+		if (markdownFiles.length === 0) {
+			new Notice("Property Porter: No markdown files selected");
+			return;
+		}
+		let payload = filterOverride
+			? this.filterFrontmatter(this.clipboard, filterOverride)
+			: structuredClone(this.clipboard);
+		if (selectedClipboardEntries(payload).length === 0) {
+			new Notice("Property Porter: Nothing pasted; no property values were selected.");
+			return;
+		}
 
 		// Duplicate keys in the target are conflicts in every paste mode:
 		// resolve them before pasting. The repair is only written once the
 		// whole paste has succeeded.
-		const duplicates = await this.resolveDuplicateKeys([file]);
+		const duplicates = await this.resolveDuplicateKeys(markdownFiles);
 		if (duplicates?.cancelled) return;
-		const repaired = duplicates.fullByFile.get(file);
-		const overrides = repaired ? new Map([[file, repaired]]) : undefined;
+		const overrides = new Map(
+			markdownFiles
+				.map((file) => [file, duplicates.fullByFile.get(file)] as const)
+				.filter((entry): entry is [TFile, Record<string, unknown>] => Boolean(entry[1]))
+		);
 
 		// A merge-mode scalar collision is ambiguous: ask once before writing.
 		// Overwrite and skip modes already encode the user's choice.
-		let payload = structuredClone(this.clipboard);
-		const { conflicts, context } = await this.gatherPasteConflicts([file], overrides);
+		const { conflicts, context } = await this.gatherPasteConflicts(markdownFiles, overrides, payload);
 		if (Object.keys(conflicts).length > 0) {
 			const resolved = await this.resolveConflicts(payload, conflicts, context);
 			if (resolved === null) return; // cancelled: target stays untouched
 			payload = resolved;
 		}
-		if (selectedClipboardEntries(payload).length === 0) {
-			new Notice("Property Porter: Nothing pasted; no property values were selected.");
-			return;
-		}
 		await duplicates.commit();
-		await this.writeProperties(file, payload);
-		new Notice(pastedClipboardNotice(payload, [file.basename]));
+		const forceTagMerge =
+			this.clipboardKind === "tags" ||
+			filterOverride?.include.some((key) => ["tag", "tags"].includes(key.trim().toLowerCase())) === true;
+		for (const file of markdownFiles) {
+			await this.writeProperties(file, payload, forceTagMerge);
+		}
+		new Notice(pastedClipboardNotice(payload, markdownFiles.map(({ basename }) => basename)));
 	}
 
 	// Writes the clipboard into one file. Each call gets its own deep copy so
@@ -627,24 +763,40 @@ export default class PropertyPorter extends Plugin {
 	// with each other.
 	private async writeProperties(
 		file: TFile,
-		payload: Record<string, unknown> = this.clipboard
+		payload: Record<string, unknown> = this.clipboard,
+		forceTagMerge = false
 	): Promise<void> {
 		const data = structuredClone(payload);
 		await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
-			const merged = this.mergeFrontmatter(data, stripPosition(frontmatter));
+			const destination = stripPosition(frontmatter);
+			const merged = this.mergeFrontmatter(data, destination);
+			if (forceTagMerge) {
+				for (const key of Object.keys(data)) {
+					if (!["tag", "tags"].includes(key.toLowerCase())) continue;
+					const destinationValue = destination[key];
+					const destinationTags = Array.isArray(destinationValue)
+						? destinationValue
+						: destinationValue === null || destinationValue === undefined || destinationValue === ""
+							? []
+							: [destinationValue];
+					const sourceValue = data[key];
+					const sourceTags = Array.isArray(sourceValue) ? sourceValue : [sourceValue];
+					merged[key] = mergeArrays(sourceTags, mergeArrays(destinationTags, []));
+				}
+			}
 			for (const [key, value] of Object.entries(merged)) {
 				frontmatter[key] = value;
 			}
 		});
 	}
 
-	async pasteIntoActive(): Promise<void> {
+	async pasteIntoActive(filterOverride?: FilterOverride): Promise<void> {
 		const active = this.getActiveFile();
 		if (!active) {
 			new Notice("Property Porter: No active file");
 			return;
 		}
-		await this.pasteProperties(active);
+		await this.pasteProperties(active, filterOverride);
 	}
 
 	buildNavigationModel(activeLeaf: WorkspaceLeaf | null = null): NavigationModel {
@@ -686,7 +838,7 @@ export default class PropertyPorter extends Plugin {
 		return files;
 	}
 
-	async pasteIntoActiveTabGroup(): Promise<void> {
+	async pasteIntoActiveTabGroup(filterOverride?: FilterOverride): Promise<void> {
 		if (!this.hasClipboardContent()) {
 			new Notice(NOTICE_NO_PROPERTIES_TO_PASTE, NOTICE_TIMEOUT_MS);
 			return;
@@ -697,38 +849,7 @@ export default class PropertyPorter extends Plugin {
 			new Notice("Property Porter: No markdown files in the active tab group");
 			return;
 		}
-
-		// Resolve every conflict in the group once, in one place, and apply
-		// the same resolution to every note. Duplicate keys in any target are
-		// conflicts in every paste mode: resolve them before pasting. Repairs
-		// are only written once the whole paste has succeeded.
-		const duplicates = await this.resolveDuplicateKeys(files);
-		if (duplicates?.cancelled) return;
-		const overrides = duplicates
-			? new Map(
-					files
-						.map((file) => [file, duplicates.fullByFile.get(file)] as const)
-						.filter((entry): entry is [TFile, Record<string, unknown>] => Boolean(entry[1]))
-				)
-			: undefined;
-
-		const { conflicts, context } = await this.gatherPasteConflicts(files, overrides);
-		let payload: Record<string, unknown> = structuredClone(this.clipboard);
-		if (Object.keys(conflicts).length > 0) {
-			const resolved = await this.resolveConflicts(payload, conflicts, context);
-			if (resolved === null) return; // cancelled: nothing is written, notes stay unrepaired
-			payload = resolved;
-		}
-
-		if (selectedClipboardEntries(payload).length === 0) {
-			new Notice("Property Porter: Nothing pasted; no property values were selected.");
-			return;
-		}
-		await duplicates.commit();
-		for (const file of files) {
-			await this.writeProperties(file, payload);
-		}
-		new Notice(pastedClipboardNotice(payload, files.map(({ basename }) => basename)));
+		await this.pastePropertiesIntoFiles(files, filterOverride);
 	}
 
 	async pickTargetFile(): Promise<TFile | null> {
@@ -839,7 +960,8 @@ export default class PropertyPorter extends Plugin {
 	// duplicate-key repair, which the metadata cache may not reflect yet).
 	private async gatherPasteConflicts(
 		files: TFile[],
-		overrides?: Map<TFile, Record<string, unknown>>
+		overrides?: Map<TFile, Record<string, unknown>>,
+		payload: Record<string, unknown> = this.clipboard
 	): Promise<{ conflicts: Record<string, unknown[]>; context: Record<string, ConflictCardContext> }> {
 		const conflicts: Record<string, unknown[]> = {};
 		const context: Record<string, ConflictCardContext> = {};
@@ -852,13 +974,16 @@ export default class PropertyPorter extends Plugin {
 			}))
 		);
 		const fallbackClipboardSources: FrontmatterValueSources = this.clipboardOrigin
-			? collectValueSources([{ note: this.clipboardOrigin, frontmatter: this.clipboard }])
+			? collectValueSources([{ note: this.clipboardOrigin, frontmatter: payload }])
 			: {};
 		for (const key of Object.keys(this.clipboardValueSources)) {
-			delete fallbackClipboardSources[key];
+			if (key in payload) delete fallbackClipboardSources[key];
 		}
+		const clipboardValueSources = Object.fromEntries(
+			Object.entries(this.clipboardValueSources).filter(([key]) => key in payload)
+		);
 		const valueSources = mergeValueSourcesByMaximumCount(
-			this.clipboardValueSources,
+			clipboardValueSources,
 			fallbackClipboardSources,
 			collectValueSources(targetFrontmatters)
 		);
@@ -868,7 +993,7 @@ export default class PropertyPorter extends Plugin {
 
 		const catalog = collectVaultMetadata(this.app);
 		for (const { note, frontmatter: target } of targetFrontmatters) {
-			for (const [key, clipValue] of Object.entries(this.clipboard)) {
+			for (const [key, clipValue] of Object.entries(payload)) {
 				if (isEmptyPropertyValue(clipValue) || Array.isArray(clipValue)) continue;
 				if (isListProperty(catalog, key)) continue;
 
@@ -933,7 +1058,14 @@ export default class PropertyPorter extends Plugin {
 		const result = await this.openPropertySelectionModal(
 			{ ...this.clipboard },
 			context,
-			{ title: "Edit property clipboard", focusFirstProperty: false }
+			{
+				title: "Edit property clipboard",
+				subtitle: this.clipboardKind === "tags" ? "Tag copy" : "Property copy",
+				subtitleHint:
+					this.clipboardKind === "tags"
+						? "Copied with a tags command. On paste, tags are always merged (union) whatever the Paste mode; other properties follow the Paste mode."
+						: "Copied with a properties command. On paste, the Paste mode setting applies to every property.",
+			}
 		);
 
 		if (result.cancelled) return;
@@ -984,6 +1116,7 @@ export default class PropertyPorter extends Plugin {
 		this.clipboard = { tags: result.items };
 		this.clipboardOrigin = null;
 		this.clipboardValueSources = {};
+		this.clipboardKind = "properties";
 		this.updateStatusBar();
 		if (result.items.length === 0) {
 			new Notice(NOTICE_CLEARED_COPIED_TAGS);
@@ -1230,7 +1363,7 @@ export class PropertyPorterSettingTab extends PluginSettingTab {
 				items: [
 					{
 						name: "Paste mode",
-						desc: "How copied properties merge into the destination note.",
+						desc: "Controls how clipboard properties are applied. For a tags-only copy, tags are always unioned; other properties added in the clipboard editor follow this setting, with scalar conflicts resolved normally in Merge mode.",
 						control: {
 							type: "dropdown",
 							key: "pasteMode" satisfies keyof PropertyPorterSettings,

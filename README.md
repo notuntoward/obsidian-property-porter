@@ -8,18 +8,24 @@ Keeping frontmatter consistent across a vault is tedious and error-prone. When y
 
 ## Usage
 
-Property Porter provides eight commands:
+Property Porter provides ten commands:
 
-- **Copy properties from active note** — saves the properties matching **Only include properties**/**Exclude properties** from the active file into an internal clipboard, replacing whatever was there before. The status bar shows `PP: N`, where `N` is the total number of individual values copied (each list item counts separately; e.g. three tags shows `PP: 3`).
+- **Copy properties from active note** — saves the properties matching **Only include properties**/**Exclude properties** from the active file into an internal clipboard, replacing whatever was there before. The status bar shows `PP: N`, where `N` is the total number of individual values copied (each list item counts separately). A tags-only copy is marked `PP: N tags only`.
+- **Copy tags from active note** — copies only `tags` from the active file, regardless of the property filter settings.
 - **Copy properties from another note** — opens a fast file picker that searches note names, paths, and aliases with literal substring matching as you type, so you can choose which note to copy from; then it collects properties the same way as the active-note command.
 - **Copy properties from the active tab group** — collects properties from every note open in the current tab group and unions them into one clipboard payload. List properties (e.g. `tags`) accumulate every distinct value across the notes; scalar properties keep the first value seen. Files in other tab groups are ignored.
+- **Copy tags from the active tab group** — unions only tags from notes in the active tab group, regardless of the property filter settings.
 - **Paste properties into another note** — opens a file picker so you can choose which file to paste into.
-- **Paste properties into active note** — pastes directly into whichever file is active.
-- **Paste properties into the active tab group** — pastes the clipboard into every note open in the current tab group.
-- **Edit property clipboard** — opens one editor for the current clipboard, whether it contains properties, tags, or both. It initially shows only the properties already in the clipboard, so a tag-only clipboard stays tag-only. You can exclude properties or values, remove individual list values, search for additional properties, add a new property, and edit values. Tags use Obsidian-style bubbles; other list values are shown as plain text. When copying or pasting produces scalar conflicts, the same editor separates the required conflict choices from other properties, which are optional and shown for reference. Date conflicts are ordered newest first, and Enter accepts the default. The action bar stays visible while scrolling; Escape closes suggestions first or dismisses the editor, and Enter accepts when ready, including only after all conflicts are resolved. Ctrl/Cmd+Enter submits, Alt+ArrowUp/Down moves between property cards, Alt+X excludes the focused property, and Ctrl/Cmd+Backspace clears all when an input is empty or a conflict radio is focused. In conflicts, press 1–9 to choose a candidate or O for “Other value…”.
+- **Paste properties into active note** — pastes directly into whichever file is active. If the clipboard came from a tag-only copy, its `tags` list always unions with existing tags regardless of **Paste mode**. Any other properties added to that clipboard in the editor are still pasted according to **Paste mode**.
+- **Paste properties into the active tab group** — pastes the clipboard into every note open in the current tab group. For a tag-only copy, tags always union; any other properties added to the clipboard are pasted according to **Paste mode** and use its normal conflict resolution.
+- **Edit property clipboard** — opens one editor for the current clipboard, whether it contains properties, tags, or both. The badge beside the title shows how the clipboard was copied: **Tag copy** (tags always merge by union on paste, whatever **Paste mode** says; any other properties you add here still follow **Paste mode**) or **Property copy** (**Paste mode** applies to everything). You can exclude properties or values, remove individual list values, add a property, and edit values. Tags use Obsidian-style bubbles; other list values are shown as plain text. When copying or pasting produces scalar conflicts, the same editor separates the required conflict choices from other properties, which are optional and shown for reference. Date conflicts are ordered newest first.
+
+  The editor works like Obsidian's Properties panel. Each property, and **+ Add property** below them, is a row; the highlighted row has a ring. It opens with the tags row highlighted (or the first conflict, if there is one). **Tab**/**Shift+Tab** cycle through the rows and then the **Clear all** and **Save** buttons, and loop back to the first row. **Enter** on a row opens it (so Tab never gets stuck in a control); inside, **Backspace** removes the last tag or value, and **Enter** on an empty field, or **Esc**, returns to the highlighted row. **Esc** on a highlighted row or a button cancels the editor without changes; **Ctrl/Cmd+Enter** saves from anywhere, and **Enter** saves when nothing is highlighted. The mouse works too: click a row to edit it, click × on a chip to remove it, and use the visible **Save clipboard**/**Continue** button. In conflicts, press 1–9 to choose a candidate or O for “Other value…”. Alt+ArrowUp/Down moves between rows, Alt+X excludes the focused property, and Ctrl/Cmd+Backspace clears all when an input is empty or a conflict radio is focused.
 - **Clear properties clipboard** — empties the internal clipboard.
 
-Copy commands replace the clipboard outright. **Edit property clipboard** replaces it with the selection you finish, including any properties you added.
+Copy commands replace the clipboard outright and record whether the copy was regular properties or tags only. The status bar and **Edit property clipboard** show this type; the editor's type label is informational and cannot be changed there. **Edit property clipboard** replaces the values you finish with, including any properties you added, but preserves that copy type. **Clear properties clipboard** clears both the values and their copy type.
+
+The file context menu offers **Copy tags** and **Paste tags** for Markdown files. In the multi-file menu, these actions apply to every selected Markdown file and ignore non-Markdown files. **Paste tags** always unions tags regardless of **Paste mode**.
 
 ### Conflict resolution
 
@@ -45,7 +51,7 @@ Settings are organized into groups:
 
 ### Property filters (property-copy commands)
 
-These filters apply to all property-copy commands. Tags are frontmatter properties here, not a separate tag-only command. They do not change paste operations or **Edit property clipboard**; duplicate-key repair still runs regardless of these filters.
+These filters apply to the regular property-copy commands. The tag-specific copy commands and **Copy tags** context-menu action override them to include only `tags`. Filters do not change paste operations or **Edit property clipboard**; duplicate-key repair still runs regardless of these filters.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
@@ -56,18 +62,20 @@ These filters apply to all property-copy commands. Tags are frontmatter properti
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| **Paste mode** | `Merge` | How copied properties merge into the destination note. |
+| **Paste mode** | `Merge` | How clipboard properties are applied. If copied with a tags-only command, the `tags` key always unions with destination tags; other properties added in the clipboard editor still follow this setting, with scalar conflicts resolved normally in Merge mode. The **Paste tags** file-menu action also always unions tags. |
 | **Auto-clear clipboard after successful paste** | `Off` | Automatically clear copied properties after pasting. |
 
 ### Paste modes
 
-- **Overwrite** — destination properties are replaced unconditionally.
-- **Skip existing** — new keys are added; any key already present in the destination is left completely unchanged (the clipboard value is discarded, not combined).
-- **Merge** — new keys are added; for keys already present, the values are combined — lists are unioned, objects are merged recursively, and scalar values take the clipboard's value unless it is empty (in which case the destination is kept).
+- **Overwrite** — destination properties are replaced unconditionally, except `tags` from a tags-only copy, which are unioned in active-note and active-tab-group pastes.
+- **Skip existing** — new keys are added; any key already present in the destination is left completely unchanged (the clipboard value is discarded, not combined), except `tags` from a tags-only copy, which are still unioned in active-note and active-tab-group pastes.
+- **Merge** — new keys are added; for keys already present, the values are combined — lists are unioned, objects are merged recursively, and scalar values take the clipboard's value unless it is empty (in which case the destination is kept). With a tags-only copy, tags use this union behavior regardless of the selected mode; any non-tag properties added to that clipboard are merged normally and participate in merge-mode conflict resolution.
+
+Tag-only copies pasted with the active-note and active-tab-group property commands, as well as the **Paste tags** context-menu action, always union distinct tags with the destination, even when **Paste mode** is **Overwrite** or **Skip existing**. This exception applies only to the `tags` key: other properties added to the clipboard in **Edit property clipboard** still follow the selected paste mode. In **Merge** mode, scalar conflicts on those properties are resolved through the usual conflict flow.
 
 #### How paste modes affect each frontmatter data type
 
-All three paste modes (Overwrite, Skip existing, Merge) are implemented for **every** property type below. They only differ in what happens to a key that **already exists** in the destination; all three add keys that are new. The "Implemented" column confirms the pasting methods apply to that type, and the three mode columns show the effect on an existing key.
+All three paste modes (Overwrite, Skip existing, Merge) apply to clipboard properties for **every** property type below. They only differ in what happens to a key that **already exists** in the destination; all three add keys that are new. If the clipboard was copied with a tags-only command, active-note and active-tab-group pastes always union the `tags` key, while any other properties added to the clipboard follow the selected mode. The "Implemented" column confirms the pasting methods apply to that type, and the three mode columns show the effect on an existing key.
 
 | Data Structure / Property Type | Description | Most Common Example | Implemented | Overwrite | Skip existing | Merge |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -99,8 +107,10 @@ The **Edit property clipboard** command opens the shared property editor. When a
 
 Precise wording matters here because "property" and "tag" mean different things:
 
-- **Property** — a YAML frontmatter property, e.g. `tags`, `status`, `aliases`. The **Only include properties** and **Exclude properties** settings operate on properties in all property-copy commands; `tags` is treated the same as other properties.
+- **Property** — a YAML frontmatter property, e.g. `tags`, `status`, `aliases`. The **Only include properties** and **Exclude properties** settings apply to regular property-copy commands; tag-specific copy commands and context-menu actions explicitly select only `tags`.
+- **Tags-only copy mode** — a clipboard marked by one of the tag-copy commands or **Copy tags** context-menu action. The active-note and active-tab-group property paste commands always union its `tags` key, regardless of **Paste mode**; other properties added while editing follow the selected mode, with scalar conflicts resolved normally in Merge mode. Editing values does not change the copy mode.
+- **Tags** — the frontmatter list stored under the `tags` property. Tag-only paste operations union these list values regardless of **Paste mode**.
 - **Property value** — whatever is stored under a property key. For `tags`, that's a list; for `status`, that might be a single string.
 - **Item** — one element of a *list-type* property's value. Each tag in `tags: [a, b, c]` is an item of the `tags` property — an item is never itself a "property".
 
-Both the `tags` property and general frontmatter properties can be interactively configured before pasting via **Edit property clipboard**.
+Both tags and general frontmatter properties can be interactively configured before pasting via **Edit property clipboard**.

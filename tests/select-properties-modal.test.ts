@@ -51,6 +51,7 @@ function createApp(options: any = {}) {
 	const app = new obsidianMock.App({
 		workspace: {
 			getActiveFile: () => activeFile,
+			on: (event: string, callback: (...args: any[]) => void) => ({ event, callback }),
 			activeLeaf: leaves[0] ?? null,
 			iterateAllLeaves: (cb: (leaf: any) => void) => {
 				for (const leaf of leaves) cb(leaf);
@@ -124,6 +125,24 @@ function getModalShortcut(modal: SelectPropertiesModal, modifiers: string[], key
 
 const originalModalOpen = obsidianMock.Modal.prototype.open;
 
+function key(target: HTMLElement, name: string, init: KeyboardEventInit = {}): KeyboardEvent {
+	const event = new KeyboardEvent("keydown", { key: name, bubbles: true, cancelable: true, ...init });
+	target.dispatchEvent(event);
+	return event;
+}
+
+function pressEscape(modal: SelectPropertiesModal): void {
+	const handler = (modal.scope as any).handlers.find(
+		(candidate: any) => candidate.key === "Escape" && candidate.modifiers?.length === 0
+	);
+	expect(handler).toBeDefined();
+	expect(handler.fn(new KeyboardEvent("keydown", { key: "Escape" }))).toBe(false);
+}
+
+function openAddProperty(modal: SelectPropertiesModal): void {
+	key(modal.contentEl.querySelector<HTMLElement>(".pp-add-property-row")!, "Enter");
+}
+
 afterEach(() => {
 	obsidianMock.Modal.prototype.open = originalModalOpen;
 	vi.restoreAllMocks();
@@ -167,13 +186,13 @@ describe("SelectPropertiesModal", () => {
 		expect(downRegistration).toBeDefined();
 		expect(upRegistration).toBeDefined();
 
-		const firstPicker = modal.propertyStates.get("status")!.picker!;
-		const secondPicker = modal.propertyStates.get("title")!.picker!;
-		firstPicker.inputEl.focus();
+		const firstCard = modal.propertyStates.get("status")!.cardEl!;
+		const secondCard = modal.propertyStates.get("title")!.cardEl!;
+		modal.propertyStates.get("status")!.picker!.inputEl.focus();
 		downRegistration?.[2](new KeyboardEvent("keydown", { key: "ArrowDown" }));
-		expect(document.activeElement).toBe(secondPicker.inputEl);
+		expect(document.activeElement).toBe(secondCard);
 		upRegistration?.[2](new KeyboardEvent("keydown", { key: "ArrowUp" }));
-		expect(document.activeElement).toBe(firstPicker.inputEl);
+		expect(document.activeElement).toBe(firstCard);
 	});
 
 	it("selects conflict candidates with number keys and opens Other value with O", () => {
@@ -223,14 +242,12 @@ describe("SelectPropertiesModal", () => {
 		excludeShortcut({ target: firstPicker.inputEl });
 
 		expect(modal.propertyStates.has("status")).toBe(false);
-		expect(document.activeElement).toBe(nextPicker.inputEl);
+		expect(document.activeElement).toBe(modal.propertyStates.get("title")!.cardEl);
 		expect(notice).toHaveBeenCalledWith("Property Porter: Excluded status");
 
 		excludeShortcut({ target: nextPicker.inputEl });
 		expect(modal.propertyStates.has("title")).toBe(false);
-		expect(document.activeElement).toBe(
-			modal.contentEl.querySelector(".pp-add-property-details > summary")
-		);
+		expect(document.activeElement).toBe(modal.contentEl.querySelector(".pp-add-property-row"));
 		expect(notice).toHaveBeenCalledWith("Property Porter: Excluded title");
 	});
 
@@ -290,7 +307,7 @@ describe("SelectPropertiesModal", () => {
 		}
 	});
 
-	it("lets Escape close an open dropdown without closing the modal", () => {
+	it("Escape leaves an open row first and only then cancels the modal", () => {
 		const { app } = createApp();
 		const onCancel = vi.fn();
 		const modal = new SelectPropertiesModal(
@@ -302,19 +319,46 @@ describe("SelectPropertiesModal", () => {
 		);
 		document.body.appendChild(modal.contentEl);
 		modal.onOpen();
-		modal.contentEl.querySelector<HTMLDetailsElement>(".pp-add-property-details")!.open = true;
+		const card = modal.propertyStates.get("status")!.cardEl!;
+		card.focus();
+		key(card, "Enter");
+		const input = modal.propertyStates.get("status")!.picker!.inputEl;
+		expect(document.activeElement).toBe(input);
+		expect(card.classList.contains("is-open")).toBe(true);
+
+		pressEscape(modal);
+		expect(document.activeElement).toBe(card);
+		expect(card.classList.contains("is-open")).toBe(false);
+		expect(onCancel).not.toHaveBeenCalled();
+
+		pressEscape(modal);
+		expect(onCancel).toHaveBeenCalledTimes(1);
+	});
+
+	it("leaves Escape to an open suggestion list instead of leaving the row", () => {
+		const { app } = createApp();
+		const onCancel = vi.fn();
+		const modal = new SelectPropertiesModal(
+			app as any,
+			createMockCatalog(),
+			{ status: "draft" },
+			vi.fn(),
+			onCancel
+		);
+		document.body.appendChild(modal.contentEl);
+		modal.onOpen();
+		openAddProperty(modal);
 		const input = modal.inputEl!;
+		expect(document.activeElement).toBe(input);
 		const dropdown = document.createElement("div");
 		dropdown.className = "suggestion-container";
 		document.body.appendChild(dropdown);
-		input.addEventListener("keydown", (event) => {
-			if (event.key === "Escape") dropdown.remove();
-		});
-
-		input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-
-		expect(dropdown.isConnected).toBe(false);
-		expect(onCancel).not.toHaveBeenCalled();
+		try {
+			(modal as any).navigator.leaveOpenRow(input);
+			expect(document.activeElement).toBe(input);
+		} finally {
+			dropdown.remove();
+		}
 	});
 
 	it("labels property cards and updates live keyboard guidance for the focused control", () => {
@@ -339,12 +383,14 @@ describe("SelectPropertiesModal", () => {
 		expect(hint.textContent).toContain("1-9");
 		card.querySelectorAll<HTMLInputElement>(".pp-conflict-option input")[2]!.click();
 		modal.propertyStates.get("status")!.picker!.inputEl.focus();
-		expect(hint.textContent).toContain("suggestions");
+		expect(hint.textContent).toContain("Backspace");
+		card.focus();
+		expect(hint.textContent).toContain("Enter edit");
 		modal.contentEl.querySelector<HTMLButtonElement>(".pp-property-remove-btn")!.focus();
-		expect(hint.textContent).toContain("Alt+X");
+		expect(hint.textContent).toContain("Esc done");
 	});
 
-	it("focuses the finish button instead of the add-property input when a conflict exists", () => {
+	it("opens with the first conflict row highlighted, not open", () => {
 		vi.useFakeTimers();
 		try {
 			const { app } = createApp();
@@ -372,38 +418,219 @@ describe("SelectPropertiesModal", () => {
 			vi.runOnlyPendingTimers();
 
 			expect(modal.propertyStates.get("status")?.hasConflict).toBe(true);
-			expect(document.activeElement).not.toBe(modal.inputEl);
-			expect(document.activeElement).toBe(modal.contentEl.querySelector(".pp-conflict-option input"));
-			expect(modal.contentEl.querySelector<HTMLDetailsElement>(".pp-add-property-details")?.open).toBe(false);
+			expect(document.activeElement).toBe(modal.propertyStates.get("status")!.cardEl);
+			expect(modal.contentEl.querySelector(".pp-add-property-row .pp-search-container")?.hasAttribute("hidden")).toBe(true);
 		} finally {
 			vi.useRealTimers();
 		}
 	});
 
-	it("can leave the first property unfocused when editing the clipboard", () => {
+	it("opens with the tags row highlighted when there is no conflict", () => {
 		vi.useFakeTimers();
 		try {
 			const { app } = createApp();
 			const modal = new SelectPropertiesModal(
 				app as any,
 				createMockCatalog(),
-				{ status: "draft" },
+				{ status: "draft", tags: ["dev"] },
 				vi.fn(),
 				vi.fn(),
 				{},
-				{ title: "Edit property clipboard", focusFirstProperty: false }
+				{ title: "Edit property clipboard" }
 			);
 			document.body.appendChild(modal.contentEl);
 			modal.onOpen();
 			vi.runOnlyPendingTimers();
 
-			expect(document.activeElement).toBe(modal.contentEl.querySelector(".pp-finish-button"));
-			const addPropertySection = modal.contentEl.querySelector<HTMLDetailsElement>(".pp-add-property-details");
-			expect(addPropertySection?.open).toBe(false);
-			expect(addPropertySection?.nextElementSibling?.classList.contains("pp-properties-list")).toBe(true);
+			expect(document.activeElement).toBe(modal.propertyStates.get("tags")!.cardEl);
+			const addRow = modal.contentEl.querySelector(".pp-add-property-row")!;
+			expect(addRow.previousElementSibling?.classList.contains("pp-properties-list")).toBe(true);
 		} finally {
 			vi.useRealTimers();
 		}
+	});
+
+	it("falls back to the add-property row when the clipboard is empty", () => {
+		vi.useFakeTimers();
+		try {
+			const { app } = createApp();
+			const modal = new SelectPropertiesModal(app as any, createMockCatalog(), {}, vi.fn(), vi.fn());
+			document.body.appendChild(modal.contentEl);
+			modal.onOpen();
+			vi.runOnlyPendingTimers();
+			expect(document.activeElement).toBe(modal.contentEl.querySelector(".pp-add-property-row"));
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("cycles Tab through rows, the add row and the buttons, then loops", () => {
+		vi.useFakeTimers();
+		try {
+			const { app } = createApp();
+			const modal = new SelectPropertiesModal(
+				app as any,
+				createMockCatalog(),
+				{ tags: ["dev"], status: "draft" },
+				vi.fn(),
+				vi.fn()
+			);
+			document.body.appendChild(modal.contentEl);
+			modal.onOpen();
+			vi.runOnlyPendingTimers();
+
+			const expected = [
+				modal.propertyStates.get("status")!.cardEl,
+				modal.contentEl.querySelector(".pp-add-property-row"),
+				modal.contentEl.querySelector(".pp-clear-all-button"),
+				modal.contentEl.querySelector(".pp-finish-button"),
+				modal.propertyStates.get("tags")!.cardEl,
+			];
+			for (const stop of expected) {
+				key(document.activeElement as HTMLElement, "Tab");
+				expect(document.activeElement).toBe(stop);
+			}
+			key(document.activeElement as HTMLElement, "Tab", { shiftKey: true });
+			expect(document.activeElement).toBe(expected[3]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("Enter opens the highlighted tags row and Backspace removes the last tag", () => {
+		const { app } = createApp();
+		const onSubmit = vi.fn();
+		const modal = new SelectPropertiesModal(
+			app as any,
+			createMockCatalog(),
+			{ tags: ["dev", "notes"] },
+			onSubmit,
+			vi.fn()
+		);
+		document.body.appendChild(modal.contentEl);
+		modal.onOpen();
+		const card = modal.propertyStates.get("tags")!.cardEl!;
+		card.focus();
+		key(card, "Enter");
+		const input = modal.propertyStates.get("tags")!.picker!.inputEl;
+		expect(document.activeElement).toBe(input);
+		expect(onSubmit).not.toHaveBeenCalled();
+
+		key(input, "Backspace");
+		expect(modal.propertyStates.get("tags")!.picker!.getValue()).toEqual(["dev"]);
+		key(input, "Enter");
+		expect(document.activeElement).toBe(card);
+		expect(onSubmit).not.toHaveBeenCalled();
+	});
+
+	it("Enter accepts when no row or button is focused", () => {
+		const { app } = createApp();
+		const onSubmit = vi.fn();
+		const modal = new SelectPropertiesModal(
+			app as any,
+			createMockCatalog(),
+			{ tags: ["dev"] },
+			onSubmit,
+			vi.fn()
+		);
+		modal.onOpen();
+		key(modal.contentEl.querySelector<HTMLElement>(".pp-select-properties-body")!, "Enter");
+		expect(onSubmit).toHaveBeenCalledWith({ tags: ["dev"] });
+	});
+
+	it("a newly added property opens for editing and joins the Tab cycle before the add row", () => {
+		const { app } = createApp();
+		const modal = new SelectPropertiesModal(
+			app as any,
+			createMockCatalog(),
+			{ tags: ["dev"] },
+			vi.fn(),
+			vi.fn()
+		);
+		document.body.appendChild(modal.contentEl);
+		modal.onOpen();
+		openAddProperty(modal);
+		const state = modal.addProperty("status")!;
+		state.picker!.inputEl.focus();
+		expect(state.cardEl!.classList.contains("is-open")).toBe(true);
+
+		pressEscape(modal);
+		expect(document.activeElement).toBe(state.cardEl);
+		key(state.cardEl!, "Tab");
+		expect(document.activeElement).toBe(modal.contentEl.querySelector(".pp-add-property-row"));
+		expect(modal.contentEl.querySelector(".pp-add-property-row .pp-search-container")?.hasAttribute("hidden")).toBe(true);
+	});
+
+	it("clicking the add row or a card opens it for mouse users", () => {
+		const { app } = createApp();
+		const modal = new SelectPropertiesModal(
+			app as any,
+			createMockCatalog(),
+			{ tags: ["dev"] },
+			vi.fn(),
+			vi.fn()
+		);
+		document.body.appendChild(modal.contentEl);
+		modal.onOpen();
+		modal.contentEl.querySelector<HTMLElement>(".pp-add-property-label")!.click();
+		expect(document.activeElement).toBe(modal.inputEl);
+		modal.propertyStates.get("tags")!.cardEl!.querySelector<HTMLElement>(".pp-property-name")!.click();
+		expect(document.activeElement).toBe(modal.propertyStates.get("tags")!.picker!.inputEl);
+	});
+
+	it("shows the copy type as a titled badge", () => {
+		const { app } = createApp();
+		const modal = new SelectPropertiesModal(
+			app as any,
+			createMockCatalog(),
+			{ tags: ["dev"] },
+			vi.fn(),
+			vi.fn(),
+			{},
+			{ title: "Edit property clipboard", subtitle: "Tag copy", subtitleHint: "union" }
+		);
+		modal.onOpen();
+		const badge = modal.titleEl.querySelector(".pp-clipboard-mode")!;
+		expect(badge.textContent).toBe("Tag copy");
+		expect(badge.getAttribute("title")).toBe("union");
+	});
+
+	it("has no Alt+N shortcut: the add-property row is reached with Tab and opened with Enter", () => {
+		const { app } = createApp();
+		const modal = new SelectPropertiesModal(app as any, createMockCatalog(), { tags: ["dev"] }, vi.fn(), vi.fn());
+		const register = vi.spyOn(modal.scope, "register");
+		modal.onOpen();
+		expect(register.mock.calls.some(([modifiers, key]) => modifiers?.[0] === "Alt" && key === "N")).toBe(false);
+	});
+
+	it.each([
+		["clipboard editor", { title: "Edit property clipboard" }],
+		["conflict resolver", { title: "Resolve property conflicts", conflictNames: ["status"] }],
+	])("shows and accepts the mouse submit button in the %s", (_name, options) => {
+		const { app } = createApp();
+		const onSubmit = vi.fn();
+		const modal = new SelectPropertiesModal(
+			app as any,
+			createMockCatalog(),
+			options.conflictNames ? { status: ["draft", "published"] } : { tags: ["dev"] },
+			onSubmit,
+			vi.fn(),
+			{},
+			options
+		);
+		document.body.appendChild(modal.contentEl);
+		modal.onOpen();
+		if (options.conflictNames) {
+			modal.contentEl.querySelector<HTMLInputElement>('.pp-conflict-option input[value="draft"]')!.click();
+		}
+		const controls = modal.contentEl.querySelector(".pp-multi-select-controls")!;
+		const acceptButton = controls.querySelector<HTMLButtonElement>(".pp-finish-button")!;
+
+		expect(acceptButton.isConnected).toBe(true);
+		expect(acceptButton.parentElement?.classList.contains("pp-multi-select-buttons")).toBe(true);
+		acceptButton.click();
+
+		expect(onSubmit).toHaveBeenCalled();
 	});
 
 	it("does not suggest properties until the user types a query", () => {
@@ -514,9 +741,9 @@ describe("SelectPropertiesModal", () => {
 		expect(modal.contentEl.querySelector(".pp-properties-section .pp-properties-info")?.textContent).toBe(
 			"These properties have no conflicts and need no action. Edit or exclude them only if you want."
 		);
-		const addPropertySection = modal.contentEl.querySelector(".pp-properties-section .pp-add-property-details");
-		expect(addPropertySection?.querySelector("summary")?.textContent).toBe("Add new property");
-		expect(addPropertySection?.nextElementSibling?.classList.contains("pp-properties-list")).toBe(true);
+		const addPropertyRow = modal.contentEl.querySelector(".pp-properties-section .pp-add-property-row");
+		expect(addPropertyRow?.querySelector(".pp-add-property-label")?.textContent).toBe("+ Add property");
+		expect(addPropertyRow?.previousElementSibling?.classList.contains("pp-properties-list")).toBe(true);
 
 		radios[1].click();
 		expect(radios[1].checked).toBe(true);
@@ -705,7 +932,7 @@ describe("SelectPropertiesModal", () => {
 		expect(document.querySelectorAll(".pp-new-entry-modal")).toHaveLength(confirmationModalCount);
 	});
 
-	it("sorts date conflicts newest first and Enter accepts the default", () => {
+	it("sorts date conflicts newest first and Enter on the highlighted conflict does not accept", () => {
 		const { app } = createApp();
 		const catalog = createMockCatalog();
 		catalog.properties.push({
@@ -741,7 +968,9 @@ describe("SelectPropertiesModal", () => {
 		expect(radios[0].checked).toBe(true);
 		radios[0].focus();
 		radios[0].dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+		expect(onSubmit).not.toHaveBeenCalled();
 
+		modal.contentEl.querySelector<HTMLButtonElement>(".pp-finish-button")!.click();
 		expect(onSubmit).toHaveBeenCalledWith({ modified_date: "2026-10-26T10:00:00Z" });
 	});
 
@@ -892,10 +1121,10 @@ describe("SelectPropertiesModal", () => {
 		)).toBe(true);
 		expect(modal.contentEl.querySelector(".pp-multi-select-controls")?.parentElement).toBe(modal.contentEl);
 		modal.contentEl.querySelector<HTMLButtonElement>(".pp-finish-button")!.focus();
-		expect(modal.contentEl.querySelector(".pp-keyboard-hint")?.textContent).toContain("Esc cancels");
+		expect(modal.contentEl.querySelector(".pp-keyboard-hint")?.textContent).toContain("Esc cancel");
 	});
 
-	it("accepts the current clipboard with Enter from an empty property search", () => {
+	it("saves with Enter from nothing highlighted but not from inside an empty property search", () => {
 		const { app } = createApp();
 		const onSubmit = vi.fn();
 		const modal = new SelectPropertiesModal(
@@ -905,12 +1134,14 @@ describe("SelectPropertiesModal", () => {
 			onSubmit,
 			vi.fn()
 		);
+		document.body.appendChild(modal.contentEl);
 		modal.onOpen();
-		modal.contentEl.querySelector<HTMLDetailsElement>(".pp-add-property-details")!.open = true;
+		openAddProperty(modal);
 
-		modal.inputEl!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+		key(modal.inputEl!, "Enter");
 
-		expect(onSubmit).toHaveBeenCalledWith({ status: "draft" });
+		expect(onSubmit).not.toHaveBeenCalled();
+		expect(document.activeElement).toBe(modal.contentEl.querySelector(".pp-add-property-row"));
 	});
 
 	it("leaves Enter available for property suggestions while the search has text", () => {
@@ -923,13 +1154,15 @@ describe("SelectPropertiesModal", () => {
 			onSubmit,
 			vi.fn()
 		);
+		document.body.appendChild(modal.contentEl);
 		modal.onOpen();
-		modal.contentEl.querySelector<HTMLDetailsElement>(".pp-add-property-details")!.open = true;
+		openAddProperty(modal);
 		modal.inputEl!.value = "sta";
 
-		modal.inputEl!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+		key(modal.inputEl!, "Enter");
 
 		expect(onSubmit).not.toHaveBeenCalled();
+		expect(document.activeElement).toBe(modal.inputEl);
 	});
 
 	it("allows adding a property that is not already shown", () => {
@@ -937,7 +1170,6 @@ describe("SelectPropertiesModal", () => {
 		const catalog = createMockCatalog();
 		const modal = new SelectPropertiesModal(app as any, catalog, {}, vi.fn(), vi.fn());
 		modal.onOpen();
-		modal.contentEl.querySelector<HTMLDetailsElement>(".pp-add-property-details")!.open = true;
 
 		expect(modal.contentEl.querySelectorAll(".pp-property-card").length).toBe(0);
 
@@ -959,7 +1191,7 @@ describe("SelectPropertiesModal", () => {
 		);
 		document.body.appendChild(modal.contentEl);
 		modal.onOpen();
-		modal.contentEl.querySelector<HTMLDetailsElement>(".pp-add-property-details")!.open = true;
+		openAddProperty(modal);
 
 		const propertyInput = modal.inputEl!;
 		expect(propertyInput.classList.contains("commons-property-picker-input")).toBe(true);
@@ -983,7 +1215,7 @@ describe("SelectPropertiesModal", () => {
 		const modal = new SelectPropertiesModal(app as any, createMockCatalog(), {}, vi.fn(), vi.fn());
 		document.body.appendChild(modal.contentEl);
 		modal.onOpen();
-		modal.contentEl.querySelector<HTMLDetailsElement>(".pp-add-property-details")!.open = true;
+		openAddProperty(modal);
 		const propertyInput = modal.inputEl!;
 		propertyInput.value = "custom_property";
 		const suggester = getInputSuggest(propertyInput);
@@ -1261,10 +1493,15 @@ describe("PropertyPorter.selectPropertiesToPaste", () => {
 		const { plugin } = createPlugin();
 		await plugin.onload();
 		plugin.clipboard = { tags: ["dev"] };
+		plugin.clipboardKind = "tags";
 
 		obsidianMock.Modal.prototype.open = function (this: any) {
 			this.onOpen();
-			expect(this.titleEl.textContent).toBe("Edit property clipboard");
+			expect(this.titleEl.childNodes[0]?.textContent).toBe("Edit property clipboard");
+			const modeBadge = this.titleEl.querySelector(".pp-clipboard-mode");
+			expect(modeBadge?.textContent).toBe("Tag copy");
+			expect(modeBadge?.parentElement).toBe(this.titleEl);
+			expect(this.contentEl.querySelector(".pp-clipboard-mode")).toBeNull();
 			expect(
 				Array.from(this.contentEl.querySelectorAll(".pp-property-name")).map((element: any) =>
 					element.textContent
@@ -1275,6 +1512,7 @@ describe("PropertyPorter.selectPropertiesToPaste", () => {
 
 		await plugin.editPropertyClipboard();
 		expect(plugin.clipboard).toEqual({ tags: ["dev"] });
+		expect(plugin.clipboardKind).toBe("tags");
 	});
 
 	it("pastes selected properties into another note", async () => {

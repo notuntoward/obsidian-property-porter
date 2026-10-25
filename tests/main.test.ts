@@ -35,6 +35,7 @@ function createApp(options: any = {}) {
 	const markdownFiles = options.markdownFiles ?? [];
 	const fileCache: Record<string, any> = options.fileCache ?? {};
 	const fileContents: Record<string, string> = options.fileContents ?? {};
+	const workspaceEventHandlers: Record<string, (menu: any, files: any) => void> = {};
 
 	// Build workspace leaves for the active-tab-group feature. Each entry in
 	// `leaves` is { file, group? }; leaves sharing the same `group` value are
@@ -60,6 +61,10 @@ function createApp(options: any = {}) {
 	const app = new obsidianMock.App({
 		workspace: {
 			getActiveFile: () => activeFile,
+			on: (event: string, callback: (menu: any, files: any) => void) => {
+				workspaceEventHandlers[event] = callback;
+				return { event, callback };
+			},
 			activeLeaf: options.activeLeaf !== undefined ? options.activeLeaf : leaves[0] ?? null,
 			iterateAllLeaves: (cb: (leaf: any) => void) => {
 				for (const leaf of leaves) cb(leaf);
@@ -100,7 +105,7 @@ function createApp(options: any = {}) {
 			},
 		},
 	});
-	return { app, activeFile, markdownFiles, fileCache, fileContents };
+	return { app, activeFile, markdownFiles, fileCache, fileContents, workspaceEventHandlers };
 }
 
 function createPlugin(options: any = {}) {
@@ -279,8 +284,26 @@ describe("PropertyPorter", () => {
 
 			expect(loadSettings).toHaveBeenCalled();
 			expect(plugin.statusBarItem).toBeDefined();
-			expect(addCommand).toHaveBeenCalledTimes(8);
+			expect(addCommand).toHaveBeenCalledTimes(10);
 			expect(addSettingTab).toHaveBeenCalledWith(expect.any(PropertyPorterSettingTab));
+		});
+
+		it("registers tag commands with their requested names and no hotkeys", async () => {
+			const { plugin } = createPlugin();
+			const addCommand = vi.spyOn(plugin, "addCommand");
+			await plugin.onload();
+
+			const expected = [
+				["copy-tags-active-note", "Copy tags from active note"],
+				["copy-tags-tab-group", "Copy tags from the active tab group"],
+			];
+			for (const [id, name] of expected) {
+				const command = addCommand.mock.calls.find(([registered]) => registered.id === id)?.[0];
+				expect(command?.name).toBe(name);
+				expect(command?.hotkeys).toBeUndefined();
+			}
+			expect(addCommand.mock.calls.some(([command]) => command.id === "paste-tags-active-note")).toBe(false);
+			expect(addCommand.mock.calls.some(([command]) => command.id === "paste-tags-tab-group")).toBe(false);
 		});
 
 		it("registered command callbacks delegate to plugin methods", async () => {
@@ -339,8 +362,165 @@ describe("PropertyPorter", () => {
 			expect(openModal).toHaveBeenCalledWith(
 				plugin.clipboard,
 				expect.any(Object),
-				{ title: "Edit property clipboard", focusFirstProperty: false }
+				expect.objectContaining({
+					title: "Edit property clipboard",
+					subtitle: "Property copy",
+				})
 			);
+			expect(openModal.mock.calls[0][2]).not.toHaveProperty("focusFirstProperty");
+		});
+
+		it("keeps the copied type when editing the clipboard", async () => {
+			const { plugin } = createPlugin();
+			await plugin.onload();
+			plugin.clipboard = { tags: ["one"] };
+			plugin.clipboardKind = "tags";
+			const openModal = vi
+				.spyOn(plugin, "openPropertySelectionModal")
+				.mockResolvedValue({ properties: { tags: ["one"], status: "draft" }, cancelled: false });
+
+			await plugin.editPropertyClipboard();
+
+			expect(openModal.mock.calls[0][2].subtitle).toBe("Tag copy");
+			expect(plugin.clipboardKind).toBe("tags");
+			expect(plugin.clipboard).toEqual({ tags: ["one"], status: "draft" });
+			expect(plugin.statusBarItem.textContent).toBe("PP: 2 tags only");
+		});
+
+		it("active-note paste unions tags and overwrites added properties in tag-copy mode", async () => {
+			const source = new obsidianMock.TFile("source.md");
+			const target = new obsidianMock.TFile("target.md");
+			const { plugin, fileCache } = createPlugin({
+				activeFile: target,
+				fileCache: {
+					[source.path]: { frontmatter: { tags: ["incoming"] } },
+					[target.path]: { frontmatter: { tags: ["existing"], status: "keep" } },
+				},
+			});
+			await plugin.onload();
+			plugin.settings.pasteMode = "overwrite";
+			await plugin.copyPropertiesFromFiles([source], { include: ["tags"], exclude: [] });
+			vi.spyOn(plugin, "openPropertySelectionModal").mockResolvedValue({
+				properties: { tags: ["incoming"], status: "editor-added" },
+				cancelled: false,
+			});
+
+			await plugin.editPropertyClipboard();
+			await plugin.pasteIntoActive();
+
+			expect(fileCache[target.path].frontmatter).toEqual({
+				tags: ["existing", "incoming"],
+				status: "editor-added",
+			});
+			expect(plugin.clipboardKind).toBe("tags");
+		});
+
+		it("resolves merge conflicts for editor-added properties in tag-copy mode", async () => {
+			const source = new obsidianMock.TFile("source.md");
+			const target = new obsidianMock.TFile("target.md");
+			const { plugin, fileCache } = createPlugin({
+				activeFile: target,
+				fileCache: {
+					[source.path]: { frontmatter: { tags: ["incoming"] } },
+					[target.path]: { frontmatter: { tags: ["existing"], status: "current" } },
+				},
+			});
+			await plugin.onload();
+			plugin.settings.pasteMode = "merge";
+			await plugin.copyPropertiesFromFiles([source], { include: ["tags"], exclude: [] });
+			plugin.clipboard = { tags: ["incoming"], status: "clipboard" };
+			const resolveConflict = vi
+				.spyOn(plugin, "openPropertySelectionModal")
+				.mockResolvedValue({ properties: { tags: ["incoming"], status: "resolved" }, cancelled: false });
+
+			await plugin.pasteIntoActive();
+
+			expect(resolveConflict).toHaveBeenCalledWith(
+				{ tags: ["incoming"], status: ["clipboard", "current"] },
+				expect.any(Object),
+				expect.objectContaining({ conflictNames: ["status"] })
+			);
+			expect(fileCache[target.path].frontmatter).toEqual({
+				tags: ["existing", "incoming"],
+				status: "resolved",
+			});
+		});
+
+		it("applies Skip existing to editor-added properties but still unions tags", async () => {
+			const source = new obsidianMock.TFile("source.md");
+			const target = new obsidianMock.TFile("target.md");
+			const { plugin, fileCache } = createPlugin({
+				activeFile: target,
+				fileCache: {
+					[source.path]: { frontmatter: { tags: ["incoming"] } },
+					[target.path]: { frontmatter: { tags: ["existing"], status: "current" } },
+				},
+			});
+			await plugin.onload();
+			plugin.settings.pasteMode = "skip";
+			await plugin.copyPropertiesFromFiles([source], { include: ["tags"], exclude: [] });
+			plugin.clipboard = { tags: ["incoming"], status: "clipboard" };
+
+			await plugin.pasteIntoActive();
+
+			expect(fileCache[target.path].frontmatter).toEqual({
+				tags: ["existing", "incoming"],
+				status: "current",
+			});
+		});
+
+		it("tab-group paste resolves editor-added conflicts while unioning tags in Merge mode", async () => {
+			const first = new obsidianMock.TFile("first.md");
+			const second = new obsidianMock.TFile("second.md");
+			const source = new obsidianMock.TFile("source.md");
+			const { plugin, fileCache } = createPlugin({
+				activeFile: first,
+				leaves: [
+					{ file: first, group: "g1" },
+					{ file: second, group: "g1" },
+				],
+				fileCache: {
+					[source.path]: { frontmatter: { tags: ["incoming"] } },
+					[first.path]: { frontmatter: { tags: ["one"], status: "first" } },
+					[second.path]: { frontmatter: { tags: ["two"], status: "second" } },
+				},
+			});
+			await plugin.onload();
+			plugin.settings.pasteMode = "merge";
+			await plugin.copyPropertiesFromFiles([source], { include: ["tags"], exclude: [] });
+			plugin.clipboard = { tags: ["incoming"], status: "clipboard" };
+			const resolveConflict = vi
+				.spyOn(plugin, "openPropertySelectionModal")
+				.mockResolvedValue({ properties: { tags: ["incoming"], status: "resolved" }, cancelled: false });
+
+			await plugin.pasteIntoActiveTabGroup();
+
+			expect(resolveConflict).toHaveBeenCalledWith(
+				{ tags: ["incoming"], status: ["clipboard", "first", "second"] },
+				expect.any(Object),
+				expect.objectContaining({ conflictNames: ["status"] })
+			);
+			expect(fileCache[first.path].frontmatter).toEqual({
+				tags: ["one", "incoming"],
+				status: "resolved",
+			});
+			expect(fileCache[second.path].frontmatter).toEqual({
+				tags: ["two", "incoming"],
+				status: "resolved",
+			});
+		});
+
+		it("marks a normal property copy as properties even when it contains only tags", async () => {
+			const file = new obsidianMock.TFile("note.md");
+			const { plugin, fileCache } = createPlugin({ activeFile: file });
+			await plugin.onload();
+			plugin.settings.onlyInclude = "tags";
+			fileCache[file.path] = { frontmatter: { tags: ["one"] } };
+
+			await plugin.copyProperties();
+
+			expect(plugin.clipboardKind).toBe("properties");
+			expect(plugin.statusBarItem.textContent).toBe("PP: 1");
 		});
 
 		it("registers the clear command with 'Clear properties clipboard' name", async () => {
@@ -416,6 +596,173 @@ describe("PropertyPorter", () => {
 			plugin.clipboard = { a: 1, b: 2 };
 			plugin.updateStatusBar();
 			expect(plugin.statusBarItem.textContent).toBe("PP: 2");
+		});
+
+		describe("tag commands", () => {
+			it("copies tags despite settings that include only status", async () => {
+				const file = new obsidianMock.TFile("note.md");
+				const { plugin, fileCache } = createPlugin({ activeFile: file });
+				await plugin.onload();
+				plugin.settings.onlyInclude = "status";
+				fileCache[file.path] = {
+					frontmatter: { tags: ["a", "b", "c"], status: "done" },
+				};
+				const notice = vi.spyOn(obsidianMock, "Notice");
+
+				await plugin.copyProperties({ include: ["tags"], exclude: [] });
+
+				expect(plugin.clipboard).toEqual({ tags: ["a", "b", "c"] });
+				expect(plugin.statusBarItem.textContent).toBe("PP: 3 tags only");
+				expect(notice).toHaveBeenCalledWith("Property Porter: Copied 3 tags");
+				expect(plugin.clipboardKind).toBe("tags");
+			});
+
+			it("unions tag-copy clipboard contents from the active-note command in Overwrite mode", async () => {
+				const source = new obsidianMock.TFile("source.md");
+				const target = new obsidianMock.TFile("target.md");
+				const { plugin, fileCache } = createPlugin({
+					activeFile: target,
+					fileCache: {
+						[source.path]: { frontmatter: { tags: ["a", "b"] } },
+						[target.path]: { frontmatter: { tags: ["b", "c"] } },
+					},
+				});
+				await plugin.onload();
+				plugin.settings.pasteMode = "overwrite";
+				await plugin.copyPropertiesFromFiles([source], { include: ["tags"], exclude: [] });
+
+				await plugin.pasteIntoActive();
+
+				expect(fileCache[target.path].frontmatter.tags).toEqual(["b", "c", "a"]);
+			});
+
+			it("collapses duplicate tag values when the general active-note paste is in tag-copy mode", async () => {
+				const source = new obsidianMock.TFile("source.md");
+				const target = new obsidianMock.TFile("target.md");
+				const { plugin, fileCache } = createPlugin({
+					activeFile: target,
+					fileCache: {
+						[source.path]: { frontmatter: { tags: ["a", "a", "b"] } },
+						[target.path]: { frontmatter: { tags: ["a", "a"] } },
+					},
+				});
+				await plugin.onload();
+				plugin.settings.pasteMode = "overwrite";
+				await plugin.copyPropertiesFromFiles([source], { include: ["tags"], exclude: [] });
+
+				await plugin.pasteIntoActive();
+
+				expect(fileCache[target.path].frontmatter.tags).toEqual(["a", "b"]);
+			});
+
+			it("unions tag-copy clipboard contents from the active-tab-group command in Overwrite mode", async () => {
+				const source = new obsidianMock.TFile("source.md");
+				const target = new obsidianMock.TFile("target.md");
+				const sibling = new obsidianMock.TFile("sibling.md");
+				const { plugin, fileCache } = createPlugin({
+					activeFile: target,
+					leaves: [
+						{ file: target, group: "g1" },
+						{ file: sibling, group: "g1" },
+					],
+					fileCache: {
+						[source.path]: { frontmatter: { tags: ["a", "b"] } },
+						[target.path]: { frontmatter: { tags: ["b", "c"] } },
+						[sibling.path]: { frontmatter: { tags: ["c", "d"] } },
+					},
+				});
+				await plugin.onload();
+				plugin.settings.pasteMode = "overwrite";
+				await plugin.copyPropertiesFromFiles([source], { include: ["tags"], exclude: [] });
+
+				await plugin.pasteIntoActiveTabGroup();
+
+				expect(fileCache[target.path].frontmatter.tags).toEqual(["b", "c", "a"]);
+				expect(fileCache[sibling.path].frontmatter.tags).toEqual(["c", "d", "a", "b"]);
+			});
+
+			it("clears the clipboard copy-mode marker", async () => {
+				const { plugin } = createPlugin();
+				await plugin.onload();
+				plugin.clipboardKind = "tags";
+
+				plugin.clearClipboard();
+
+				expect(plugin.clipboardKind).toBe("properties");
+			});
+
+			it("adds tag actions to file menus and unions tags from selected markdown files", async () => {
+				const first = new obsidianMock.TFile("first.md");
+				const second = new obsidianMock.TFile("second.md");
+				const ignored = new obsidianMock.TFile("image.png");
+				const { plugin, app, fileCache, workspaceEventHandlers } = createPlugin({
+					fileCache: {
+						[first.path]: { frontmatter: { tags: ["a", "a", "b"], status: "draft" } },
+						[second.path]: { frontmatter: { tags: ["b", "c"], status: "published" } },
+						[ignored.path]: { frontmatter: { tags: ["ignored"] } },
+					},
+				});
+				await plugin.onload();
+				plugin.settings.onlyInclude = "status";
+
+				const items: Array<{ title: string; callback: () => void }> = [];
+				const menu = {
+					addItem(callback: (item: any) => void) {
+						const item = {
+							title: "",
+							callback: () => {},
+							setTitle(title: string) {
+								this.title = title;
+								return this;
+							},
+							onClick(callback: () => void) {
+								this.callback = callback;
+								return this;
+							},
+						};
+						callback(item);
+						items.push({ title: item.title, callback: item.callback });
+					},
+				};
+				expect(workspaceEventHandlers["file-menu"]).toBeDefined();
+				expect(workspaceEventHandlers["files-menu"]).toBeDefined();
+				workspaceEventHandlers["files-menu"](menu, [first, ignored, second]);
+
+				expect(items.map(({ title }) => title)).toEqual(["Copy tags", "Paste tags"]);
+				await items.find(({ title }) => title === "Copy tags")!.callback();
+
+				expect(plugin.clipboard).toEqual({ tags: ["a", "b", "c"] });
+				expect(fileCache[ignored.path].frontmatter.tags).toEqual(["ignored"]);
+				expect(app.workspace.getActiveFile()).toBeNull();
+
+				plugin.clipboard = { tags: ["d"] };
+				await items.find(({ title }) => title === "Paste tags")!.callback();
+				expect(fileCache[first.path].frontmatter.tags).toEqual(["a", "b", "d"]);
+				expect(fileCache[second.path].frontmatter.tags).toEqual(["b", "c", "d"]);
+				expect(fileCache[ignored.path].frontmatter.tags).toEqual(["ignored"]);
+
+				const fileItems: Array<{ title: string; callback: () => void }> = [];
+				const fileMenu = {
+					addItem(callback: (item: any) => void) {
+						const item = {
+							title: "",
+							callback: () => {},
+							setTitle(title: string) {
+								this.title = title;
+								return this;
+							},
+							onClick(callback: () => void) {
+								this.callback = callback;
+								return this;
+							},
+						};
+						callback(item);
+						fileItems.push({ title: item.title, callback: item.callback });
+					},
+				};
+				workspaceEventHandlers["file-menu"](fileMenu, first);
+				expect(fileItems.map(({ title }) => title)).toEqual(["Copy tags", "Paste tags"]);
+			});
 		});
 	});
 
@@ -2252,6 +2599,12 @@ describe("PropertyPorterSettingTab", () => {
 		);
 		expect(excludeDef.desc).toBe(
 			"Choose existing properties or confirm new names to skip. Cannot overlap with Only include properties."
+		);
+		expect(items.find((definition) => definition.name === "Paste mode").desc).toContain(
+			"tags are always unioned"
+		);
+		expect(items.find((definition) => definition.name === "Paste mode").desc).toContain(
+			"other properties added in the clipboard editor"
 		);
 		expect(items.find((definition) => definition.name === "Paste mode").control.options).toEqual(
 			{

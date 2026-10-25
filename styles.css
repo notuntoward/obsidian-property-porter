@@ -15,29 +15,38 @@
 }
 
 .pp-multi-select-controls {
-	display: flex;
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
+	grid-template-rows: auto auto;
 	align-items: center;
-	justify-content: space-between;
-	gap: 12px;
+	column-gap: 12px;
+	row-gap: 4px;
 	padding: 4px 0;
 }
 
 .pp-multi-select-hint {
-	flex: 1;
+	grid-column: 1;
+	grid-row: 1;
 	color: var(--text-muted);
 	font-size: var(--font-ui-small);
 }
 
 .pp-keyboard-hint {
+	grid-column: 1;
+	grid-row: 2;
+	min-width: 0;
 	color: var(--text-muted);
 	font-size: var(--font-ui-smaller);
-	white-space: nowrap;
+	white-space: normal;
 }
 
 .pp-multi-select-buttons {
+	grid-column: 2;
+	grid-row: 1 / span 2;
 	display: flex;
 	gap: 8px;
 	flex-shrink: 0;
+	align-self: center;
 }
 
 .pp-clear-all-button:disabled {
@@ -52,6 +61,17 @@
         max-height: 80vh;
         min-height: 0;
         overflow: hidden;
+}
+
+.pp-clipboard-mode {
+        display: inline-block;
+        margin-inline-start: 8px;
+        padding: 1px 5px;
+        border-radius: var(--radius-s);
+        background: var(--background-modifier-hover);
+        font-size: var(--font-ui-smaller);
+        font-weight: var(--font-normal);
+        vertical-align: middle;
 }
 
 .pp-select-properties-modal .pp-multi-select-controls {
@@ -205,18 +225,38 @@
         margin-bottom: 4px;
 }
 
-.pp-add-property-details {
-        padding: 4px 0;
+.pp-add-property-row {
+        padding: 8px 12px;
+        border-radius: var(--radius-m);
+        cursor: pointer;
 }
 
-.pp-add-property-details summary {
+.pp-add-property-label {
         color: var(--text-muted);
-        cursor: pointer;
         font-size: var(--font-ui-small);
 }
 
-.pp-add-property-details .pp-search-container {
+.pp-add-property-row:hover .pp-add-property-label {
+        color: var(--text-normal);
+}
+
+.pp-add-property-row .pp-search-container {
         margin-top: 8px;
+}
+
+/* Highlighted (focused) and open (focus inside) rows, as in Obsidian's
+   properties editor. */
+.pp-property-card:focus,
+.pp-property-card:focus-within,
+.pp-add-property-row:focus,
+.pp-add-property-row:focus-within {
+        outline: none;
+        box-shadow: 0 0 0 2px var(--background-modifier-border-focus);
+}
+
+.pp-property-card.is-open,
+.pp-add-property-row.is-open {
+        background: var(--background-modifier-hover);
 }
 
 .pp-search-input {
