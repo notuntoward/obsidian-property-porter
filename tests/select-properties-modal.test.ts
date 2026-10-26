@@ -798,9 +798,7 @@ describe("SelectPropertiesModal", () => {
 
 		const statusCard = modal.contentEl.querySelector(".pp-property-card")!;
 		expect(statusCard).not.toBeNull();
-		expect(statusCard.querySelector(".pp-property-warning")?.textContent).toBe(
-			"Conflict: status has different values. Pick one or skip it."
-		);
+		expect(statusCard.querySelector(".pp-conflict-options")).not.toBeNull();
 
 		const group = statusCard.querySelector('[role="radiogroup"]')!;
 		const options = statusCard.querySelectorAll<HTMLLabelElement>(".pp-conflict-option");
@@ -817,7 +815,7 @@ describe("SelectPropertiesModal", () => {
 		expect(statusCard.querySelector(".pp-property-picker-host")).toBeNull();
 
 		expect(modal.contentEl.querySelector(".pp-conflict-section .pp-section-title")?.textContent).toBe(
-			"Conflicts"
+			"1 property differs between notes"
 		);
 		expect(modal.contentEl.querySelector(".pp-conflict-info")?.textContent).toBe(
 			"Each property below has different values. Pick one, or skip it."
@@ -871,9 +869,7 @@ describe("SelectPropertiesModal", () => {
 		const card = modal.contentEl.querySelector(".pp-property-card")!;
 		const options = card.querySelectorAll<HTMLLabelElement>(".pp-conflict-option");
 		const otherRadio = options[2].querySelector<HTMLInputElement>("input")!;
-		expect(card.querySelector(".pp-property-warning")?.textContent).toBe("Conflict: status has different values. Pick one or skip it.");
-		expect(card.querySelector(".pp-property-warning")?.textContent).not.toContain("Note-A");
-		expect(card.querySelector(".pp-property-warning")?.textContent).not.toContain("Note-B");
+		expect(card.querySelector(".pp-conflict-options")).not.toBeNull();
 		expect(options[0].querySelector(".pp-conflict-sources")?.textContent).toBe("Note-A");
 		expect(options[1].querySelector(".pp-conflict-sources")?.textContent).toBe("Note-B");
 		expect(options[2].querySelector(".pp-conflict-value")?.textContent).toBe("Other value…");
@@ -1701,9 +1697,7 @@ describe("PropertyPorter.selectPropertiesToPaste", () => {
 			const statusCard = Array.from(this.contentEl.querySelectorAll(".pp-property-card")).find(
 				(c: any) => c.querySelector(".pp-property-name")?.textContent === "status"
 			) as HTMLElement;
-			expect(statusCard.querySelector(".pp-property-warning")?.textContent).toBe(
-				"Conflict: status has different values. Pick one or skip it."
-			);
+			expect(statusCard.querySelector(".pp-conflict-options")).not.toBeNull();
 
 			const radios = statusCard.querySelectorAll<HTMLInputElement>('.pp-conflict-option input[type="radio"]');
 			expect(radios.length).toBe(3);
@@ -1974,47 +1968,72 @@ describe("SelectPropertiesModal property type for new properties", () => {
 	});
 });
 
-describe("SelectPropertiesModal conflict notes", () => {
-	it("names the notes with the conflict on the card", () => {
+describe("SelectPropertiesModal visual cleanup (Phase 3)", () => {
+	it("removes the pp-conflict-notes line and warning triangles from conflict cards", () => {
 		const { app } = createApp();
 		const modal = new SelectPropertiesModal(
 			app as any, createMockCatalog(), { status: ["a", "b"] }, vi.fn(), vi.fn(),
 			{ status: { conflictNotes: ["Alpha", "Beta"], conflictPaths: ["Alpha.md", "Beta.md"] } }
 		);
 		modal.onOpen();
-		expect(modal.contentEl.querySelector(".pp-conflict-notes")?.textContent).toBe(
-			"Notes with this conflict: Alpha, Beta"
-		);
+		expect(modal.contentEl.querySelector(".pp-conflict-notes")).toBeNull();
+		expect(modal.contentEl.querySelector(".pp-property-warning")).toBeNull();
 	});
 
-	it("names the notes with the conflict on the card as clickable links", async () => {
-		const openLinkText = vi.fn().mockResolvedValue(undefined);
-		const alphaFile = new obsidianMock.TFile("Alpha.md");
-		const betaFile = new obsidianMock.TFile("Beta.md");
-		const { app } = createApp({
-			openLinkText,
-			markdownFiles: [alphaFile, betaFile],
-		});
+	it("styles conflicts section with git-merge icon and differentiated title", () => {
+		const { app } = createApp();
 		const modal = new SelectPropertiesModal(
-			app as any, createMockCatalog(), { status: ["a", "b"] }, vi.fn(), vi.fn(),
-			{ status: { conflictNotes: ["Alpha", "Beta"], conflictPaths: ["Alpha.md", "Beta.md"] } }
+			app as any,
+			createMockCatalog(),
+			{ status: ["a", "b"], rating: [1, 2] },
+			vi.fn(),
+			vi.fn()
 		);
 		modal.onOpen();
 
-		const notesContainer = modal.contentEl.querySelector(".pp-conflict-notes");
-		expect(notesContainer?.textContent).toBe("Notes with this conflict: Alpha, Beta");
+		const section = modal.contentEl.querySelector(".pp-conflict-section");
+		expect(section).not.toBeNull();
+		const icon = section?.querySelector(".pp-conflict-section-icon");
+		expect(icon?.getAttribute("data-icon")).toBe("git-merge");
+		const title = section?.querySelector(".pp-section-title");
+		expect(title?.textContent).toBe("2 properties differ between notes");
+	});
 
-		const links = notesContainer?.querySelectorAll<HTMLAnchorElement>(".pp-note-link");
-		expect(links?.length).toBe(2);
-		expect(links?.[0]?.textContent).toBe("Alpha");
-		expect(links?.[0]?.classList.contains("internal-link")).toBe(true);
-		expect(links?.[0]?.getAttribute("data-href")).toBe("Alpha.md");
-		expect(links?.[1]?.textContent).toBe("Beta");
-		expect(links?.[1]?.getAttribute("data-href")).toBe("Beta.md");
+	it("renders note links on candidate options when <= 3 notes, and note count when > 3", () => {
+		const { app } = createApp();
+		const modal = new SelectPropertiesModal(
+			app as any,
+			createMockCatalog(),
+			{ status: ["a", "b"] },
+			vi.fn(),
+			vi.fn(),
+			{
+				status: {
+					valueSources: {
+						status: {
+							a: [{ note: "Alpha", count: 1 }, { note: "Beta", count: 1 }],
+							b: [
+								{ note: "N1", count: 1 },
+								{ note: "N2", count: 1 },
+								{ note: "N3", count: 1 },
+								{ note: "N4", count: 1 },
+							],
+						},
+					},
+				},
+			}
+		);
+		modal.onOpen();
 
-		links?.[0]?.click();
-		await Promise.resolve();
-		expect(openLinkText).toHaveBeenCalledWith("Alpha.md", "", false);
+		const sourcesEls = modal.contentEl.querySelectorAll(".pp-conflict-sources");
+		// Option a: <= 3 notes, shows links and title attribute
+		const linksA = sourcesEls[0]?.querySelectorAll<HTMLAnchorElement>(".pp-note-link");
+		expect(linksA?.length).toBe(2);
+		expect(sourcesEls[0]?.getAttribute("title")).toBe("Alpha, Beta");
+
+		// Option b: > 3 notes, shows count and title attribute
+		expect(sourcesEls[1]?.textContent).toBe("4 notes");
+		expect(sourcesEls[1]?.getAttribute("title")).toBe("N1, N2, N3, N4");
 	});
 
 	it("renders note links for conflict candidate sources and prevents radio toggling", async () => {
@@ -2049,50 +2068,20 @@ describe("SelectPropertiesModal conflict notes", () => {
 		const sourcesEls = modal.contentEl.querySelectorAll(".pp-conflict-sources");
 		expect(sourcesEls.length).toBe(3);
 
-		const alphaLink = sourcesEls[0]?.querySelector<HTMLAnchorElement>(".pp-note-link");
-		expect(alphaLink?.textContent).toBe("Alpha");
-		expect(alphaLink?.getAttribute("data-href")).toBe("Alpha.md");
-
-		const radioB = modal.contentEl.querySelector<HTMLInputElement>('input[value="b"]')!;
-		expect(radioB.checked).toBe(false);
+		const radioB = modal.contentEl.querySelector<HTMLInputElement>('input[value="b"]');
+		expect(radioB?.checked).toBe(false);
 
 		const betaLink = sourcesEls[1]?.querySelector<HTMLAnchorElement>(".pp-note-link");
 		expect(betaLink?.textContent).toBe("Beta");
-		expect(betaLink?.getAttribute("data-href")).toBe("Beta.md");
+
+		betaLink?.click();
+		expect(radioB?.checked).toBe(false);
 
 		betaLink?.click();
 		await Promise.resolve();
 		expect(openLinkText).toHaveBeenCalledWith("Beta.md", "", false);
 	});
-
-	it("derives conflictNotes from valueSources if conflictNotes is not explicitly provided", () => {
-		const { app } = createApp();
-		const modal = new SelectPropertiesModal(
-			app as any,
-			createMockCatalog(),
-			{ status: ["a", "b"] },
-			vi.fn(),
-			vi.fn(),
-			{
-				status: {
-					valueSources: {
-						status: {
-							a: [{ note: "Alpha", count: 1 }],
-							b: [{ note: "Beta", count: 1 }],
-						},
-					},
-				},
-			}
-		);
-		modal.onOpen();
-
-		const notesContainer = modal.contentEl.querySelector(".pp-conflict-notes");
-		expect(notesContainer?.textContent).toBe("Notes with this conflict: Alpha, Beta");
-		const links = notesContainer?.querySelectorAll<HTMLAnchorElement>(".pp-note-link");
-		expect(links?.length).toBe(2);
-		expect(links?.[0]?.textContent).toBe("Alpha");
-		expect(links?.[1]?.textContent).toBe("Beta");
-	});
+});
 
 	describe("typed candidates (Phase 2)", () => {
 		it("preserves numbers and booleans on Continue submission", () => {
@@ -2170,4 +2159,3 @@ describe("SelectPropertiesModal conflict notes", () => {
 			expect(mismatch?.mismatch).toBe(true);
 		});
 	});
-});

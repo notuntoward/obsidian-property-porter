@@ -80,7 +80,33 @@
 	flex-shrink: 0;
 }
 
-/* Sections are separated by a thin rule and spacing, not boxes. */
+/* Conflict block: accented left border, subtle tint */
+.pp-conflict-section {
+	padding: var(--size-4-3);
+	border-inline-start: 4px solid var(--interactive-accent);
+	background: color-mix(in srgb, var(--interactive-accent) 8%, var(--background-secondary, transparent));
+	border-radius: var(--radius-s);
+}
+
+.pp-conflict-section-header {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-2);
+	margin-bottom: var(--size-2-1);
+}
+
+.pp-conflict-section-icon {
+	display: inline-flex;
+	align-items: center;
+	color: var(--text-accent);
+}
+
+.pp-conflict-section-icon .svg-icon {
+	width: var(--icon-m);
+	height: var(--icon-m);
+}
+
+/* Sections are separated by spacing */
 .pp-conflict-section + .pp-properties-section {
 	margin-top: var(--size-4-1);
 	padding-top: var(--size-4-3);

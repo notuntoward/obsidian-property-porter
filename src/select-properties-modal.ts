@@ -94,10 +94,6 @@ export interface SelectPropertiesModalOptions {
 	finishText?: string;
 }
 
-function conflictWarningText(state: PropertyCardState): string {
-	return `Conflict: ${state.name} has different values. Pick one or skip it.`;
-}
-
 function duplicateNoticeText(
 	propertyName: string,
 	valueSources: NonNullable<ConflictCardContext["valueSources"]>[string]
@@ -379,7 +375,14 @@ export class SelectPropertiesModal extends Modal {
 		);
 		if (conflictStates.length) {
 			const section = bodyEl.createDiv({ cls: "pp-conflict-section" });
-			section.createDiv({ cls: "pp-section-title", text: "Conflicts" });
+			const header = section.createDiv({ cls: "pp-conflict-section-header" });
+			const icon = header.createSpan({ cls: "pp-conflict-section-icon" });
+			setIcon(icon, "git-merge");
+			const titleText =
+				conflictStates.length === 1
+					? "1 property differs between notes"
+					: `${conflictStates.length} properties differ between notes`;
+			header.createDiv({ cls: "pp-section-title", text: titleText });
 			section.createDiv({ cls: "pp-conflict-info", text: CONFLICTS_INFO_TEXT });
 			const conflictContainer = section.createDiv({ cls: "pp-properties-list pp-conflicts-list" });
 			for (const state of conflictStates) this.renderPropertyCard(state, conflictContainer);
@@ -686,32 +689,9 @@ export class SelectPropertiesModal extends Modal {
 		nameEl.id = `pp-property-name-${++nextPropertyNameId}`;
 		cardEl.setAttribute("aria-labelledby", nameEl.id);
 
-		if (state.hasConflict) {
-			// The section explains the conflict once; the row only carries a marker.
-			const warning = titleGroup.createSpan({
-				cls: "pp-property-warning",
-				attr: { title: conflictWarningText(state) },
-			});
-			setIcon(warning.createSpan({ attr: { "aria-hidden": "true" } }), "alert-triangle");
-			warning.createSpan({ cls: "pp-visually-hidden", text: conflictWarningText(state) });
-		}
-
 		if (state.notice) {
 			cardEl.createDiv({ cls: "pp-property-notice", text: state.notice });
 		}
-		const notes = state.conflictContext?.conflictNotes;
-		if (state.hasConflict && notes?.length) {
-			const notesEl = cardEl.createDiv({ cls: "pp-conflict-notes" });
-			notesEl.createSpan({
-				text: `${notes.length === 1 ? "Note" : "Notes"} with this conflict: `,
-			});
-			notes.forEach((note, index) => {
-				if (index > 0) notesEl.append(", ");
-				const path = state.conflictContext?.conflictPaths?.[index];
-				this.renderNoteLink(notesEl, note, path);
-			});
-		}
-
 		if (state.isList && !state.hasConflict) {
 			this.renderListBody(state, cardEl);
 		} else {
@@ -799,11 +779,17 @@ export class SelectPropertiesModal extends Modal {
 						: undefined) ??
 					[];
 				const sourcesEl = option.createSpan({ cls: "pp-conflict-sources" });
-				sources.forEach(({ note }, index) => {
+				if (sources.length > 3) {
+					sourcesEl.setText(`${sources.length} notes`);
+					sourcesEl.setAttribute("title", sources.map((s) => s.note).join(", "));
+				} else if (sources.length > 0) {
+					sources.forEach(({ note }, index) => {
 					if (index > 0) sourcesEl.append(", ");
 					const path = this.findPathForNote(state, note);
 					this.renderNoteLink(sourcesEl, note, path);
 				});
+				sourcesEl.setAttribute("title", sources.map((s) => s.note).join(", "));
+				}
 				const selectCandidate = (): void => {
 					if (!radio.checked) return;
 					state.selectedCandidateKey = candidate.key;

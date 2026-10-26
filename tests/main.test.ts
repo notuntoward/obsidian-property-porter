@@ -864,7 +864,7 @@ describe("PropertyPorter", () => {
 				const card = Array.from(this.contentEl.querySelectorAll(".pp-property-card")).find(
 					(c: any) => c.querySelector(".pp-property-name")?.textContent === "modified_date"
 				) as HTMLElement;
-				warningText = card.querySelector(".pp-property-warning")?.textContent ?? "";
+				warningText = card.querySelector(".pp-conflict-options") ? "has-conflict" : "";
 					const radios = card.querySelectorAll<HTMLInputElement>('.pp-conflict-option input[type="radio"]');
 					expect(radios.length).toBe(3);
 					radios[1].click(); // keep the later value
@@ -873,7 +873,7 @@ describe("PropertyPorter", () => {
 
 			await plugin.copyProperties();
 
-			expect(warningText).toBe("Conflict: modified_date has different values. Pick one or skip it.");
+			expect(warningText).toBe("has-conflict");
 			// The note is repaired textually: only the chosen occurrence survives
 			// and every other line is preserved.
 			expect(fileContents[file.path]).toBe(
@@ -1011,9 +1011,7 @@ describe("PropertyPorter", () => {
 				// The first two modals resolve each note's duplicates; the third
 				// resolves the union's scalar collision with cross-note wording.
 				if (modalIndex <= 2) {
-					expect(card.querySelector(".pp-property-warning")?.textContent).toBe(
-						"Conflict: status has different values. Pick one or skip it."
-					);
+					expect(card.querySelector(".pp-conflict-options")).not.toBeNull();
 				}
 				const radios = card.querySelectorAll<HTMLInputElement>('.pp-conflict-option input[type="radio"]');
 				radios[modalIndex === 1 ? 1 : 0].click();
@@ -1335,9 +1333,7 @@ describe("PropertyPorter", () => {
 				if (modalIndex === 1) {
 					// Duplicate-resolution modal: pick the first modified_date.
 					const card = findCard("modified_date");
-					expect(card.querySelector(".pp-property-warning")?.textContent).toBe(
-						"Conflict: modified_date has different values. Pick one or skip it."
-					);
+					expect(card.querySelector(".pp-conflict-options")).not.toBeNull();
 					const radios = card.querySelectorAll<HTMLInputElement>('.pp-conflict-option input[type="radio"]');
 					radios[0].click();
 				} else {
@@ -1345,7 +1341,7 @@ describe("PropertyPorter", () => {
 					// modified_date matches the clipboard, so it is not a
 					// conflict.
 					const card = findCard("status");
-					secondWarning = card.querySelector(".pp-property-warning")?.textContent ?? "";
+					secondWarning = card.querySelector(".pp-conflict-options") ? "has-conflict" : "";
 					const radios = card.querySelectorAll<HTMLInputElement>('.pp-conflict-option input[type="radio"]');
 					expect(radios.length).toBe(3);
 					radios[0].click(); // keep the clipboard value
@@ -1355,7 +1351,7 @@ describe("PropertyPorter", () => {
 
 			await plugin.pasteProperties(target);
 
-			expect(secondWarning).toBe("Conflict: status has different values. Pick one or skip it.");
+			expect(secondWarning).toBe("has-conflict");
 			// The target was repaired and then pasted into.
 			expect(modalIndex).toBe(2);
 			expect(fileContents[target.path]).toBe(
@@ -1406,7 +1402,7 @@ describe("PropertyPorter", () => {
 					this.contentEl.querySelector(".pp-finish-button").click();
 				} else {
 					// Merge-conflict modal is cancelled: nothing may be written.
-					expect(this.contentEl.textContent).toContain("Conflict: status has different values. Pick one or skip it");
+					expect(this.contentEl.textContent).toContain("1 property differs between notes");
 					expect(this.contentEl.textContent).toContain("status");
 					this.close();
 				}
