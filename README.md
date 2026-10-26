@@ -62,6 +62,11 @@ Settings are organized into groups:
 
 ### Property filters (property-copy commands)
 
+Include/exclude property names appear as compact vertical rows with muted type
+icons and right-aligned remove buttons, rather than tag pills. The full-width
+lists use the same shared presentation as File Palette's Search properties.
+Actual tag values in the conflict editor retain Obsidian-style tag pills.
+
 These filters apply to the regular property-copy commands. The tag-specific copy commands and **Copy tags** context-menu action override them to include only `tags`. Filters do not change paste operations or **Edit property clipboard**; duplicate-key repair still runs regardless of these filters.
 
 | Setting | Default | Description |

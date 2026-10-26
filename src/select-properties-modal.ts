@@ -7,6 +7,11 @@ import {
 	getPropertyType,
 	normalizeTag,
 	ValuePicker,
+	propertyNamePickerOptions,
+	propertyTypeLabel,
+	propertyTypeIcon,
+	PROPERTY_TYPE_CHOICES as TYPE_CHOICES,
+	type PropertyTypeChoice as TypeChoice,
 	datetimePickerOptions,
 	coerceToType,
 	jsTypeOf,
@@ -15,8 +20,8 @@ import {
 	type FrontmatterValueSources,
 	type ValuePickerOptions,
 	type VaultMetadataCatalog,
-	type VaultPropertyType,
 } from "commons/properties";
+export { propertyTypeLabel } from "commons/properties";
 import { setTimeoutIn, ownerWindow } from "commons/windows";
 
 let nextPropertyNameId = 0;
@@ -117,25 +122,6 @@ export interface ConflictCardContext {
 	valueSources?: FrontmatterValueSources;
 }
 
-interface TypeChoice {
-	label: string;
-	icon: string;
-	/** Obsidian property widget; undefined lets Obsidian pick the type itself. */
-	widget?: string;
-	type?: VaultPropertyType;
-}
-
-// Same choices as Obsidian's own Property type menu.
-const TYPE_CHOICES: TypeChoice[] = [
-	{ label: "Automatic", icon: "wand-2" },
-	{ label: "Text", icon: "align-left", widget: "text", type: "text" },
-	{ label: "List", icon: "list", widget: "multitext", type: "list" },
-	{ label: "Number", icon: "binary", widget: "number", type: "number" },
-	{ label: "Checkbox", icon: "check-square", widget: "checkbox", type: "checkbox" },
-	{ label: "Date", icon: "calendar", widget: "date", type: "date" },
-	{ label: "Date & time", icon: "clock", widget: "datetime", type: "datetime" },
-];
-
 export interface SelectPropertiesModalOptions {
 	title?: string;
 	subtitle?: string;
@@ -174,39 +160,7 @@ export function addedStatusText(added: number, skipped: number): string {
 	return `${added === 1 ? "1 property" : `${added} properties`} will be added. ${skipped} skipped.`;
 }
 
-// Names Obsidian shows in its own Property type menu; "Tags" is the one
-// special category. Anything undetermined reads as Text, as Obsidian does.
-export function propertyTypeLabel(name: string, isList: boolean, type?: string): string {
-	if (name === "tags" || name === "tag") return "Tags";
-	if (isList) return "List";
-	switch (type) {
-		case "number":
-			return "Number";
-		case "checkbox":
-			return "Checkbox";
-		case "date":
-			return "Date";
-		case "datetime":
-			return "Date & time";
-		case "list":
-			return "List";
-		default:
-			return "Text";
-	}
-}
-
 const CONFLICTS_INFO_TEXT = "Each property below has different values. Pick one, or skip it.";
-
-// Lucide icons standing in for Obsidian's Properties-panel type icons.
-const PROPERTY_TYPE_ICONS: Record<string, string> = {
-	Text: "align-left",
-	List: "list",
-	Number: "binary",
-	Checkbox: "check-square",
-	Date: "calendar",
-	"Date & time": "clock",
-	Tags: "tags",
-};
 
 function selectedValueStyle(propertyName: string): "plain" | "tag" {
 	return propertyName === "tags" || propertyName === "tag" ? "tag" : "plain";
@@ -571,6 +525,7 @@ export class SelectPropertiesModal extends Modal {
 		searchContainer.hidden = true;
 		this.addHostEl = searchContainer;
 		this.propertyPicker = new ValuePicker(this.app, searchContainer, {
+			...propertyNamePickerOptions(() => this.catalog),
 			suggestions: () =>
 				this.propertyPicker?.inputEl.value.trim()
 					? this.catalog.properties.map(({ name }) => name).filter((name) => !this.propertyStates.has(name))
@@ -745,7 +700,7 @@ export class SelectPropertiesModal extends Modal {
 					tabindex: "-1",
 				},
 			});
-			setIcon(typeButton, PROPERTY_TYPE_ICONS[typeLabel] ?? "align-left");
+			setIcon(typeButton, propertyTypeIcon(typeLabel));
 			typeButton.addEventListener("click", () => this.openTypeMenu(state, typeButton));
 			cardEl.addEventListener("keydown", (event) => {
 				if (event.target !== cardEl || event.key.toLowerCase() !== "t") return;
@@ -758,7 +713,7 @@ export class SelectPropertiesModal extends Modal {
 				cls: ["pp-property-type", state.isList ? "is-list" : "is-scalar"],
 				attr: { title: typeLabel, "aria-label": typeLabel, role: "img" },
 			});
-			setIcon(typeEl, PROPERTY_TYPE_ICONS[typeLabel] ?? "align-left");
+			setIcon(typeEl, propertyTypeIcon(typeLabel));
 		}
 
 		const nameEl = titleGroup.createSpan({ cls: "pp-property-name", text: state.name });
@@ -1041,7 +996,7 @@ export class SelectPropertiesModal extends Modal {
 							"aria-label": typeLabel,
 						},
 					});
-					setIcon(typeIcon, PROPERTY_TYPE_ICONS[typeLabel] ?? "align-left");
+					setIcon(typeIcon, propertyTypeIcon(typeLabel));
 				}
 
 				const displayText =

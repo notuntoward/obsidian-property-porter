@@ -39,6 +39,7 @@ import {
 } from "commons/workspace";
 import {
 	collectVaultMetadata,
+	propertyNamePickerOptions,
 	isListProperty,
 	ValuePicker,
 	collectValueSources,
@@ -1301,9 +1302,12 @@ export class PropertyPorterSettingTab extends PluginSettingTab {
 					? "Choose existing properties or confirm new names to copy. Cannot overlap with Exclude properties."
 					: "Choose existing properties or confirm new names to skip. Cannot overlap with Only include properties.",
 				render: (setting: Setting) => {
-					const propertyNames = collectVaultMetadata(this.app).properties.map(({ name }) => name);
+					setting.settingEl.classList.add("commons-property-list-setting");
+					const catalog = collectVaultMetadata(this.app);
 					const picker = new ValuePicker(this.app, setting.controlEl, {
-						suggestions: propertyNames,
+						...propertyNamePickerOptions(() => catalog),
+						appearance: "property",
+						selectedLayout: "rows",
 						value: parseCommaList(this.plugin.settings[key]),
 						multiple: true,
 						allowCreate: true,

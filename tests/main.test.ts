@@ -2344,16 +2344,20 @@ describe("PropertyPorterSettingTab", () => {
 
 		const includeControl = obsidianMock.decorateEl(document.createElement("div"));
 		const excludeControl = obsidianMock.decorateEl(document.createElement("div"));
-		includeDef.render({ controlEl: includeControl }, {} as any);
-		excludeDef.render({ controlEl: excludeControl }, {} as any);
+		includeDef.render({ controlEl: includeControl, settingEl: includeControl }, {} as any);
+		excludeDef.render({ controlEl: excludeControl, settingEl: excludeControl }, {} as any);
 
 		expect(includeControl.querySelector(".commons-property-picker")).not.toBeNull();
 		expect(excludeControl.querySelector(".commons-property-picker")).not.toBeNull();
 		expect(
-			Array.from(includeControl.querySelectorAll(".commons-property-picker-chip span:first-child")).map(
+			Array.from(includeControl.querySelectorAll(".commons-property-picker-label")).map(
 				(element) => element.textContent
 			)
 		).toEqual(["tags"]);
+		expect(includeControl.querySelector<HTMLElement>(".commons-property-picker")?.dataset.selectedLayout).toBe("rows");
+		expect(includeControl.querySelector(".commons-property-picker-chip")?.classList.contains("is-plain")).toBe(true);
+		expect(includeControl.querySelector(".commons-property-picker-icon")).not.toBeNull();
+		expect(includeControl.classList.contains("commons-property-list-setting")).toBe(true);
 		expect(
 			includeControl.querySelector<HTMLInputElement>(".commons-property-picker-input")?.placeholder
 		).toBe("Add a property");
@@ -2380,11 +2384,11 @@ describe("PropertyPorterSettingTab", () => {
 		const includeControl = obsidianMock.decorateEl(document.createElement("div"));
 		const excludeControl = obsidianMock.decorateEl(document.createElement("div"));
 		items.find((definition) => definition.name === "Only include properties").render(
-			{ controlEl: includeControl },
+			{ controlEl: includeControl, settingEl: includeControl },
 			{} as any
 		);
 		items.find((definition) => definition.name === "Exclude properties").render(
-			{ controlEl: excludeControl },
+			{ controlEl: excludeControl, settingEl: excludeControl },
 			{} as any
 		);
 		const input = includeControl.querySelector(".commons-property-picker-input");
