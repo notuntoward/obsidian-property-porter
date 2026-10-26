@@ -553,34 +553,23 @@ body.theme-dark {
 	font-style: italic;
 }
 
-button.pp-property-type.pp-property-type-chip {
+button.pp-property-type {
 	display: inline-flex;
 	align-items: center;
-	gap: var(--size-2-1);
-	height: auto;
-	padding: var(--size-2-1) var(--size-2-2);
-	border: 1px solid var(--background-modifier-border);
-	border-radius: var(--radius-s);
-	background: var(--background-secondary);
-	color: var(--text-muted);
-	font-size: var(--font-ui-smaller);
+	justify-content: center;
+	padding: var(--size-2-1);
+	border: none;
+	background: transparent;
+	color: var(--text-faint);
 	box-shadow: none;
 	cursor: pointer;
+	border-radius: var(--radius-s);
+	height: auto;
 }
 
-button.pp-property-type.pp-property-type-chip:hover {
-	background: var(--background-modifier-hover);
+button.pp-property-type:hover {
 	color: var(--text-normal);
-	border-color: var(--background-modifier-border-hover);
-}
-
-.pp-property-type-chip-icon {
-	display: inline-flex;
-	align-items: center;
-}
-
-.pp-property-type-chip-label {
-	font-weight: var(--font-normal);
+	background: var(--background-modifier-hover);
 }
 
 .pp-number-input,
@@ -621,12 +610,22 @@ button.pp-property-type.pp-property-type-chip:hover {
 
 .pp-validation-error {
 	grid-column: 2 / -1;
-	color: var(--text-error);
+	color: var(--text-warning);
 	font-size: var(--font-ui-smaller);
 	margin-top: var(--size-2-1);
 }
 
-.pp-property-card.is-invalid {
-	border: 1px solid var(--text-error);
-	background: color-mix(in srgb, var(--text-error) 5%, transparent);
+.pp-property-card.is-invalid .pp-property-picker-host input,
+.pp-property-card.is-invalid .pp-property-picker-host textarea {
+	border-color: var(--text-warning);
+}
+
+.pp-property-empty {
+	margin-left: auto;
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+}
+
+.pp-property-empty[hidden] {
+	display: none;
 }

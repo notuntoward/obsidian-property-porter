@@ -93,6 +93,7 @@ export interface PropertyCardState {
 	widget?: string;
 	/** True while the type can still be chosen (a new, unknown property). */
 	typeEditable?: boolean;
+	emptyEl?: HTMLElement;
 	notice?: string;
 	conflictContext?: ConflictCardContext;
 	cardEl?: HTMLElement;
@@ -240,6 +241,8 @@ export class SelectPropertiesModal extends Modal {
 	private listContainerEl: HTMLElement | null = null;
 	private submitted = false;
 	private hintEl: HTMLElement | null = null;
+	/** Type chosen in the new-property confirmation, applied when the card is created. */
+	private readonly pendingTypes = new Map<string, string>();
 	private keyboardHintEl: HTMLElement | null = null;
 	private doneButton: HTMLButtonElement | null = null;
 	private skipAllButton: HTMLButtonElement | null = null;
@@ -506,6 +509,10 @@ export class SelectPropertiesModal extends Modal {
 			this.submit();
 			return false;
 		});
+		this.scope.register(["Alt"], "Enter", () => {
+			if (this.openFocusedConflictNote()) return false;
+			return true;
+		});
 		this.scope.register(["Alt"], "ArrowDown", () => {
 			this.focusCard(1);
 			return false;
@@ -542,6 +549,36 @@ export class SelectPropertiesModal extends Modal {
 			if (tags?.cardEl) return tags.cardEl;
 		}
 		return this.addRowEl ?? states[0]?.cardEl ?? null;
+	}
+
+	private focusCardValue(state: PropertyCardState): void {
+		if (!state.cardEl) return;
+		state.cardEl.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
+		const target =
+			state.picker?.inputEl ??
+			state.toggleComponent?.toggleEl ??
+			state.cardEl.querySelector<HTMLElement>(
+				".pp-property-picker-host .commons-property-picker-input, .pp-property-picker-host input, .pp-property-picker-host .checkbox-container"
+			);
+		if (target) {
+			target.focus();
+		} else {
+			this.openRow(state.cardEl);
+		}
+	}
+
+	private openFocusedConflictNote(target?: HTMLElement | null): boolean {
+		const active = target ?? this.contentEl.ownerDocument.activeElement;
+		const card = active?.closest<HTMLElement>(".pp-property-card");
+		if (!card || !this.contentEl.contains(card)) return false;
+
+		const checkedRadio = card.querySelector<HTMLInputElement>(".pp-conflict-option input[type='radio']:checked");
+		const link = checkedRadio?.closest(".pp-conflict-option")?.querySelector<HTMLAnchorElement>("a.pp-note-link");
+		if (link) {
+			link.click();
+			return true;
+		}
+		return false;
 	}
 
 	private openRow(row: HTMLElement): void {
@@ -581,13 +618,25 @@ export class SelectPropertiesModal extends Modal {
 			placeholder: "Property name to add…",
 			ariaLabel: "Property name to add",
 			getCreateLabel: (name) => `Add property "${name}"…`,
+			typeChoices: TYPE_CHOICES.map((choice) => ({
+				id: choice.widget ?? "auto",
+				label: choice.label,
+				icon: choice.icon,
+			})),
+			onNewEntryType: (name, typeId) => this.pendingTypes.set(name.trim(), typeId),
 			onChange: (values) => {
 				const name = values[0];
 				if (!name) return;
 				const state = this.addProperty(name);
 				this.propertyPicker?.setValue([]);
 				this.propertyPicker?.refresh();
-				state?.picker?.inputEl.focus();
+				if (state) {
+					this.focusCardValue(state);
+					const win = ownerWindow(this.contentEl) ?? window;
+					setTimeoutIn(win, () => {
+						this.focusCardValue(state);
+					}, 20);
+				}
 			},
 		});
 	}
@@ -622,6 +671,10 @@ export class SelectPropertiesModal extends Modal {
 			skipped: false,
 			typeEditable: this.isUnknownProperty(trimmed),
 		};
+		const pendingType = this.pendingTypes.get(trimmed);
+		this.pendingTypes.delete(trimmed);
+		const pendingChoice = state.typeEditable ? TYPE_CHOICES.find((choice) => choice.widget === pendingType) : undefined;
+		if (pendingChoice) this.applyType(state, pendingChoice);
 		this.propertyStates.set(trimmed, state);
 		if (this.listContainerEl) {
 			this.renderPropertyCard(state, this.listContainerEl);
@@ -666,6 +719,11 @@ export class SelectPropertiesModal extends Modal {
 	}
 
 	private chooseType(state: PropertyCardState, choice: TypeChoice): void {
+		this.applyType(state, choice);
+		this.rerenderCard(state);
+	}
+
+	private applyType(state: PropertyCardState, choice: TypeChoice): void {
 		const key = state.name.toLowerCase();
 		const declared = { ...(this.catalog.declaredTypes ?? {}) };
 		if (choice.type) declared[key] = choice.type;
@@ -676,7 +734,6 @@ export class SelectPropertiesModal extends Modal {
 		const values = this.getStateValues(state);
 		state.isList = isListProperty(this.catalog, state.name);
 		state.selected = state.isList ? values : values.slice(0, 1);
-		this.rerenderCard(state);
 	}
 
 	private rerenderCard(state: PropertyCardState): void {
@@ -714,17 +771,15 @@ export class SelectPropertiesModal extends Modal {
 		if (state.typeEditable) {
 			const choiceLabel = state.widget ? typeLabel : "Automatic";
 			const typeButton = titleGroup.createEl("button", {
-				cls: ["pp-property-type", "pp-property-type-chip", "is-editable", state.isList ? "is-list" : "is-scalar"],
+				cls: ["pp-property-type", "is-editable", state.isList ? "is-list" : "is-scalar"],
 				type: "button",
 				attr: {
-					title: `Type: ${choiceLabel}. Change type (T)`,
+					title: `Property type: ${choiceLabel}. Change type (T)`,
 					"aria-label": `Property type: ${choiceLabel}. Change type`,
 					tabindex: "-1",
 				},
 			});
-			const iconSpan = typeButton.createSpan({ cls: "pp-property-type-chip-icon" });
-			setIcon(iconSpan, PROPERTY_TYPE_ICONS[typeLabel] ?? "align-left");
-			typeButton.createSpan({ cls: "pp-property-type-chip-label", text: choiceLabel });
+			setIcon(typeButton, PROPERTY_TYPE_ICONS[typeLabel] ?? "align-left");
 			typeButton.addEventListener("click", () => this.openTypeMenu(state, typeButton));
 			cardEl.addEventListener("keydown", (event) => {
 				if (event.target !== cardEl || event.key.toLowerCase() !== "t") return;
@@ -743,6 +798,13 @@ export class SelectPropertiesModal extends Modal {
 		const nameEl = titleGroup.createSpan({ cls: "pp-property-name", text: state.name });
 		nameEl.id = `pp-property-name-${++nextPropertyNameId}`;
 		cardEl.setAttribute("aria-labelledby", nameEl.id);
+
+		state.emptyEl = header.createSpan({
+			cls: "pp-property-empty",
+			text: "Empty - won't be copied",
+		});
+		state.emptyEl.hidden = true;
+		state.errorEl = undefined;
 
 		if (state.notice) {
 			cardEl.createDiv({ cls: "pp-property-notice", text: state.notice });
@@ -796,19 +858,6 @@ export class SelectPropertiesModal extends Modal {
 	private setCardValidity(state: PropertyCardState, isValid: boolean, reason?: string): void {
 		state.invalid = !isValid;
 		state.invalidReason = reason;
-		if (state.cardEl) {
-			state.cardEl.classList.toggle("is-invalid", !isValid);
-			if (!isValid && reason) {
-				if (!state.errorEl) {
-					state.errorEl = state.cardEl.createDiv({ cls: "pp-validation-error" });
-				}
-				state.errorEl.setText(reason);
-				state.errorEl.hidden = false;
-			} else if (state.errorEl) {
-				state.errorEl.hidden = true;
-				state.errorEl.setText("");
-			}
-		}
 		this.updateControls();
 	}
 
@@ -842,6 +891,16 @@ export class SelectPropertiesModal extends Modal {
 			};
 			numInput.addEventListener("input", commitNumber);
 			numInput.addEventListener("change", commitNumber);
+			state.picker = {
+				inputEl: numInput,
+				rootEl: hostEl,
+				getValue: () => (numInput.value.trim() ? [numInput.value.trim()] : []),
+				setValue: (val: string | string[]) => {
+					numInput.value = String(Array.isArray(val) ? val[0] ?? "" : val ?? "");
+					commitNumber();
+				},
+				destroy: () => numInput.remove(),
+			};
 			return;
 		}
 
@@ -1153,6 +1212,12 @@ export class SelectPropertiesModal extends Modal {
 				radioEl.addEventListener("change", selectOther);
 			}
 			const handleConflictKeydown = (event: KeyboardEvent): void => {
+				if (event.key === "Enter" && event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
+					event.preventDefault();
+					event.stopPropagation();
+					this.openFocusedConflictNote(event.currentTarget as HTMLElement);
+					return;
+				}
 				const target = /^[1-9]$/.test(event.key)
 					? candidateRadios[Number(event.key) - 1]
 					: event.key.toLowerCase() === "o"
@@ -1336,6 +1401,7 @@ export class SelectPropertiesModal extends Modal {
 		let added = 0;
 		let skipped = 0;
 		let skippedRows = 0;
+		let empty = 0;
 		const invalidNames: string[] = [];
 
 		for (const state of this.propertyStates.values()) {
@@ -1345,8 +1411,12 @@ export class SelectPropertiesModal extends Modal {
 			}
 			if (state.invalid) {
 				invalidNames.push(state.name);
+				continue;
 			}
-			if (this.getStateValues(state).length === 0) continue;
+			if (this.getStateValues(state).length === 0) {
+				empty++;
+				continue;
+			}
 			added++;
 		}
 
@@ -1358,18 +1428,39 @@ export class SelectPropertiesModal extends Modal {
 
 		if (invalidNames.length > 0) {
 			const names = invalidNames.join(", ");
-			this.hintEl?.setText(`Cannot continue: ${names} has an invalid value.`);
+			this.hintEl?.setText(`Cannot continue: ${names} ${invalidNames.length === 1 ? "has an invalid value" : "have invalid values"}.`);
 			if (this.doneButton) {
 				this.doneButton.disabled = true;
 				this.doneButton.title = `Fix invalid property: ${names}`;
 			}
 		} else {
-			this.hintEl?.setText(addedStatusText(added, skipped));
+			const emptyNote = empty > 0
+				? ` ${empty} empty ${empty === 1 ? "property" : "properties"} won't be copied.`
+				: "";
+			this.hintEl?.setText(addedStatusText(added, skipped) + emptyNote);
 			if (this.doneButton) {
 				this.doneButton.disabled = false;
 				this.doneButton.setText(`${this.options.finishText ?? "Continue"} (${added})`);
 			if (added === 0) this.doneButton.title = "Close and clear copied properties";
 			else this.doneButton.removeAttribute("title");
+			}
+		}
+		for (const state of this.propertyStates.values()) {
+			const invalid = !state.skipped && !!state.invalid;
+			if (state.emptyEl) {
+				state.emptyEl.hidden = state.skipped || invalid || this.getStateValues(state).length > 0;
+			}
+			state.cardEl?.classList.toggle("is-invalid", invalid);
+			if (invalid && state.cardEl) {
+				state.errorEl ??= state.cardEl.createDiv({ cls: "pp-validation-error" });
+				state.errorEl.setText(state.invalidReason ?? "Enter a valid value.");
+			}
+			if (state.errorEl) state.errorEl.hidden = !invalid;
+			for (const input of Array.from(state.cardEl?.querySelectorAll<HTMLElement>(
+				".pp-property-picker-host input, .pp-property-picker-host textarea, .pp-property-picker-host [role='checkbox']"
+			) ?? [])) {
+				if (invalid) input.setAttribute("aria-invalid", "true");
+				else input.removeAttribute("aria-invalid");
 			}
 		}
 		if (this.skipAllButton) this.skipAllButton.disabled = skippedRows === this.propertyStates.size;
@@ -1456,6 +1547,7 @@ export class SelectPropertiesModal extends Modal {
 			return [
 				{ key: "↑↓, Ctrl+N/P or 1-9", action: "choose" },
 				{ key: "O", action: "other value" },
+				{ key: "Alt+Enter", action: "open note" },
 				{ key: "Esc", action: "done" },
 				{ key: "Tab", action: "next" },
 			];

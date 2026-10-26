@@ -1427,6 +1427,19 @@ describe("SelectPropertiesModal", () => {
 			expect(button(".pp-finish-button").title).toBe("Close and clear copied properties");
 		});
 
+		it("counts a property added with the Add property control once it has a value", () => {
+			const { modal, button, status } = openModal({ status: "draft" });
+			expect(button(".pp-finish-button").textContent).toBe("Continue (1)");
+
+			const state = modal.addProperty("fred")!;
+			const input = state.picker!.inputEl;
+			input.value = "hello";
+			input.dispatchEvent(new Event("input", { bubbles: true }));
+
+			expect(button(".pp-finish-button").textContent).toBe("Continue (2)");
+			expect(status()).toBe("2 properties will be added to the note.");
+		});
+
 		it("labels property types with Obsidian's names", () => {
 			expect(propertyTypeLabel("tags", true)).toBe("Tags");
 			expect(propertyTypeLabel("x", true)).toBe("List");
@@ -2071,6 +2084,187 @@ describe("SelectPropertiesModal visual cleanup (Phase 3)", () => {
 		await Promise.resolve();
 		expect(openLinkText).toHaveBeenCalledWith("Beta.md", "", false);
 	});
+
+	it("Alt+Enter opens the selected conflict value's note through DOM and modal scope handling", async () => {
+		const openLinkText = vi.fn().mockResolvedValue(undefined);
+		const { app } = createApp({
+			openLinkText,
+			markdownFiles: [new obsidianMock.TFile("Alpha.md"), new obsidianMock.TFile("Beta.md")],
+		});
+		const modal = new SelectPropertiesModal(
+			app as any,
+			createMockCatalog(),
+			{ status: ["a", "b"] },
+			vi.fn(),
+			vi.fn(),
+			{
+				status: {
+					conflictNotes: ["Alpha", "Beta"],
+					conflictPaths: ["Alpha.md", "Beta.md"],
+					valueSources: {
+						status: {
+							a: [{ note: "Alpha", count: 1 }],
+							b: [{ note: "Beta", count: 1 }],
+						},
+					},
+				},
+			}
+		);
+		document.body.appendChild(modal.contentEl);
+		try {
+			const altEnterShortcut = getModalShortcut(modal, ["Alt"], "Enter");
+			const radioA = modal.contentEl.querySelector<HTMLInputElement>('input[value="a"]')!;
+			const radioB = modal.contentEl.querySelector<HTMLInputElement>('input[value="b"]')!;
+
+			radioA.focus();
+			key(radioA, "Enter");
+			await Promise.resolve();
+			expect(openLinkText).not.toHaveBeenCalled();
+
+			radioA.focus();
+			const event = key(radioA, "Enter", { altKey: true });
+			await Promise.resolve();
+			expect(event.defaultPrevented).toBe(true);
+			expect(openLinkText).toHaveBeenCalledExactlyOnceWith("Alpha.md", "", false);
+
+			openLinkText.mockClear();
+			key(radioA, "2");
+			expect(radioB.checked).toBe(true);
+			expect(document.activeElement).toBe(radioA);
+			expect(altEnterShortcut(new KeyboardEvent("keydown", { key: "Enter", altKey: true }))).toBe(false);
+			await Promise.resolve();
+			expect(openLinkText).toHaveBeenCalledExactlyOnceWith("Beta.md", "", false);
+			expect(modal.propertyStates.get("status")?.selected).toEqual(["b"]);
+
+			openLinkText.mockClear();
+			const card = modal.propertyStates.get("status")!.cardEl!;
+			card.focus();
+			expect(altEnterShortcut(new KeyboardEvent("keydown", { key: "Enter", altKey: true }))).toBe(false);
+			await Promise.resolve();
+			expect(openLinkText).toHaveBeenCalledExactlyOnceWith("Beta.md", "", false);
+
+			openLinkText.mockClear();
+			const otherRadio = card.querySelector<HTMLInputElement>('input[value="other"]')!;
+			otherRadio.click();
+			expect(altEnterShortcut(new KeyboardEvent("keydown", { key: "Enter", altKey: true }))).toBe(true);
+			modal.contentEl.querySelector<HTMLButtonElement>(".pp-finish-button")!.focus();
+			expect(altEnterShortcut(new KeyboardEvent("keydown", { key: "Enter", altKey: true }))).toBe(true);
+			await Promise.resolve();
+			expect(openLinkText).not.toHaveBeenCalled();
+		} finally {
+			modal.onClose();
+			modal.contentEl.remove();
+		}
+	});
+
+	it.each([0, 4])("Alt+Enter does not open another candidate's link when the selected value has %i source notes", async (count) => {
+		const openLinkText = vi.fn().mockResolvedValue(undefined);
+		const { app } = createApp({ openLinkText });
+		const modal = new SelectPropertiesModal(
+			app as any,
+			createMockCatalog(),
+			{ status: ["a", "b"] },
+			vi.fn(),
+			vi.fn(),
+			{
+				status: {
+					valueSources: {
+						status: {
+							a: Array.from({ length: count }, (_, index) => ({ note: `Source ${index}`, count: 1 })),
+							b: [{ note: "Beta", count: 1 }],
+						},
+					},
+				},
+			}
+		);
+		document.body.appendChild(modal.contentEl);
+		try {
+			const altEnterShortcut = getModalShortcut(modal, ["Alt"], "Enter");
+			const radioA = modal.contentEl.querySelector<HTMLInputElement>('input[value="a"]')!;
+			radioA.focus();
+
+			expect(radioA.checked).toBe(true);
+			expect(modal.contentEl.querySelectorAll("a.pp-note-link")).toHaveLength(1);
+			expect(altEnterShortcut(new KeyboardEvent("keydown", { key: "Enter", altKey: true }))).toBe(true);
+			await Promise.resolve();
+			expect(openLinkText).not.toHaveBeenCalled();
+		} finally {
+			modal.onClose();
+			modal.contentEl.remove();
+		}
+	});
+
+	it("applies the type chosen while creating a new property", () => {
+		const { app } = createApp();
+		const modal = new SelectPropertiesModal(app as any, createMockCatalog(), {}, vi.fn(), vi.fn());
+		modal.onOpen();
+
+		(modal as any).pendingTypes.set("fred", "number");
+		const state = modal.addProperty("fred")!;
+
+		expect(state.widget).toBe("number");
+		const typeBtn = state.cardEl!.querySelector<HTMLButtonElement>("button.pp-property-type");
+		expect(typeBtn?.getAttribute("aria-label")).toContain("Number");
+		expect(typeBtn?.textContent?.trim()).toBe("");
+		expect(state.cardEl!.querySelector(".pp-property-type-chip-label")).toBeNull();
+		const numInput = state.cardEl!.querySelector<HTMLInputElement>("input[type='number']");
+		expect(numInput).not.toBeNull();
+		expect(state.picker?.inputEl).toBe(numInput);
+	});
+
+	it("marks only empty properties and updates the summary as they are filled or skipped", () => {
+		const { app } = createApp();
+		const modal = new SelectPropertiesModal(app as any, createMockCatalog(), { status: "draft" }, vi.fn(), vi.fn());
+		modal.onOpen();
+		const emptyOf = (name: string) =>
+			modal.propertyStates.get(name)!.cardEl!.querySelector<HTMLElement>(".pp-property-empty")!;
+		const hint = () => modal.contentEl.querySelector(".pp-multi-select-hint")!.textContent;
+		expect(modal.contentEl.querySelector(".pp-property-ready")).toBeNull();
+		expect(emptyOf("status").hidden).toBe(true);
+
+		const state = modal.addProperty("fred")!;
+		expect(emptyOf("fred").hidden).toBe(false);
+		expect(emptyOf("fred").textContent).toBe("Empty - won't be copied");
+		expect(hint()).toBe("1 property will be added to the note. 1 empty property won't be copied.");
+
+		const other = modal.addProperty("barney")!;
+		expect(emptyOf("barney").hidden).toBe(false);
+		expect(hint()).toContain("2 empty properties won't be copied.");
+		other.skipCheckboxEl!.checked = true;
+		other.skipCheckboxEl!.dispatchEvent(new Event("change"));
+		expect(emptyOf("barney").hidden).toBe(true);
+		expect(hint()).toContain("1 empty property won't be copied.");
+
+		const input = state.picker!.inputEl;
+		input.value = "x";
+		input.dispatchEvent(new Event("input", { bubbles: true }));
+		expect(emptyOf("fred").hidden).toBe(true);
+		expect(hint()).toBe("2 properties will be added to the note.");
+
+		input.value = "";
+		input.dispatchEvent(new Event("input", { bubbles: true }));
+		expect(emptyOf("fred").hidden).toBe(false);
+		expect(modal.getSelectedProperties()).toEqual({ status: "draft" });
+	});
+
+	it("marks existing empty lists without marking false or zero as empty", () => {
+		const { app } = createApp();
+		const modal = new SelectPropertiesModal(
+			app as any,
+			createMockCatalog(),
+			{ tags: [], favorite: false, year: 0 },
+			vi.fn(),
+			vi.fn()
+		);
+		modal.onOpen();
+		const emptyOf = (name: string) =>
+			modal.propertyStates.get(name)!.cardEl!.querySelector<HTMLElement>(".pp-property-empty")!;
+		expect(emptyOf("tags").hidden).toBe(false);
+		expect(emptyOf("favorite").hidden).toBe(true);
+		expect(emptyOf("year").hidden).toBe(true);
+		expect(modal.contentEl.querySelector(".pp-multi-select-hint")?.textContent)
+			.toBe("2 properties will be added to the note. 1 empty property won't be copied.");
+	});
 });
 
 	describe("typed candidates (Phase 2)", () => {
@@ -2246,11 +2440,11 @@ describe("typed entry and validation (Phase 5)", () => {
 		const state = modal.addProperty("custom_field");
 		expect(state).toBeDefined();
 
-		const chip = state!.cardEl!.querySelector<HTMLButtonElement>("button.pp-property-type-chip")!;
-		expect(chip).not.toBeNull();
-		expect(chip.querySelector(".pp-property-type-chip-label")?.textContent).toBe("Automatic");
+		const typeBtn = state!.cardEl!.querySelector<HTMLButtonElement>("button.pp-property-type")!;
+		expect(typeBtn).not.toBeNull();
+		expect(typeBtn.getAttribute("aria-label")).toContain("Automatic");
 
-		chip.click();
+		typeBtn.click();
 		expect(obsidianMock.Menu.last).not.toBeNull();
 	});
 
@@ -2312,17 +2506,33 @@ describe("typed entry and validation (Phase 5)", () => {
 		const errorEl = countCard.querySelector(".pp-validation-error");
 		expect(errorEl).not.toBeNull();
 		expect(errorEl?.textContent).toBeTruthy();
+		expect(numberInput.getAttribute("aria-invalid")).toBe("true");
+		expect(countCard.querySelector<HTMLElement>(".pp-property-empty")?.hidden).toBe(true);
 
 		// Continue disabled and status line naming property
 		expect(continueBtn.disabled).toBe(true);
 		const hintEl = modal.contentEl.querySelector(".pp-multi-select-hint");
 		expect(hintEl?.textContent).toContain("Cannot continue: count has an invalid value.");
 
+		const skip = modal.propertyStates.get("count")!.skipCheckboxEl!;
+		skip.checked = true;
+		skip.dispatchEvent(new Event("change"));
+		expect(countCard.classList.contains("is-invalid")).toBe(false);
+		expect(errorEl?.hidden).toBe(true);
+		expect(numberInput.hasAttribute("aria-invalid")).toBe(false);
+		expect(continueBtn.disabled).toBe(false);
+		skip.checked = false;
+		skip.dispatchEvent(new Event("change"));
+		expect(countCard.classList.contains("is-invalid")).toBe(true);
+		expect(errorEl?.hidden).toBe(false);
+		expect(continueBtn.disabled).toBe(true);
+
 		// Fix value
 		numberInput.value = "42";
 		numberInput.dispatchEvent(new Event("change"));
 
 		expect(countCard.classList.contains("is-invalid")).toBe(false);
+		expect(numberInput.hasAttribute("aria-invalid")).toBe(false);
 		expect(continueBtn.disabled).toBe(false);
 		expect(modal.propertyStates.get("count")?.selected).toEqual([42]);
 	});

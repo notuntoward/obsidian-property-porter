@@ -36,6 +36,10 @@ Property Porter distinguishes two kinds of "multiple values for one property". B
 
 Either way the dialog shows a warning such as "Conflict: version has different values. Pick one or skip it." You may continue without resolving it; the preselected value is used. Skipping a property leaves it out of the copy and never edits the source note.
 
+With a conflict value selected, **Alt+Enter** opens its linked source note, just like clicking the note link. The shortcut also works with the property row highlighted. It does nothing for **Other value…** or an option that shows only a note count rather than a link.
+
+Valid properties have no status marker. Empty properties show "Empty - won't be copied" and are counted in the footer; invalid input has a warning-colored border and an explanation, and blocks Continue until fixed or skipped. Skipped properties remain subdued without empty or invalid warnings.
+
 Where conflicts are detected:
 
 - **Copy from the active tab group**: when the same single-value property holds different values across the group's notes (e.g. different `status` values), the conflicting options are presented once and exactly one must be chosen (or the property skipped) before anything reaches the clipboard. Tabs that Obsidian has not loaded yet after startup are included. List properties union silently; agreeing single values copy silently.
