@@ -160,7 +160,10 @@ export function addedStatusText(added: number, skipped: number): string {
 	return `${added === 1 ? "1 property" : `${added} properties`} will be added. ${skipped} skipped.`;
 }
 
-const CONFLICTS_INFO_TEXT = "Each property below has different values. Pick one, or skip it.";
+const CONFLICTS_INFO_TEXT =
+	"For each property, click the circle beside the value to use (or Other value... to enter your own). " +
+	"The selected value will be included. Check the box beside the property name to skip the entire property: " +
+	"it will be left out when you continue. Uncheck the box to include it again.";
 
 function selectedValueStyle(propertyName: string): "plain" | "tag" {
 	return propertyName === "tags" || propertyName === "tag" ? "tag" : "plain";
@@ -371,7 +374,9 @@ export class SelectPropertiesModal extends Modal {
 			section.createDiv({ cls: "pp-section-title", text: "Other properties" });
 			section.createDiv({
 				cls: "pp-properties-info",
-				text: "These properties have no conflicts and need no action. Edit or skip them only if you want.",
+				text: "These properties have no conflicts and are included as shown unless you edit them. " +
+					"Check the box beside a property name to skip it (leave it out when you continue); " +
+					"uncheck it to include it again.",
 			});
 			this.renderAddPropertyControl(section);
 			this.listContainerEl = section.createDiv({ cls: "pp-properties-list" });

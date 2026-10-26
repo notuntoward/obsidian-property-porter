@@ -840,11 +840,15 @@ describe("SelectPropertiesModal", () => {
 			"1 property differs between notes"
 		);
 		expect(modal.contentEl.querySelector(".pp-conflict-info")?.textContent).toBe(
-			"Each property below has different values. Pick one, or skip it."
+			"For each property, click the circle beside the value to use (or Other value... to enter your own). " +
+			"The selected value will be included. Check the box beside the property name to skip the entire property: " +
+			"it will be left out when you continue. Uncheck the box to include it again."
 		);
 		expect(modal.contentEl.querySelector(".pp-properties-section .pp-section-title")?.textContent).toBe("Other properties");
 		expect(modal.contentEl.querySelector(".pp-properties-section .pp-properties-info")?.textContent).toBe(
-			"These properties have no conflicts and need no action. Edit or skip them only if you want."
+			"These properties have no conflicts and are included as shown unless you edit them. " +
+			"Check the box beside a property name to skip it (leave it out when you continue); " +
+			"uncheck it to include it again."
 		);
 		const addPropertyRow = modal.contentEl.querySelector(".pp-properties-section .pp-add-property-row");
 		expect(addPropertyRow?.querySelector(".pp-add-property-label")?.textContent).toBe("+ Add property");
@@ -864,6 +868,42 @@ describe("SelectPropertiesModal", () => {
 		expect(onSubmit).toHaveBeenCalledWith({
 			status: "published",
 		});
+	});
+
+	it("includes chosen conflict values and other properties unless their skip boxes are checked", () => {
+		const { app } = createApp();
+		const onSubmit = vi.fn();
+		const modal = new SelectPropertiesModal(
+			app as any,
+			createMockCatalog(),
+			{ status: ["draft", "published"], tags: ["dev"] },
+			onSubmit,
+			vi.fn()
+		);
+		document.body.appendChild(modal.contentEl);
+		modal.onOpen();
+
+		const conflict = modal.contentEl.querySelector(".pp-conflicts-list .pp-property-card")!;
+		const other = modal.contentEl.querySelector(".pp-properties-section .pp-property-card")!;
+		const conflictSkip = conflict.querySelector<HTMLInputElement>(".pp-property-skip-checkbox")!;
+		const otherSkip = other.querySelector<HTMLInputElement>(".pp-property-skip-checkbox")!;
+		expect(conflictSkip.checked).toBe(false);
+		expect(otherSkip.checked).toBe(false);
+		expect(modal.getSelectedProperties()).toEqual({ status: "draft", tags: ["dev"] });
+
+		conflict.querySelectorAll<HTMLInputElement>('input[type="radio"]')[1]!.click();
+		expect(modal.getSelectedProperties()).toEqual({ status: "published", tags: ["dev"] });
+
+		conflictSkip.click();
+		expect(modal.getSelectedProperties()).toEqual({ tags: ["dev"] });
+		otherSkip.click();
+		expect(modal.getSelectedProperties()).toEqual({});
+		expect(onSubmit).not.toHaveBeenCalled();
+
+		conflictSkip.click();
+		otherSkip.click();
+		modal.submit();
+		expect(onSubmit).toHaveBeenCalledWith({ status: "published", tags: ["dev"] });
 	});
 
 	it("creates the conflict value picker only when Other value is selected", () => {
