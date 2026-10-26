@@ -1,4 +1,4 @@
-import { App, Menu, Modal, AbstractInputSuggest, Scope, setIcon, Keymap, TFile, ToggleComponent } from "obsidian";
+import { App, Menu, Modal, Scope, setIcon, Keymap, TFile, ToggleComponent } from "obsidian";
 import { RowNavigator, renderKeyHints, type KeyHint } from "commons/modal";
 import { TargetHighlighter, getTabHeadersForFiles, openFileInLeaf } from "commons/workspace";
 import {
@@ -6,7 +6,6 @@ import {
 	getPropertySuggestions,
 	getPropertyType,
 	normalizeTag,
-	rankCandidates,
 	ValuePicker,
 	datetimePickerOptions,
 	coerceToType,
@@ -213,29 +212,6 @@ function selectedValueStyle(propertyName: string): "plain" | "tag" {
 	return propertyName === "tags" || propertyName === "tag" ? "tag" : "plain";
 }
 
-export class PropertyNameSuggest extends AbstractInputSuggest<string> {
-	constructor(
-		app: App,
-		inputEl: HTMLInputElement,
-		private readonly getSuggestionsList: () => string[],
-		private readonly onSelectProperty: (name: string) => void
-	) {
-		super(app, inputEl);
-		this.onSelect((name) => this.onSelectProperty(name));
-	}
-
-	getSuggestions(query: string): string[] {
-		const lower = query.trim().toLowerCase();
-		if (!lower) return [];
-		return rankCandidates(query.trim(), this.getSuggestionsList(), 20);
-	}
-
-	renderSuggestion(value: string, el: HTMLElement): void {
-		el.setText(value);
-	}
-
-}
-
 export class SelectPropertiesModal extends Modal {
 	readonly propertyStates = new Map<string, PropertyCardState>();
 	private listContainerEl: HTMLElement | null = null;
@@ -243,6 +219,7 @@ export class SelectPropertiesModal extends Modal {
 	private hintEl: HTMLElement | null = null;
 	/** Type chosen in the new-property confirmation, applied when the card is created. */
 	private readonly pendingTypes = new Map<string, string>();
+	private readonly cancelFocusTimers: (() => void)[] = [];
 	private keyboardHintEl: HTMLElement | null = null;
 	private doneButton: HTMLButtonElement | null = null;
 	private skipAllButton: HTMLButtonElement | null = null;
@@ -276,28 +253,16 @@ export class SelectPropertiesModal extends Modal {
 			const isTagProp = name === "tags" || name === "tag";
 
 			const rawItems: unknown[] = [];
-			if (Array.isArray(val)) {
-				for (const item of val) {
-					if (item === null || item === undefined) continue;
-					if (isTagProp) {
-						const normalized = normalizeTag(String(item)).trim();
-						if (normalized) rawItems.push(normalized);
-					} else if (typeof item === "string") {
-						const trimmed = item.trim();
-						if (trimmed) rawItems.push(trimmed);
-					} else {
-						rawItems.push(item);
-					}
-				}
-			} else if (val !== null && val !== undefined) {
+			for (const item of Array.isArray(val) ? val : [val]) {
+				if (item === null || item === undefined) continue;
 				if (isTagProp) {
-					const normalized = normalizeTag(String(val)).trim();
+					const normalized = normalizeTag(String(item)).trim();
 					if (normalized) rawItems.push(normalized);
-				} else if (typeof val === "string") {
-					const trimmed = val.trim();
+				} else if (typeof item === "string") {
+					const trimmed = item.trim();
 					if (trimmed) rawItems.push(trimmed);
 				} else {
-					rawItems.push(val);
+					rawItems.push(item);
 				}
 			}
 
@@ -535,7 +500,7 @@ export class SelectPropertiesModal extends Modal {
 		this.setHint(this.rowHint(null));
 
 		const win = ownerWindow(this.contentEl) ?? window;
-		setTimeoutIn(win, () => this.getInitialRow()?.focus(), 0);
+		this.cancelFocusTimers.push(setTimeoutIn(win, () => this.getInitialRow()?.focus(), 0));
 	}
 
 	// Conflicts always come first. Otherwise a tag copy opens on tags and
@@ -633,15 +598,16 @@ export class SelectPropertiesModal extends Modal {
 				if (state) {
 					this.focusCardValue(state);
 					const win = ownerWindow(this.contentEl) ?? window;
-					setTimeoutIn(win, () => {
+					this.cancelFocusTimers.push(setTimeoutIn(win, () => {
 						this.focusCardValue(state);
-					}, 20);
+					}, 20));
 				}
 			},
 		});
 	}
 
 	onClose(): void {
+		for (const cancel of this.cancelFocusTimers.splice(0)) cancel();
 		this.tabHighlighter.clear();
 		this.navigator?.detach();
 		this.navigator = null;
@@ -918,60 +884,14 @@ export class SelectPropertiesModal extends Modal {
 		}
 
 		const isUrl = isUrlProperty(state.name, state.candidates);
-		if (isUrl) {
-			const container = hostEl.createDiv({ cls: ["pp-scalar-picker", "commons-property-picker"] });
-			container.dataset.valueStyle = "plain";
-			const urlInput = container.createEl("input", {
-				type: "text",
-				cls: ["pp-url-input", "commons-property-picker-input"],
-				attr: {
-					placeholder: "https://... or www.example.com",
-					"aria-label": `${state.name} value`,
-					autocomplete: "off",
-				},
-			});
-			if (state.selected[0] !== undefined && state.selected[0] !== null && String(state.selected[0]).trim()) {
-				urlInput.value = String(state.selected[0]);
-			}
-			const commitUrl = (rawVal: string) => {
-				const trimmed = rawVal.trim();
-				if (!trimmed) {
-					state.selected = [];
-					this.setCardValidity(state, true);
-					this.updateControls();
-					return;
-				}
-				if (!isValidUrl(trimmed)) {
-					this.setCardValidity(state, false, 'Invalid URL format (e.g. "https://example.com" or "www.example.com")');
-					return;
-				}
-				this.validateAndCommitValue(state, trimmed);
-			};
-			urlInput.addEventListener("input", () => commitUrl(urlInput.value));
-			urlInput.addEventListener("change", () => commitUrl(urlInput.value));
-			state.picker = {
-				inputEl: urlInput,
-				rootEl: container,
-				getValue: () => (urlInput.value.trim() ? [urlInput.value.trim()] : []),
-				setValue: (val: string | string[]) => {
-					const str = Array.isArray(val) ? String(val[0] ?? "") : String(val ?? "");
-					urlInput.value = str;
-					commitUrl(str);
-				},
-				destroy: () => container.remove(),
-			};
-			return;
-		}
-
-		const isDateProperty = effectiveType === "date" || effectiveType === "datetime";
-		if (!isDateProperty && effectiveType === "text") {
+		if (isUrl || effectiveType === "text") {
 			const container = hostEl.createDiv({ cls: ["pp-scalar-picker", "commons-property-picker"] });
 			container.dataset.valueStyle = "plain";
 			const textInput = container.createEl("input", {
 				type: "text",
-				cls: ["pp-text-input", "commons-property-picker-input"],
+				cls: [isUrl ? "pp-url-input" : "pp-text-input", "commons-property-picker-input"],
 				attr: {
-					placeholder: `${state.name} value…`,
+					placeholder: isUrl ? "https://... or www.example.com" : `${state.name} value…`,
 					"aria-label": `${state.name} value`,
 					autocomplete: "off",
 				},
@@ -984,10 +904,13 @@ export class SelectPropertiesModal extends Modal {
 				if (!trimmed) {
 					state.selected = [];
 					this.setCardValidity(state, true);
-					this.updateControls();
 					return;
 				}
-				this.validateAndCommitValue(state, rawVal);
+				if (isUrl && !isValidUrl(trimmed)) {
+					this.setCardValidity(state, false, 'Invalid URL format (e.g. "https://example.com" or "www.example.com")');
+					return;
+				}
+				this.validateAndCommitValue(state, isUrl ? trimmed : rawVal);
 			};
 			textInput.addEventListener("input", () => commitText(textInput.value));
 			textInput.addEventListener("change", () => commitText(textInput.value));
@@ -1028,7 +951,7 @@ export class SelectPropertiesModal extends Modal {
 				this.validateAndCommitValue(state, val);
 			},
 		});
-		if (isDateProperty) {
+		if (effectiveType === "date" || effectiveType === "datetime") {
 			hostEl.createDiv({
 				cls: "pp-property-picker-hint",
 				text: "Changing this date replaces the property value; it will not add another date.",
@@ -1042,7 +965,6 @@ export class SelectPropertiesModal extends Modal {
 			state.name,
 			state.candidates.map((c) => c.display)
 		);
-		const isDateProperty = propertyType === "date" || propertyType === "datetime";
 		const datetimeOptions =
 			propertyType === "datetime"
 				? datetimePickerOptions(String(state.selected[0] ?? state.candidates[0]?.display ?? ""))
@@ -1073,16 +995,6 @@ export class SelectPropertiesModal extends Modal {
 					}
 					state.toggleComponent.toggleEl.focus();
 					return;
-				}
-				const input = pickerHost.querySelector<HTMLInputElement>("input");
-				if (input) {
-					if (reset) {
-						if (input.type === "number") {
-							input.value = "";
-							this.setCardValidity(state, false, "Number cannot be empty");
-						}
-					}
-					input.focus();
 				}
 			};
 
@@ -1212,12 +1124,6 @@ export class SelectPropertiesModal extends Modal {
 				radioEl.addEventListener("change", selectOther);
 			}
 			const handleConflictKeydown = (event: KeyboardEvent): void => {
-				if (event.key === "Enter" && event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
-					event.preventDefault();
-					event.stopPropagation();
-					this.openFocusedConflictNote(event.currentTarget as HTMLElement);
-					return;
-				}
 				const target = /^[1-9]$/.test(event.key)
 					? candidateRadios[Number(event.key) - 1]
 					: event.key.toLowerCase() === "o"
@@ -1253,9 +1159,6 @@ export class SelectPropertiesModal extends Modal {
 		| "suppressNewBadge"
 		| "confirmNewEntries"
 	> {
-		const propertyType =
-			kind === "list" ? undefined : getPropertyType(this.catalog, state.name, state.candidates.map((c) => c.display));
-		const isDateProperty = propertyType === "date" || propertyType === "datetime";
 		const isListPicker = kind === "list";
 		return {
 			suggestions: getPropertySuggestions(this.catalog, state.name),

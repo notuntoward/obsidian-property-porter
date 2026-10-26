@@ -1,3 +1,7 @@
+import { formatRawValue, isEmptyPropertyValue } from "commons/properties/values";
+
+export { formatRawValue, isEmptyPropertyValue };
+
 // Obsidian's getAllTags() returns tags with a leading "#" (e.g. "#foo/bar"),
 // but clipboard/known-tag comparisons expect the bare form. Centralized here
 // so the picker and frontmatter merging strip it the same way.
@@ -58,15 +62,6 @@ export function removeOverlappingExcludedProperties(
 		excludeKeys: excluded.filter((key) => !included.has(normalizeKeyForMatch(key))).join(", "),
 		removed,
 	};
-}
-
-export function isEmptyPropertyValue(value: unknown): boolean {
-	return (
-		value === null ||
-		value === undefined ||
-		value === "" ||
-		(Array.isArray(value) && value.length === 0)
-	);
 }
 
 // Counts the number of individual values a property represents: array
@@ -416,11 +411,6 @@ export function parseRawFrontmatter(content: string): RawFrontmatter {
 		}
 	}
 	return result;
-}
-
-// Stringifies a parsed occurrence value for display in a conflict option.
-export function formatRawValue(value: unknown): string {
-	return Array.isArray(value) ? value.join(", ") : String(value);
 }
 
 export interface DuplicateResolution {

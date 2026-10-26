@@ -15,7 +15,6 @@ import {
 	applyDuplicateResolution,
 	formatRawValue,
 	findPasteChanges,
-	type PasteMode,
 } from "../src/frontmatter";
 
 describe("findPasteChanges", () => {

@@ -29,7 +29,6 @@ import {
 	findPasteChanges,
 	type PasteChange,
 	type PasteMode,
-	type RawFrontmatter,
 	type DuplicateResolution,
 } from "./frontmatter";
 import {

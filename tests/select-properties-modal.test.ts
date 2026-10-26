@@ -8,7 +8,7 @@ import PropertyPorter, {
 	SelectPropertiesModal,
 	NOTICE_CLEARED_COPIED_PROPERTIES,
 } from "../src/main";
-import { PropertyNameSuggest, addedStatusText, propertyTypeLabel } from "../src/select-properties-modal";
+import { addedStatusText, propertyTypeLabel } from "../src/select-properties-modal";
 import { parseRawFrontmatter } from "../src/frontmatter";
 import type { VaultMetadataCatalog } from "commons/properties";
 
@@ -162,6 +162,27 @@ afterEach(() => {
 });
 
 describe("SelectPropertiesModal", () => {
+	it("cancels delayed focus when the modal closes", () => {
+		vi.useFakeTimers();
+		const { app } = createApp();
+		const modal = new SelectPropertiesModal(app as any, createMockCatalog(), { status: "draft" }, vi.fn(), vi.fn());
+		try {
+			modal.onOpen();
+			const card = modal.propertyStates.get("status")!.cardEl!;
+			const focus = vi.spyOn(card, "focus");
+			modal.inputEl!.value = "tit";
+			const suggest = getInputSuggest(modal.inputEl!);
+			suggest.select(suggest.suggestions("tit").find((option: any) => option.kind === "suggestion" && option.value === "title"));
+			const valueFocus = vi.spyOn(modal.propertyStates.get("title")!.picker!.inputEl, "focus");
+			modal.onClose();
+			vi.runAllTimers();
+			expect(focus).not.toHaveBeenCalled();
+			expect(valueFocus).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("registers Mod+Enter to submit and return false", () => {
 		const { app } = createApp();
 		const onSubmit = vi.fn();
@@ -716,10 +737,13 @@ describe("SelectPropertiesModal", () => {
 
 	it("does not suggest properties until the user types a query", () => {
 		const { app } = createApp();
-		const suggest = new PropertyNameSuggest(app as any, document.createElement("input"), () => ["status"], vi.fn());
+		const modal = new SelectPropertiesModal(app as any, createMockCatalog(), {}, vi.fn(), vi.fn());
+		modal.onOpen();
+		const suggest = getInputSuggest(modal.inputEl!);
 
 		expect(suggest.getSuggestions(" \t")).toEqual([]);
-		expect(suggest.getSuggestions("sta")).toEqual(["status"]);
+		modal.inputEl!.value = "sta";
+		expect(suggest.getSuggestions("sta")).toContainEqual({ kind: "suggestion", value: "status" });
 	});
 
 	it("initializes property cards for initial properties with correct list/scalar kinds", () => {
@@ -2085,7 +2109,7 @@ describe("SelectPropertiesModal visual cleanup (Phase 3)", () => {
 		expect(openLinkText).toHaveBeenCalledWith("Beta.md", "", false);
 	});
 
-	it("Alt+Enter opens the selected conflict value's note through DOM and modal scope handling", async () => {
+	it("Alt+Enter opens the selected conflict value's note through a single modal scope handler", async () => {
 		const openLinkText = vi.fn().mockResolvedValue(undefined);
 		const { app } = createApp({
 			openLinkText,
@@ -2124,7 +2148,10 @@ describe("SelectPropertiesModal visual cleanup (Phase 3)", () => {
 			radioA.focus();
 			const event = key(radioA, "Enter", { altKey: true });
 			await Promise.resolve();
-			expect(event.defaultPrevented).toBe(true);
+			expect(event.defaultPrevented).toBe(false);
+			expect(openLinkText).not.toHaveBeenCalled();
+			expect(altEnterShortcut(event)).toBe(false);
+			await Promise.resolve();
 			expect(openLinkText).toHaveBeenCalledExactlyOnceWith("Alpha.md", "", false);
 
 			openLinkText.mockClear();
