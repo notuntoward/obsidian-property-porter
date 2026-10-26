@@ -2336,4 +2336,45 @@ describe("typed entry and validation (Phase 5)", () => {
 		expect(continueBtn.disabled).toBe(false);
 		expect(modal.propertyStates.get("count")?.selected).toEqual([42]);
 	});
+
+	it("renders exactly one editor control when Other value is selected for number and boolean conflicts", () => {
+		const { app } = createApp();
+		const modal = new SelectPropertiesModal(
+			app as any,
+			createMockCatalog(),
+			{ year: [1977, 1980], favorite: [true, false] },
+			vi.fn(),
+			vi.fn()
+		);
+		modal.onOpen();
+
+		const yearCard = modal.contentEl.querySelectorAll(".pp-property-card")[0]!;
+		const yearOtherRadio = yearCard.querySelectorAll<HTMLInputElement>(".pp-conflict-option input")[2]!;
+		yearOtherRadio.click();
+		yearOtherRadio.dispatchEvent(new Event("change"));
+
+		const yearInputs = yearCard.querySelectorAll<HTMLInputElement>("input[type='number']");
+		expect(yearInputs).toHaveLength(1);
+
+		const favCard = modal.contentEl.querySelectorAll(".pp-property-card")[1]!;
+		const favOtherRadio = favCard.querySelectorAll<HTMLInputElement>(".pp-conflict-option input")[2]!;
+		favOtherRadio.click();
+		favOtherRadio.dispatchEvent(new Event("change"));
+		favOtherRadio.click();
+
+		const favToggles = favCard.querySelectorAll(".pp-toggle");
+		expect(favToggles).toHaveLength(1);
+
+		// Switch to candidate and back
+		const yearCandidate0 = yearCard.querySelectorAll<HTMLInputElement>(".pp-conflict-option input")[0]!;
+		yearCandidate0.click();
+		const yearHost = yearCard.querySelector<HTMLElement>(".pp-property-picker-host")!;
+		expect(yearHost.hidden).toBe(true);
+
+		yearOtherRadio.click();
+		yearOtherRadio.dispatchEvent(new Event("change"));
+		expect(yearHost.hidden).toBe(false);
+		expect(yearCard.querySelectorAll("input[type='number']")).toHaveLength(1);
+	});
+
 });

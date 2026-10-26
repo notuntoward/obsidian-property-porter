@@ -851,18 +851,32 @@ export class SelectPropertiesModal extends Modal {
 			optionsEl.setAttribute("aria-label", `Choose ${state.name} value`);
 			let pickerHost: HTMLElement | null = null;
 
-			const ensurePicker = (): void => {
+			const ensurePicker = (reset = true): void => {
 				if (!pickerHost) {
 					pickerHost = cardEl.createDiv({ cls: "pp-property-picker-host" });
+					this.renderTypedEditor(state, pickerHost, "conflict-other");
 				}
 				pickerHost.hidden = false;
 				if (state.picker) {
-					state.picker.setValue([]);
+					if (reset) {
+						state.picker.setValue([]);
+					}
 					state.picker.inputEl.focus();
 					return;
 				}
-				this.renderTypedEditor(state, pickerHost, "conflict-other");
-				pickerHost.querySelector<HTMLInputElement>("input")?.focus();
+				const input = pickerHost.querySelector<HTMLInputElement>("input");
+				if (input) {
+					if (reset) {
+						if (input.type === "number") {
+							input.value = "";
+							this.setCardValidity(state, false, "Number cannot be empty");
+						} else if (input.type === "checkbox") {
+							input.checked = false;
+							this.validateAndCommitValue(state, false);
+						}
+					}
+					input.focus();
+				}
 			};
 
 			const vaultType = getPropertyType(this.catalog, state.name);
@@ -969,10 +983,16 @@ export class SelectPropertiesModal extends Modal {
 			otherOption.createSpan({ cls: "pp-conflict-sources" });
 			const selectOther = (): void => {
 				if (!otherRadio.checked) return;
+				const isAlreadySelected =
+					pickerHost !== null &&
+					!pickerHost.hidden &&
+					state.selectedCandidateKey === undefined;
 				state.selectedCandidateKey = undefined;
-				state.selected = [];
-				datetimeOptions?.formatInputValue("");
-				ensurePicker();
+				if (!isAlreadySelected) {
+					state.selected = [];
+					datetimeOptions?.formatInputValue("");
+				}
+				ensurePicker(!isAlreadySelected);
 				this.updateControls();
 			};
 			otherRadio.addEventListener("click", selectOther);
