@@ -2327,12 +2327,12 @@ describe("typed entry and validation (Phase 5)", () => {
 		expect(modal.propertyStates.get("count")?.selected).toEqual([42]);
 	});
 
-	it("renders exactly one editor control when Other value is selected for number and boolean conflicts", () => {
+	it("renders exactly one editor control when Other value is selected for a number conflict", () => {
 		const { app } = createApp();
 		const modal = new SelectPropertiesModal(
 			app as any,
 			createMockCatalog(),
-			{ year: [1977, 1980], favorite: [true, false] },
+			{ year: [1977, 1980] },
 			vi.fn(),
 			vi.fn()
 		);
@@ -2345,15 +2345,6 @@ describe("typed entry and validation (Phase 5)", () => {
 
 		const yearInputs = yearCard.querySelectorAll<HTMLInputElement>("input[type='number']");
 		expect(yearInputs).toHaveLength(1);
-
-		const favCard = modal.contentEl.querySelectorAll(".pp-property-card")[1]!;
-		const favOtherRadio = favCard.querySelectorAll<HTMLInputElement>(".pp-conflict-option input")[2]!;
-		favOtherRadio.click();
-		favOtherRadio.dispatchEvent(new Event("change"));
-		favOtherRadio.click();
-
-		const favToggles = favCard.querySelectorAll(".pp-toggle");
-		expect(favToggles).toHaveLength(1);
 
 		// Switch to candidate and back
 		const yearCandidate0 = yearCard.querySelectorAll<HTMLInputElement>(".pp-conflict-option input")[0]!;
@@ -2368,7 +2359,7 @@ describe("typed entry and validation (Phase 5)", () => {
 	});
 
 
-	it("allows checkbox toggle to be clicked and moved back and forth", () => {
+	it("offers only true and false for a boolean conflict: no Other value, no extra toggle", () => {
 		const { app } = createApp();
 		const onSubmit = vi.fn();
 		const modal = new SelectPropertiesModal(
@@ -2381,23 +2372,18 @@ describe("typed entry and validation (Phase 5)", () => {
 		modal.onOpen();
 
 		const card = modal.contentEl.querySelector(".pp-property-card")!;
-		const otherRadio = card.querySelectorAll<HTMLInputElement>(".pp-conflict-option input")[2]!;
-		otherRadio.click();
+		const radios = card.querySelectorAll<HTMLInputElement>(".pp-conflict-option input");
+		expect(radios).toHaveLength(2);
+		expect(card.textContent).not.toContain("Other value");
+		expect(card.querySelector(".checkbox-container")).toBeNull();
+		expect(card.querySelector(".pp-property-picker-host")).toBeNull();
 
-		const toggle = card.querySelector<HTMLElement>(".checkbox-container")!;
-		expect(toggle).not.toBeNull();
-		expect(toggle.classList.contains("is-enabled")).toBe(false);
+		radios[1].click();
 		expect(modal.propertyStates.get("is_active")?.selected).toEqual([false]);
-
-		// Click toggle to turn on
-		toggle.click();
-		expect(toggle.classList.contains("is-enabled")).toBe(true);
+		radios[0].click();
 		expect(modal.propertyStates.get("is_active")?.selected).toEqual([true]);
-
-		// Click toggle to turn off
-		toggle.click();
-		expect(toggle.classList.contains("is-enabled")).toBe(false);
-		expect(modal.propertyStates.get("is_active")?.selected).toEqual([false]);
+		modal.contentEl.querySelector<HTMLButtonElement>(".pp-finish-button")!.click();
+		expect(onSubmit).toHaveBeenCalledWith({ is_active: true });
 	});
 
 	it("validates URL properties with single input box and accepts www.nytime.com without completion interference", () => {

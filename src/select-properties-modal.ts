@@ -1119,32 +1119,39 @@ export class SelectPropertiesModal extends Modal {
 				radio.addEventListener("change", selectCandidate);
 			}
 
-			const otherOption = optionsEl.createEl("label", { cls: "pp-conflict-option" });
-			const otherRadio = otherOption.createEl("input", {
-				type: "radio",
-				attr: {
-					name: `pp-${state.name}`,
-					value: "other",
-				},
-			});
-			otherOption.createSpan({ cls: "pp-conflict-value", text: "Other value…" });
-			otherOption.createSpan({ cls: "pp-conflict-sources" });
-			const selectOther = (): void => {
-				if (!otherRadio.checked) return;
-				const isAlreadySelected =
-					pickerHost !== null &&
-					!pickerHost.hidden &&
-					state.selectedCandidateKey === undefined;
-				state.selectedCandidateKey = undefined;
-				if (!isAlreadySelected) {
-					state.selected = [];
-					datetimeOptions?.formatInputValue("");
-				}
-				ensurePicker(!isAlreadySelected);
-				this.updateControls();
-			};
-			otherRadio.addEventListener("click", selectOther);
-			otherRadio.addEventListener("change", selectOther);
+			const boolValues = new Set(state.candidates.map((cand) => String(cand.raw).trim().toLowerCase()));
+			const coversBoolean =
+				this.getEffectiveType(state) === "checkbox" && boolValues.has("true") && boolValues.has("false");
+			let otherRadio: HTMLInputElement | undefined;
+			if (!coversBoolean) {
+				const otherOption = optionsEl.createEl("label", { cls: "pp-conflict-option" });
+				const radioEl = otherOption.createEl("input", {
+					type: "radio",
+					attr: {
+						name: `pp-${state.name}`,
+						value: "other",
+					},
+				});
+				otherRadio = radioEl;
+				otherOption.createSpan({ cls: "pp-conflict-value", text: "Other value…" });
+				otherOption.createSpan({ cls: "pp-conflict-sources" });
+				const selectOther = (): void => {
+					if (!radioEl.checked) return;
+					const isAlreadySelected =
+						pickerHost !== null &&
+						!pickerHost.hidden &&
+						state.selectedCandidateKey === undefined;
+					state.selectedCandidateKey = undefined;
+					if (!isAlreadySelected) {
+						state.selected = [];
+						datetimeOptions?.formatInputValue("");
+					}
+					ensurePicker(!isAlreadySelected);
+					this.updateControls();
+				};
+				radioEl.addEventListener("click", selectOther);
+				radioEl.addEventListener("change", selectOther);
+			}
 			const handleConflictKeydown = (event: KeyboardEvent): void => {
 				const target = /^[1-9]$/.test(event.key)
 					? candidateRadios[Number(event.key) - 1]
@@ -1155,7 +1162,7 @@ export class SelectPropertiesModal extends Modal {
 				event.preventDefault();
 				target.click();
 			};
-			for (const radio of [...candidateRadios, otherRadio]) {
+			for (const radio of otherRadio ? [...candidateRadios, otherRadio] : candidateRadios) {
 				radio.addEventListener("keydown", handleConflictKeydown);
 			}
 			return;
