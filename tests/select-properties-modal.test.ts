@@ -2093,4 +2093,81 @@ describe("SelectPropertiesModal conflict notes", () => {
 		expect(links?.[0]?.textContent).toBe("Alpha");
 		expect(links?.[1]?.textContent).toBe("Beta");
 	});
+
+	describe("typed candidates (Phase 2)", () => {
+		it("preserves numbers and booleans on Continue submission", () => {
+			const { app } = createApp();
+			const onSubmit = vi.fn();
+			const catalog = createMockCatalog();
+			const modal = new SelectPropertiesModal(
+				app as any,
+				catalog,
+				{ count: [2, 5], active: [true, false] },
+				onSubmit,
+				vi.fn()
+			);
+			document.body.appendChild(modal.contentEl);
+			modal.onOpen();
+
+			// Continue button
+			const continueBtn = modal.contentEl.querySelector<HTMLButtonElement>(".pp-finish-button");
+			continueBtn?.click();
+
+			expect(onSubmit).toHaveBeenCalledOnce();
+			const result = onSubmit.mock.calls[0][0];
+			expect(result.count).toBe(2);
+			expect(typeof result.count).toBe("number");
+			expect(result.active).toBe(true);
+			expect(typeof result.active).toBe("boolean");
+		});
+
+		it("keeps 2 and '2' as separate candidates when property type is unknown", () => {
+			const { app } = createApp();
+			const catalog = createMockCatalog();
+			const modal = new SelectPropertiesModal(
+				app as any,
+				catalog,
+				{ rating: [2, "2"] },
+				vi.fn(),
+				vi.fn()
+			);
+			modal.onOpen();
+
+			const state = modal.propertyStates.get("rating");
+			expect(state?.hasConflict).toBe(true);
+			expect(state?.candidates.length).toBe(2);
+			expect(state?.candidates[0].key).toBe("number:2");
+			expect(state?.candidates[1].key).toBe("string:2");
+		});
+
+		it("merges coerced candidates when property type is known and flags mismatches", () => {
+			const { app } = createApp();
+			const catalog = createMockCatalog();
+			catalog.properties.push({
+				name: "score",
+				kinds: ["number"],
+				values: ["10"],
+			});
+
+			const modal = new SelectPropertiesModal(
+				app as any,
+				catalog,
+				{ score: ["2", 2, "abc"] },
+				vi.fn(),
+				vi.fn()
+			);
+			modal.onOpen();
+
+			const state = modal.propertyStates.get("score");
+			expect(state?.candidates.length).toBe(2);
+			const merged = state?.candidates.find((c) => c.key === "number:2");
+			expect(merged).toBeDefined();
+			expect(merged?.raw).toBe(2);
+			expect(merged?.coercedFrom).toBe("2");
+
+			const mismatch = state?.candidates.find((c) => c.key === "string:abc");
+			expect(mismatch).toBeDefined();
+			expect(mismatch?.mismatch).toBe(true);
+		});
+	});
 });

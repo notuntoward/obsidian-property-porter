@@ -9,6 +9,10 @@ import {
 	rankCandidates,
 	ValuePicker,
 	datetimePickerOptions,
+	coerceToType,
+	jsTypeOf,
+	candidateKey,
+	type ValueType,
 	type FrontmatterValueSources,
 	type ValuePickerOptions,
 	type VaultMetadataCatalog,
@@ -18,12 +22,22 @@ import { setTimeoutIn, ownerWindow } from "commons/windows";
 
 let nextPropertyNameId = 0;
 
+export interface Candidate {
+	raw: unknown;
+	key: string;
+	display: string;
+	jsType: string;
+	coercedFrom?: unknown;
+	mismatch?: boolean;
+}
+
 export interface PropertyCardState {
 	name: string;
 	isList: boolean;
-	candidates: string[];
-	selected: string[];
+	candidates: Candidate[];
+	selected: unknown[];
 	hasConflict: boolean;
+	selectedCandidateKey?: string;
 	/** Pending only: a skipped property keeps its values but is left out on Continue. */
 	skipped: boolean;
 	/** Obsidian widget the user chose for a property the vault does not know yet; undefined means automatic. */
@@ -207,22 +221,32 @@ export class SelectPropertiesModal extends Modal {
 		for (const [name, val] of Object.entries(initialProperties)) {
 			const isExplicitConflict = this.options.conflictNames?.includes(name) ?? false;
 			const isList = !isExplicitConflict && isListProperty(this.catalog, name);
-			let candidates: string[] = [];
+			const isTagProp = name === "tags" || name === "tag";
 
+			const rawItems: unknown[] = [];
 			if (Array.isArray(val)) {
-				const isTagProp = name === "tags" || name === "tag";
-				const seen = new Set<string>();
 				for (const item of val) {
 					if (item === null || item === undefined) continue;
-					const s = isTagProp ? normalizeTag(String(item)).trim() : String(item).trim();
-					if (s && !seen.has(s)) {
-						seen.add(s);
-						candidates.push(s);
+					if (isTagProp) {
+						const normalized = normalizeTag(String(item)).trim();
+						if (normalized) rawItems.push(normalized);
+					} else if (typeof item === "string") {
+						const trimmed = item.trim();
+						if (trimmed) rawItems.push(trimmed);
+					} else {
+						rawItems.push(item);
 					}
 				}
 			} else if (val !== null && val !== undefined) {
-				const s = String(val).trim();
-				if (s) candidates = [s];
+				if (isTagProp) {
+					const normalized = normalizeTag(String(val)).trim();
+					if (normalized) rawItems.push(normalized);
+				} else if (typeof val === "string") {
+					const trimmed = val.trim();
+					if (trimmed) rawItems.push(trimmed);
+				} else {
+					rawItems.push(val);
+				}
 			}
 
 			let context = this.conflictContext[name];
@@ -234,22 +258,88 @@ export class SelectPropertiesModal extends Modal {
 					context = { ...context, conflictNotes: derivedNotes };
 				}
 			}
-			const propertyType = getPropertyType(this.catalog, name, candidates);
-			if (propertyType === "date" || propertyType === "datetime") {
-				candidates.sort((left, right) => Date.parse(right) - Date.parse(left));
+
+			const vaultType = getPropertyType(this.catalog, name);
+			const isKnownType =
+				!isList &&
+				vaultType &&
+				vaultType !== "unknown" &&
+				["text", "number", "checkbox", "date", "datetime"].includes(vaultType);
+
+			const candidates: Candidate[] = [];
+			if (isKnownType) {
+				const targetType = vaultType as ValueType;
+				for (const raw of rawItems) {
+					const res = coerceToType(raw, targetType);
+					if (res.ok) {
+						const coercedVal = res.value;
+						const key = candidateKey(coercedVal);
+						const existing = candidates.find((c) => c.key === key && !c.mismatch);
+						if (existing) {
+							if (raw !== coercedVal && existing.coercedFrom === undefined) {
+								existing.coercedFrom = raw;
+							}
+						} else {
+							candidates.push({
+								raw: coercedVal,
+								key,
+								display: String(coercedVal),
+								jsType: jsTypeOf(coercedVal),
+								...(raw !== coercedVal ? { coercedFrom: raw } : {}),
+							});
+						}
+					} else {
+						const key = candidateKey(raw);
+						if (!candidates.some((c) => c.key === key && c.mismatch)) {
+							candidates.push({
+								raw,
+								key,
+								display: String(raw),
+								jsType: jsTypeOf(raw),
+								mismatch: true,
+							});
+						}
+					}
+				}
+			} else {
+				for (const raw of rawItems) {
+					const key = candidateKey(raw);
+					if (!candidates.some((c) => c.key === key)) {
+						candidates.push({
+							raw,
+							key,
+							display: String(raw),
+							jsType: jsTypeOf(raw),
+						});
+					}
+				}
 			}
+
+			const propertyType = getPropertyType(
+				this.catalog,
+				name,
+				candidates.map((c) => c.display)
+			);
+			if (propertyType === "date" || propertyType === "datetime") {
+				candidates.sort((left, right) => Date.parse(right.display) - Date.parse(left.display));
+			} else if (propertyType === "number") {
+				candidates.sort((left, right) => Number(left.raw) - Number(right.raw));
+			}
+
 			const hasConflict = candidates.length > 1 && (isExplicitConflict || !isList);
 			const selected = isList
-				? [...candidates]
+				? candidates.map((c) => String(c.raw))
 				: candidates.length > 0
-					? [candidates[0]]
+					? [candidates[0].raw]
 				: [];
+			const selectedCandidateKey = candidates.length > 0 ? candidates[0].key : undefined;
 
 			this.propertyStates.set(name, {
 				name,
 				isList,
 				candidates,
 				selected,
+				selectedCandidateKey,
 				hasConflict,
 				skipped: false,
 				notice: duplicateNoticeText(name, context?.valueSources?.[name] ?? {}),
@@ -563,7 +653,7 @@ export class SelectPropertiesModal extends Modal {
 		const typeLabel = propertyTypeLabel(
 			state.name,
 			state.isList,
-			state.isList ? undefined : getPropertyType(this.catalog, state.name, state.candidates)
+			state.isList ? undefined : getPropertyType(this.catalog, state.name, state.candidates.map((c) => c.display))
 		);
 		if (state.typeEditable) {
 			const choiceLabel = state.widget ? typeLabel : "Automatic";
@@ -630,11 +720,15 @@ export class SelectPropertiesModal extends Modal {
 	}
 
 	private renderScalarBody(state: PropertyCardState, cardEl: HTMLElement): void {
-		const propertyType = getPropertyType(this.catalog, state.name, state.candidates);
+		const propertyType = getPropertyType(
+			this.catalog,
+			state.name,
+			state.candidates.map((c) => c.display)
+		);
 		const isDateProperty = propertyType === "date" || propertyType === "datetime";
 		const datetimeOptions =
 			propertyType === "datetime"
-				? datetimePickerOptions(state.selected[0] ?? state.candidates[0] ?? "")
+				? datetimePickerOptions(String(state.selected[0] ?? state.candidates[0]?.display ?? ""))
 				: undefined;
 		const datePickerOptions =
 			propertyType === "date"
@@ -666,7 +760,7 @@ export class SelectPropertiesModal extends Modal {
 					allowCreate: true,
 					onChange: (values) => {
 						state.selected = values.slice(0, 1);
-						datetimeOptions?.formatInputValue(state.selected[0] ?? "");
+						datetimeOptions?.formatInputValue(String(state.selected[0] ?? ""));
 						this.updateControls();
 					},
 				});
@@ -686,13 +780,24 @@ export class SelectPropertiesModal extends Modal {
 					type: "radio",
 					attr: {
 						name: `pp-${state.name}`,
-						value: candidate,
+						value: candidate.display,
+						"data-candidate-key": candidate.key,
 					},
 				});
 				candidateRadios.push(radio);
-				radio.checked = state.selected[0] === candidate;
-				option.createSpan({ cls: "pp-conflict-value", text: candidate });
-				const sources = state.conflictContext?.valueSources?.[state.name]?.[candidate] ?? [];
+				radio.checked =
+					state.selectedCandidateKey === candidate.key ||
+					(state.selected.length === 1 && state.selected[0] === candidate.raw);
+				option.createSpan({ cls: "pp-conflict-value", text: candidate.display });
+				const propSources = state.conflictContext?.valueSources?.[state.name];
+				const sources =
+					propSources?.[candidate.key] ??
+					propSources?.[candidate.display] ??
+					propSources?.[String(candidate.raw)] ??
+					(candidate.coercedFrom !== undefined
+						? propSources?.[String(candidate.coercedFrom)]
+						: undefined) ??
+					[];
 				const sourcesEl = option.createSpan({ cls: "pp-conflict-sources" });
 				sources.forEach(({ note }, index) => {
 					if (index > 0) sourcesEl.append(", ");
@@ -701,9 +806,9 @@ export class SelectPropertiesModal extends Modal {
 				});
 				const selectCandidate = (): void => {
 					if (!radio.checked) return;
-					if (state.selected.length === 1 && state.selected[0] === candidate && !pickerHost?.hidden) return;
-					state.selected = [candidate];
-					datetimeOptions?.formatInputValue(candidate);
+					state.selectedCandidateKey = candidate.key;
+					state.selected = [candidate.raw];
+					datetimeOptions?.formatInputValue(candidate.display);
 					if (pickerHost) pickerHost.hidden = true;
 					this.updateControls();
 				};
@@ -723,9 +828,9 @@ export class SelectPropertiesModal extends Modal {
 			otherOption.createSpan({ cls: "pp-conflict-sources" });
 			const selectOther = (): void => {
 				if (!otherRadio.checked) return;
-				if (state.selected.length === 0 && pickerHost && !pickerHost.hidden) return;
-				datetimeOptions?.formatInputValue(state.selected[0] ?? "");
+				state.selectedCandidateKey = undefined;
 				state.selected = [];
+				datetimeOptions?.formatInputValue("");
 				ensurePicker();
 				this.updateControls();
 			};
@@ -750,7 +855,7 @@ export class SelectPropertiesModal extends Modal {
 		const pickerHost = cardEl.createDiv({ cls: "pp-property-picker-host" });
 		state.picker = new ValuePicker(this.app, pickerHost, {
 			...this.buildPickerOptions(state, "scalar"),
-			value: state.selected[0] ?? "",
+			value: String(state.selected[0] ?? ""),
 			multiple: false,
 			showSingleValueChip: true,
 			selectedValueStyle: selectedValueStyle(state.name),
@@ -758,7 +863,7 @@ export class SelectPropertiesModal extends Modal {
 			allowCreate: true,
 			onChange: (values) => {
 				state.selected = values.slice(0, 1);
-				datetimeOptions?.formatInputValue(state.selected[0] ?? "");
+				datetimeOptions?.formatInputValue(String(state.selected[0] ?? ""));
 				this.updateControls();
 			},
 		});
@@ -781,12 +886,12 @@ export class SelectPropertiesModal extends Modal {
 		| "confirmNewEntries"
 	> {
 		const propertyType =
-			kind === "list" ? undefined : getPropertyType(this.catalog, state.name, state.candidates);
+			kind === "list" ? undefined : getPropertyType(this.catalog, state.name, state.candidates.map((c) => c.display));
 		const isDateProperty = propertyType === "date" || propertyType === "datetime";
 		const isListPicker = kind === "list";
 		return {
 			suggestions: getPropertySuggestions(this.catalog, state.name),
-			knownValues: state.candidates,
+			knownValues: state.candidates.map((c) => c.display),
 			kind: "value",
 			context: state.name,
 			classPrefix: "pp",
@@ -803,7 +908,7 @@ export class SelectPropertiesModal extends Modal {
 		const pickerHost = cardEl.createDiv({ cls: "pp-property-picker-host" });
 		state.picker = new ValuePicker(this.app, pickerHost, {
 			...this.buildPickerOptions(state, "list"),
-			value: state.selected,
+			value: state.selected as string[],
 			multiple: true,
 			suggestOnEmpty: false,
 			selectedValueStyle: isTagProp ? "tag" : "plain",
@@ -903,11 +1008,19 @@ export class SelectPropertiesModal extends Modal {
 				result[name] = values;
 			} else {
 				const value = values[0];
-				result[name] =
-					getPropertyType(this.catalog, name, state.candidates) === "checkbox" &&
-					(value === "true" || value === "false")
-						? value === "true"
-						: value;
+				const propType = getPropertyType(
+					this.catalog,
+					name,
+					state.candidates.map((c) => c.display)
+				);
+				if (propType === "checkbox" && (value === "true" || value === "false")) {
+					result[name] = value === "true";
+				} else if (propType === "number" && typeof value === "string") {
+					const coerced = coerceToType(value, "number");
+					result[name] = coerced.ok ? coerced.value : value;
+				} else {
+					result[name] = value;
+				}
 			}
 		}
 		return result;
@@ -1036,7 +1149,7 @@ export class SelectPropertiesModal extends Modal {
 		return null;
 	}
 
-	private getStateValues(state: PropertyCardState): string[] {
+	private getStateValues(state: PropertyCardState): unknown[] {
 		return state.hasConflict ? state.selected : state.picker ? state.picker.getValue() : state.selected;
 	}
 
