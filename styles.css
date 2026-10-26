@@ -478,3 +478,19 @@ body.theme-dark {
 .is-mobile .pp-keyboard-hint {
 	display: none;
 }
+
+/* Clickable conflict note links */
+.pp-note-link {
+	color: var(--link-color, var(--text-accent));
+	text-decoration: var(--link-decoration, none);
+	cursor: pointer;
+}
+
+.pp-note-link:hover {
+	color: var(--link-color-hover, var(--text-accent-hover));
+	text-decoration: underline;
+}
+
+.pp-property-card.is-skipped .pp-note-link {
+	color: var(--text-faint);
+}

@@ -56,12 +56,25 @@ function createApp(options: any = {}) {
 			iterateAllLeaves: (cb: (leaf: any) => void) => {
 				for (const leaf of leaves) cb(leaf);
 			},
+			openLinkText: options.openLinkText ?? vi.fn().mockResolvedValue(undefined),
 		},
 		metadataCache: {
 			getFileCache: (file: obsidianMock.TFile) => fileCache[file.path] ?? null,
+			getFirstLinkpathDest: (path: string) => {
+				const file = markdownFiles.find(
+					(f: any) => f.basename === path || f.path === path || f.name === `${path}.md`
+				);
+				return file ?? null;
+			},
 		},
 		vault: {
 			getMarkdownFiles: () => markdownFiles,
+			getAbstractFileByPath: (path: string) => {
+				const file = markdownFiles.find(
+					(f: any) => f.path === path || f.basename === path || f.name === path
+				);
+				return file ?? null;
+			},
 			read: async (file: obsidianMock.TFile) => {
 				if (fileContents[file.path] !== undefined) return fileContents[file.path];
 				const frontmatter = fileCache[file.path]?.frontmatter ?? {};
@@ -1972,5 +1985,112 @@ describe("SelectPropertiesModal conflict notes", () => {
 		expect(modal.contentEl.querySelector(".pp-conflict-notes")?.textContent).toBe(
 			"Notes with this conflict: Alpha, Beta"
 		);
+	});
+
+	it("names the notes with the conflict on the card as clickable links", async () => {
+		const openLinkText = vi.fn().mockResolvedValue(undefined);
+		const alphaFile = new obsidianMock.TFile("Alpha.md");
+		const betaFile = new obsidianMock.TFile("Beta.md");
+		const { app } = createApp({
+			openLinkText,
+			markdownFiles: [alphaFile, betaFile],
+		});
+		const modal = new SelectPropertiesModal(
+			app as any, createMockCatalog(), { status: ["a", "b"] }, vi.fn(), vi.fn(),
+			{ status: { conflictNotes: ["Alpha", "Beta"], conflictPaths: ["Alpha.md", "Beta.md"] } }
+		);
+		modal.onOpen();
+
+		const notesContainer = modal.contentEl.querySelector(".pp-conflict-notes");
+		expect(notesContainer?.textContent).toBe("Notes with this conflict: Alpha, Beta");
+
+		const links = notesContainer?.querySelectorAll<HTMLAnchorElement>(".pp-note-link");
+		expect(links?.length).toBe(2);
+		expect(links?.[0]?.textContent).toBe("Alpha");
+		expect(links?.[0]?.classList.contains("internal-link")).toBe(true);
+		expect(links?.[0]?.getAttribute("data-href")).toBe("Alpha.md");
+		expect(links?.[1]?.textContent).toBe("Beta");
+		expect(links?.[1]?.getAttribute("data-href")).toBe("Beta.md");
+
+		links?.[0]?.click();
+		await Promise.resolve();
+		expect(openLinkText).toHaveBeenCalledWith("Alpha.md", "", false);
+	});
+
+	it("renders note links for conflict candidate sources and prevents radio toggling", async () => {
+		const openLinkText = vi.fn().mockResolvedValue(undefined);
+		const alphaFile = new obsidianMock.TFile("Alpha.md");
+		const betaFile = new obsidianMock.TFile("Beta.md");
+		const { app } = createApp({
+			openLinkText,
+			markdownFiles: [alphaFile, betaFile],
+		});
+		const modal = new SelectPropertiesModal(
+			app as any,
+			createMockCatalog(),
+			{ status: ["a", "b"] },
+			vi.fn(),
+			vi.fn(),
+			{
+				status: {
+					conflictNotes: ["Alpha", "Beta"],
+					conflictPaths: ["Alpha.md", "Beta.md"],
+					valueSources: {
+						status: {
+							a: [{ note: "Alpha", count: 1 }],
+							b: [{ note: "Beta", count: 1 }],
+						},
+					},
+				},
+			}
+		);
+		modal.onOpen();
+
+		const sourcesEls = modal.contentEl.querySelectorAll(".pp-conflict-sources");
+		expect(sourcesEls.length).toBe(3);
+
+		const alphaLink = sourcesEls[0]?.querySelector<HTMLAnchorElement>(".pp-note-link");
+		expect(alphaLink?.textContent).toBe("Alpha");
+		expect(alphaLink?.getAttribute("data-href")).toBe("Alpha.md");
+
+		const radioB = modal.contentEl.querySelector<HTMLInputElement>('input[value="b"]')!;
+		expect(radioB.checked).toBe(false);
+
+		const betaLink = sourcesEls[1]?.querySelector<HTMLAnchorElement>(".pp-note-link");
+		expect(betaLink?.textContent).toBe("Beta");
+		expect(betaLink?.getAttribute("data-href")).toBe("Beta.md");
+
+		betaLink?.click();
+		await Promise.resolve();
+		expect(openLinkText).toHaveBeenCalledWith("Beta.md", "", false);
+	});
+
+	it("derives conflictNotes from valueSources if conflictNotes is not explicitly provided", () => {
+		const { app } = createApp();
+		const modal = new SelectPropertiesModal(
+			app as any,
+			createMockCatalog(),
+			{ status: ["a", "b"] },
+			vi.fn(),
+			vi.fn(),
+			{
+				status: {
+					valueSources: {
+						status: {
+							a: [{ note: "Alpha", count: 1 }],
+							b: [{ note: "Beta", count: 1 }],
+						},
+					},
+				},
+			}
+		);
+		modal.onOpen();
+
+		const notesContainer = modal.contentEl.querySelector(".pp-conflict-notes");
+		expect(notesContainer?.textContent).toBe("Notes with this conflict: Alpha, Beta");
+		const links = notesContainer?.querySelectorAll<HTMLAnchorElement>(".pp-note-link");
+		expect(links?.length).toBe(2);
+		expect(links?.[0]?.textContent).toBe("Alpha");
+		expect(links?.[1]?.textContent).toBe("Beta");
 	});
 });

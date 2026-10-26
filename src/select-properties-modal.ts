@@ -1,6 +1,6 @@
-import { App, Menu, Modal, AbstractInputSuggest, Scope, setIcon } from "obsidian";
+import { App, Menu, Modal, AbstractInputSuggest, Scope, setIcon, Keymap, TFile } from "obsidian";
 import { RowNavigator, renderKeyHints, type KeyHint } from "commons/modal";
-import { TargetHighlighter, getTabHeadersForFiles } from "commons/workspace";
+import { TargetHighlighter, getTabHeadersForFiles, openFileInLeaf } from "commons/workspace";
 import {
 	isListProperty,
 	getPropertySuggestions,
@@ -225,7 +225,15 @@ export class SelectPropertiesModal extends Modal {
 				if (s) candidates = [s];
 			}
 
-			const context = this.conflictContext[name];
+			let context = this.conflictContext[name];
+			if (context && !context.conflictNotes && context.valueSources?.[name]) {
+				const derivedNotes = Array.from(
+					new Set(Object.values(context.valueSources[name]).flatMap((sources) => sources.map((s) => s.note)))
+				);
+				if (derivedNotes.length > 0) {
+					context = { ...context, conflictNotes: derivedNotes };
+				}
+			}
 			const propertyType = getPropertyType(this.catalog, name, candidates);
 			if (propertyType === "date" || propertyType === "datetime") {
 				candidates.sort((left, right) => Date.parse(right) - Date.parse(left));
@@ -603,9 +611,14 @@ export class SelectPropertiesModal extends Modal {
 		}
 		const notes = state.conflictContext?.conflictNotes;
 		if (state.hasConflict && notes?.length) {
-			cardEl.createDiv({
-				cls: "pp-conflict-notes",
-				text: `${notes.length === 1 ? "Note" : "Notes"} with this conflict: ${notes.join(", ")}`,
+			const notesEl = cardEl.createDiv({ cls: "pp-conflict-notes" });
+			notesEl.createSpan({
+				text: `${notes.length === 1 ? "Note" : "Notes"} with this conflict: `,
+			});
+			notes.forEach((note, index) => {
+				if (index > 0) notesEl.append(", ");
+				const path = state.conflictContext?.conflictPaths?.[index];
+				this.renderNoteLink(notesEl, note, path);
 			});
 		}
 
@@ -680,9 +693,11 @@ export class SelectPropertiesModal extends Modal {
 				radio.checked = state.selected[0] === candidate;
 				option.createSpan({ cls: "pp-conflict-value", text: candidate });
 				const sources = state.conflictContext?.valueSources?.[state.name]?.[candidate] ?? [];
-				option.createSpan({
-					cls: "pp-conflict-sources",
-					text: sources.map(({ note }) => note).join(", "),
+				const sourcesEl = option.createSpan({ cls: "pp-conflict-sources" });
+				sources.forEach(({ note }, index) => {
+					if (index > 0) sourcesEl.append(", ");
+					const path = this.findPathForNote(state, note);
+					this.renderNoteLink(sourcesEl, note, path);
 				});
 				const selectCandidate = (): void => {
 					if (!radio.checked) return;
@@ -1023,5 +1038,115 @@ export class SelectPropertiesModal extends Modal {
 
 	private getStateValues(state: PropertyCardState): string[] {
 		return state.hasConflict ? state.selected : state.picker ? state.picker.getValue() : state.selected;
+	}
+
+	private findPathForNote(state: PropertyCardState, note: string): string | undefined {
+		const conflictNotes = state.conflictContext?.conflictNotes;
+		const conflictPaths = state.conflictContext?.conflictPaths;
+		if (conflictNotes && conflictPaths) {
+			const index = conflictNotes.indexOf(note);
+			if (index >= 0 && conflictPaths[index]) {
+				return conflictPaths[index];
+			}
+		}
+		return undefined;
+	}
+
+	private renderNoteLink(container: HTMLElement, note: string, path?: string): HTMLElement {
+		const linkEl = container.createEl("a", {
+			cls: "pp-note-link internal-link",
+			text: note,
+			attr: {
+				href: path ?? note,
+				"data-href": path ?? note,
+				target: "_blank",
+				rel: "noopener",
+			},
+		});
+
+		linkEl.addEventListener("click", (event: MouseEvent) => {
+			event.preventDefault();
+			event.stopPropagation();
+			void this.openNote(note, event, path);
+		});
+
+		linkEl.addEventListener("auxclick", (event: MouseEvent) => {
+			if (event.button === 1) {
+				event.preventDefault();
+				event.stopPropagation();
+				void this.openNote(note, event, path);
+			}
+		});
+
+		linkEl.addEventListener("keydown", (event: KeyboardEvent) => {
+			if (event.key === "Enter") {
+				event.preventDefault();
+				event.stopPropagation();
+				void this.openNote(note, undefined, path);
+			}
+		});
+
+		linkEl.addEventListener("mouseover", (event: MouseEvent) => {
+			try {
+				if (typeof this.app.workspace?.trigger === "function") {
+					this.app.workspace.trigger("hover-link", {
+						event,
+						source: "obsidian-property-porter",
+						hoverParent: this.contentEl,
+						targetEl: linkEl,
+						linktext: path ?? note,
+					});
+				}
+			} catch {
+				// best effort hover preview
+			}
+		});
+
+		return linkEl;
+	}
+
+	private async openNote(note: string, event?: MouseEvent, path?: string): Promise<void> {
+		const isMod = event && typeof Keymap?.isModEvent === "function" ? Keymap.isModEvent(event) : false;
+		let file: TFile | null = null;
+		if (path && typeof this.app.vault?.getAbstractFileByPath === "function") {
+			const abstractFile = this.app.vault.getAbstractFileByPath(path);
+			if (abstractFile instanceof TFile) {
+				file = abstractFile;
+			}
+		}
+		if (!file && typeof this.app.metadataCache?.getFirstLinkpathDest === "function") {
+			const dest = this.app.metadataCache.getFirstLinkpathDest(note, "");
+			if (dest instanceof TFile) {
+				file = dest;
+			}
+		}
+		if (!file && typeof this.app.vault?.getAbstractFileByPath === "function") {
+			const direct =
+				this.app.vault.getAbstractFileByPath(note) ??
+				this.app.vault.getAbstractFileByPath(`${note}.md`);
+			if (direct instanceof TFile) {
+				file = direct;
+			}
+		}
+
+		if (file) {
+			try {
+				await openFileInLeaf(this.app, file, {
+					reuseExisting: !isMod,
+					newLeaf: isMod || "tab",
+				});
+				return;
+			} catch {
+				// Fall back to openLinkText below
+			}
+		}
+
+		if (typeof this.app.workspace?.openLinkText === "function") {
+			try {
+				await this.app.workspace.openLinkText(path ?? note, "", isMod || false);
+			} catch {
+				// best effort
+			}
+		}
 	}
 }
