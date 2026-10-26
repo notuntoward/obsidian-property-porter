@@ -2159,3 +2159,83 @@ describe("SelectPropertiesModal visual cleanup (Phase 3)", () => {
 			expect(mismatch?.mismatch).toBe(true);
 		});
 	});
+
+describe("type markers on values (Phase 4)", () => {
+	it("a 2 versus '2' conflict renders two radios with different type icons", () => {
+		const { app } = createApp();
+		const catalog = createMockCatalog();
+		const modal = new SelectPropertiesModal(
+			app as any,
+			catalog,
+			{ rating: [2, "2"] },
+			vi.fn(),
+			vi.fn()
+		);
+		modal.onOpen();
+
+		const options = modal.contentEl.querySelectorAll<HTMLLabelElement>(".pp-conflict-option");
+		expect(options.length).toBe(3);
+
+		const icon0 = options[0].querySelector(".pp-candidate-type-icon");
+		expect(icon0?.getAttribute("data-icon")).toBe("binary");
+		expect(options[0].querySelector(".pp-conflict-value")?.textContent).toBe("2");
+
+		const icon1 = options[1].querySelector(".pp-candidate-type-icon");
+		expect(icon1?.getAttribute("data-icon")).toBe("align-left");
+		expect(options[1].querySelector(".pp-conflict-value")?.textContent).toBe('"2"');
+	});
+
+	it("a Number property with candidates '2' and 2 renders one candidate merging them", () => {
+		const { app } = createApp();
+		const catalog = createMockCatalog();
+		catalog.properties.push({
+			name: "score",
+			kinds: ["number"],
+			values: ["10"],
+		});
+
+		const modal = new SelectPropertiesModal(
+			app as any,
+			catalog,
+			{ score: ["2", 2] },
+			vi.fn(),
+			vi.fn()
+		);
+		modal.onOpen();
+
+		const state = modal.propertyStates.get("score");
+		expect(state?.candidates.length).toBe(1);
+		expect(state?.hasConflict).toBe(false);
+		expect(state?.candidates[0].raw).toBe(2);
+		expect(state?.candidates[0].coercedFrom).toBe("2");
+	});
+
+	it("'abc' in a Number property renders a triangle", () => {
+		const { app } = createApp();
+		const catalog = createMockCatalog();
+		catalog.properties.push({
+			name: "score",
+			kinds: ["number"],
+			values: ["10"],
+		});
+
+		const modal = new SelectPropertiesModal(
+			app as any,
+			catalog,
+			{ score: [2, "abc"] },
+			vi.fn(),
+			vi.fn()
+		);
+		modal.onOpen();
+
+		const options = modal.contentEl.querySelectorAll<HTMLLabelElement>(".pp-conflict-option");
+		expect(options.length).toBe(3);
+
+		expect(options[0].querySelector(".pp-candidate-warning")).toBeNull();
+
+		const warning = options[1].querySelector(".pp-candidate-warning");
+		expect(warning).not.toBeNull();
+		expect(warning?.getAttribute("data-icon")).toBe("alert-triangle");
+		expect(warning?.getAttribute("title")).toBe('Text "abc"; this property is Number');
+	});
+});

@@ -753,6 +753,11 @@ export class SelectPropertiesModal extends Modal {
 				state.picker.inputEl.focus();
 			};
 
+			const vaultType = getPropertyType(this.catalog, state.name);
+			const isUnknownType = !vaultType || vaultType === "unknown";
+			const distinctJsTypes = new Set(state.candidates.map((c) => c.jsType));
+			const showTypeIcons = isUnknownType && distinctJsTypes.size > 1;
+
 			const candidateRadios: HTMLInputElement[] = [];
 			for (const candidate of state.candidates) {
 				const option = optionsEl.createEl("label", { cls: "pp-conflict-option" });
@@ -768,7 +773,44 @@ export class SelectPropertiesModal extends Modal {
 				radio.checked =
 					state.selectedCandidateKey === candidate.key ||
 					(state.selected.length === 1 && state.selected[0] === candidate.raw);
-				option.createSpan({ cls: "pp-conflict-value", text: candidate.display });
+
+				if (candidate.mismatch) {
+					const targetLabel = propertyTypeLabel(state.name, state.isList, propertyType);
+					const sourceLabel = propertyTypeLabel(state.name, false, candidate.jsType);
+					const warning = option.createSpan({
+						cls: "pp-candidate-warning",
+						attr: {
+							title: `${sourceLabel} "${candidate.display}"; this property is ${targetLabel}`,
+							"aria-label": `${sourceLabel} "${candidate.display}"; this property is ${targetLabel}`,
+						},
+					});
+					setIcon(warning, "alert-triangle");
+				}
+
+				if (showTypeIcons) {
+					const typeLabel = propertyTypeLabel(state.name, false, candidate.jsType);
+					const typeIcon = option.createSpan({
+						cls: "pp-candidate-type-icon",
+						attr: {
+							title: typeLabel,
+							"aria-label": typeLabel,
+						},
+					});
+					setIcon(typeIcon, PROPERTY_TYPE_ICONS[typeLabel] ?? "align-left");
+				}
+
+				const displayText =
+					showTypeIcons && candidate.jsType === "string"
+						? `"${candidate.display}"`
+						: candidate.display;
+				option.createSpan({ cls: "pp-conflict-value", text: displayText });
+
+				if (candidate.coercedFrom !== undefined) {
+					option.createSpan({
+						cls: "pp-candidate-coerced",
+						text: "converted from text",
+					});
+				}
 				const propSources = state.conflictContext?.valueSources?.[state.name];
 				const sources =
 					propSources?.[candidate.key] ??
