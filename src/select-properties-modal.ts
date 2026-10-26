@@ -1,4 +1,4 @@
-import { App, Menu, Modal, AbstractInputSuggest, Scope, setIcon, Keymap, TFile } from "obsidian";
+import { App, Menu, Modal, AbstractInputSuggest, Scope, setIcon, Keymap, TFile, ToggleComponent } from "obsidian";
 import { RowNavigator, renderKeyHints, type KeyHint } from "commons/modal";
 import { TargetHighlighter, getTabHeadersForFiles, openFileInLeaf } from "commons/workspace";
 import {
@@ -31,6 +31,55 @@ export interface Candidate {
 	mismatch?: boolean;
 }
 
+export interface ScalarPicker {
+	inputEl: HTMLInputElement;
+	rootEl: HTMLElement;
+	getValue(): string[];
+	setValue(value: string | string[]): void;
+	destroy(): void;
+}
+
+export function isValidUrl(value: string): boolean {
+	const trimmed = value.trim();
+	if (!trimmed) return false;
+	try {
+		const toParse = /^https?:\/\//i.test(trimmed) || /^ftp:\/\//i.test(trimmed)
+			? trimmed
+			: trimmed.startsWith("www.")
+				? `https://${trimmed}`
+				: undefined;
+		if (!toParse) return false;
+		const url = new URL(toParse);
+		return (
+			(url.protocol === "http:" || url.protocol === "https:" || url.protocol === "ftp:") &&
+			url.hostname.length > 0 &&
+			url.hostname.includes(".")
+		);
+	} catch {
+		return false;
+	}
+}
+
+export function isUrlProperty(name: string, candidates?: readonly Candidate[]): boolean {
+	const lower = name.trim().toLowerCase();
+	if (
+		lower === "url" ||
+		lower === "uri" ||
+		lower === "link" ||
+		lower === "website" ||
+		lower.endsWith("_url") ||
+		lower.endsWith("-url") ||
+		lower.endsWith("_link") ||
+		lower.endsWith("-link")
+	) {
+		return true;
+	}
+	if (candidates && candidates.length > 0) {
+		return candidates.every((c) => isValidUrl(c.display));
+	}
+	return false;
+}
+
 export interface PropertyCardState {
 	name: string;
 	isList: boolean;
@@ -48,7 +97,8 @@ export interface PropertyCardState {
 	conflictContext?: ConflictCardContext;
 	cardEl?: HTMLElement;
 	skipCheckboxEl?: HTMLInputElement;
-	picker?: ValuePicker;
+	picker?: ValuePicker | ScalarPicker;
+	toggleComponent?: ToggleComponent;
 	errorEl?: HTMLElement;
 	invalid?: boolean;
 	invalidReason?: string;
@@ -704,14 +754,26 @@ export class SelectPropertiesModal extends Modal {
 		}
 	}
 
-	// TODO: Stricter tag validation (e.g. disallowing reserved characters or empty sub-tags). Reusing normalizeTag from commons.
-	private validateAndCommitValue(state: PropertyCardState, rawValue: unknown): boolean {
+	private getEffectiveType(state: PropertyCardState): ValueType {
+		if (state.widget) return state.widget as ValueType;
 		const propertyType = getPropertyType(
 			this.catalog,
 			state.name,
 			state.candidates.map((c) => c.display)
 		);
-		const targetType = (state.widget as ValueType) ?? (propertyType as ValueType) ?? "text";
+		if (propertyType && propertyType !== "unknown") return propertyType as ValueType;
+		if (state.candidates.length > 0 && state.candidates.every((c) => c.jsType === "boolean" || typeof c.raw === "boolean")) {
+			return "checkbox";
+		}
+		if (state.candidates.length > 0 && state.candidates.every((c) => c.jsType === "number" || typeof c.raw === "number")) {
+			return "number";
+		}
+		return "text";
+	}
+
+	// TODO: Stricter tag validation (e.g. disallowing reserved characters or empty sub-tags). Reusing normalizeTag from commons.
+	private validateAndCommitValue(state: PropertyCardState, rawValue: unknown): boolean {
+		const targetType = this.getEffectiveType(state);
 
 		if (state.name === "tags" || state.name === "tag") {
 			const tagStr = normalizeTag(String(rawValue)).trim();
@@ -755,12 +817,7 @@ export class SelectPropertiesModal extends Modal {
 		hostEl: HTMLElement,
 		kind: "scalar" | "conflict-other"
 	): void {
-		const propertyType = getPropertyType(
-			this.catalog,
-			state.name,
-			state.candidates.map((c) => c.display)
-		);
-		const effectiveType = (state.widget as ValueType) ?? (propertyType as ValueType) ?? "text";
+		const effectiveType = this.getEffectiveType(state);
 
 		if (effectiveType === "number") {
 			const numInput = hostEl.createEl("input", {
@@ -789,20 +846,106 @@ export class SelectPropertiesModal extends Modal {
 		}
 
 		if (effectiveType === "checkbox") {
-			const toggleLabel = hostEl.createEl("label", { cls: "checkbox-container pp-toggle" });
-			const toggle = toggleLabel.createEl("input", {
-				type: "checkbox",
-				cls: "pp-checkbox-toggle",
-				attr: { "aria-label": `${state.name} value` },
+			const toggle = new ToggleComponent(hostEl);
+			toggle.toggleEl.addClass("pp-toggle");
+			const isChecked = Boolean(state.selected[0] === true || state.selected[0] === "true");
+			toggle.setValue(isChecked);
+			toggle.onChange((val) => {
+				toggle.setValue(val);
+				this.validateAndCommitValue(state, val);
 			});
-			toggle.checked = Boolean(state.selected[0] === true || state.selected[0] === "true");
-			toggle.addEventListener("change", () => {
-				this.validateAndCommitValue(state, toggle.checked);
+			state.toggleComponent = toggle;
+			return;
+		}
+
+		const isUrl = isUrlProperty(state.name, state.candidates);
+		if (isUrl) {
+			const container = hostEl.createDiv({ cls: ["pp-scalar-picker", "commons-property-picker"] });
+			container.dataset.valueStyle = "plain";
+			const urlInput = container.createEl("input", {
+				type: "text",
+				cls: ["pp-url-input", "commons-property-picker-input"],
+				attr: {
+					placeholder: "https://... or www.example.com",
+					"aria-label": `${state.name} value`,
+					autocomplete: "off",
+				},
 			});
+			if (state.selected[0] !== undefined && state.selected[0] !== null && String(state.selected[0]).trim()) {
+				urlInput.value = String(state.selected[0]);
+			}
+			const commitUrl = (rawVal: string) => {
+				const trimmed = rawVal.trim();
+				if (!trimmed) {
+					state.selected = [];
+					this.setCardValidity(state, true);
+					this.updateControls();
+					return;
+				}
+				if (!isValidUrl(trimmed)) {
+					this.setCardValidity(state, false, 'Invalid URL format (e.g. "https://example.com" or "www.example.com")');
+					return;
+				}
+				this.validateAndCommitValue(state, trimmed);
+			};
+			urlInput.addEventListener("input", () => commitUrl(urlInput.value));
+			urlInput.addEventListener("change", () => commitUrl(urlInput.value));
+			state.picker = {
+				inputEl: urlInput,
+				rootEl: container,
+				getValue: () => (urlInput.value.trim() ? [urlInput.value.trim()] : []),
+				setValue: (val: string | string[]) => {
+					const str = Array.isArray(val) ? String(val[0] ?? "") : String(val ?? "");
+					urlInput.value = str;
+					commitUrl(str);
+				},
+				destroy: () => container.remove(),
+			};
 			return;
 		}
 
 		const isDateProperty = effectiveType === "date" || effectiveType === "datetime";
+		if (!isDateProperty && effectiveType === "text") {
+			const container = hostEl.createDiv({ cls: ["pp-scalar-picker", "commons-property-picker"] });
+			container.dataset.valueStyle = "plain";
+			const textInput = container.createEl("input", {
+				type: "text",
+				cls: ["pp-text-input", "commons-property-picker-input"],
+				attr: {
+					placeholder: `${state.name} value…`,
+					"aria-label": `${state.name} value`,
+					autocomplete: "off",
+				},
+			});
+			if (state.selected[0] !== undefined && state.selected[0] !== null && String(state.selected[0]).trim()) {
+				textInput.value = String(state.selected[0]);
+			}
+			const commitText = (rawVal: string) => {
+				const trimmed = rawVal.trim();
+				if (!trimmed) {
+					state.selected = [];
+					this.setCardValidity(state, true);
+					this.updateControls();
+					return;
+				}
+				this.validateAndCommitValue(state, rawVal);
+			};
+			textInput.addEventListener("input", () => commitText(textInput.value));
+			textInput.addEventListener("change", () => commitText(textInput.value));
+			state.picker = {
+				inputEl: textInput,
+				rootEl: container,
+				getValue: () => (textInput.value.trim() ? [textInput.value.trim()] : []),
+				setValue: (val: string | string[]) => {
+					const str = Array.isArray(val) ? String(val[0] ?? "") : String(val ?? "");
+					textInput.value = str;
+					commitText(str);
+				},
+				destroy: () => container.remove(),
+			};
+			return;
+		}
+
 		const datetimeOptions =
 			effectiveType === "datetime"
 				? datetimePickerOptions(String(state.selected[0] ?? state.candidates[0]?.display ?? ""))
@@ -816,7 +959,7 @@ export class SelectPropertiesModal extends Modal {
 			...this.buildPickerOptions(state, kind),
 			value: String(state.selected[0] ?? ""),
 			multiple: false,
-			showSingleValueChip: !isDateProperty,
+			showSingleValueChip: false,
 			selectedValueStyle: selectedValueStyle(state.name),
 			...datePickerOptions,
 			allowCreate: true,
@@ -864,15 +1007,20 @@ export class SelectPropertiesModal extends Modal {
 					state.picker.inputEl.focus();
 					return;
 				}
+				if (state.toggleComponent) {
+					if (reset) {
+						state.toggleComponent.setValue(false);
+						this.validateAndCommitValue(state, false);
+					}
+					state.toggleComponent.toggleEl.focus();
+					return;
+				}
 				const input = pickerHost.querySelector<HTMLInputElement>("input");
 				if (input) {
 					if (reset) {
 						if (input.type === "number") {
 							input.value = "";
 							this.setCardValidity(state, false, "Number cannot be empty");
-						} else if (input.type === "checkbox") {
-							input.checked = false;
-							this.validateAndCommitValue(state, false);
 						}
 					}
 					input.focus();
@@ -1046,7 +1194,7 @@ export class SelectPropertiesModal extends Modal {
 			placeholder: isListPicker ? `Add ${state.name}…` : `Choose or type ${state.name}…`,
 			ariaLabel: `${state.name} ${isListPicker ? "values" : "value"}`,
 			getCreateLabel: (value) => `Add "${value}" as a new ${state.name} value…`,
-			suppressNewBadge: kind === "list" ? undefined : isDateProperty,
+			suppressNewBadge: true,
 			confirmNewEntries: isListPicker ? undefined : state.isList,
 		};
 	}

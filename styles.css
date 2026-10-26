@@ -583,7 +583,9 @@ button.pp-property-type.pp-property-type-chip:hover {
 	font-weight: var(--font-normal);
 }
 
-.pp-number-input {
+.pp-number-input,
+.pp-url-input,
+.pp-text-input {
 	width: 100%;
 	padding: var(--size-2-1) var(--size-2-2);
 	background: transparent;
@@ -592,13 +594,25 @@ button.pp-property-type.pp-property-type-chip:hover {
 	color: var(--text-normal);
 }
 
-.pp-number-input:hover {
+.pp-number-input:hover,
+.pp-url-input:hover,
+.pp-text-input:hover {
 	border-color: var(--background-modifier-border-hover);
 }
 
-.pp-number-input:focus {
+.pp-number-input:focus,
+.pp-url-input:focus,
+.pp-text-input:focus {
 	border-color: var(--background-modifier-border-focus);
 	background: var(--background-primary);
+}
+
+.pp-scalar-picker {
+	width: 100%;
+}
+
+.pp-toggle {
+	cursor: pointer;
 }
 
 .pp-checkbox-toggle {

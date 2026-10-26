@@ -458,3 +458,44 @@ export function prepareFuzzySearch(
 		return { score: -text.length, matches };
 	};
 }
+
+export class ToggleComponent {
+	toggleEl: HTMLElement;
+	private value = false;
+	private onChangeFn: ((value: boolean) => void) | null = null;
+
+	constructor(containerEl: HTMLElement) {
+		const anyContainer = containerEl as any;
+		this.toggleEl = anyContainer.createDiv
+			? anyContainer.createDiv({ cls: "checkbox-container" })
+			: document.createElement("div");
+		this.toggleEl.className = "checkbox-container";
+		const input = anyContainer.createEl
+			? anyContainer.createEl("input", { type: "checkbox", cls: "pp-checkbox-toggle" })
+			: document.createElement("input");
+		input.type = "checkbox";
+		input.className = "pp-checkbox-toggle";
+		this.toggleEl.appendChild(input);
+		this.toggleEl.addEventListener("click", () => {
+			this.setValue(!this.value);
+			if (this.onChangeFn) this.onChangeFn(this.value);
+		});
+	}
+
+	setValue(value: boolean): this {
+		this.value = value;
+		this.toggleEl.classList.toggle("is-enabled", value);
+		const input = this.toggleEl.querySelector<HTMLInputElement>("input");
+		if (input) input.checked = value;
+		return this;
+	}
+
+	getValue(): boolean {
+		return this.value;
+	}
+
+	onChange(fn: (value: boolean) => void): this {
+		this.onChangeFn = fn;
+		return this;
+	}
+}

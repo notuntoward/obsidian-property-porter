@@ -760,10 +760,8 @@ describe("SelectPropertiesModal", () => {
 		const card = Array.from(modal.contentEl.querySelectorAll(".pp-property-card")).find(
 			(element) => element.querySelector(".pp-property-name")?.textContent === "imported_property"
 		)!;
-		const chip = card.querySelector<HTMLElement>(".commons-property-picker-chip");
-		expect(chip?.dataset.entry).toBeUndefined();
-		expect(chip?.querySelector(".commons-property-picker-new-badge")).toBeNull();
-		expect(card.querySelector<HTMLElement>(".commons-property-picker-status")?.hidden).toBe(true);
+		expect(card.querySelector(".commons-property-picker-new-badge")).toBeNull();
+		expect(modal.propertyStates.get("imported_property")?.picker?.inputEl.value).toBe("copied value");
 		expect(modal.propertyStates.get("imported_property")?.picker?.rootEl.dataset.valueStyle).toBe("plain");
 	});
 
@@ -909,12 +907,8 @@ describe("SelectPropertiesModal", () => {
 
 		const picker = modal.propertyStates.get("status")!.picker!;
 		const confirmOpen = vi.spyOn(ConfirmNewEntryModal.prototype, "open");
-		const suggester = getInputSuggest(picker.inputEl);
-		const createOption = suggester.suggestions("custom status").find(
-			(option: any) => option.kind === "create"
-		);
-		expect(createOption).toBeDefined();
-		suggester.select(createOption);
+		picker.inputEl.value = "custom status";
+		picker.inputEl.dispatchEvent(new Event("input"));
 
 		expect(confirmOpen).not.toHaveBeenCalled();
 		expect(modal.propertyStates.get("status")?.selected).toEqual(["custom status"]);
@@ -933,12 +927,8 @@ describe("SelectPropertiesModal", () => {
 
 		const picker = modal.propertyStates.get("status")!.picker!;
 		const confirmOpen = vi.spyOn(ConfirmNewEntryModal.prototype, "open");
-		const suggester = getInputSuggest(picker.inputEl);
-		const createOption = suggester.suggestions("custom status").find(
-			(option: any) => option.kind === "create"
-		);
-		expect(createOption).toBeDefined();
-		suggester.select(createOption);
+		picker.inputEl.value = "custom status";
+		picker.inputEl.dispatchEvent(new Event("input"));
 
 		expect(confirmOpen).not.toHaveBeenCalled();
 		expect(picker.getValue()).toEqual(["custom status"]);
@@ -2375,6 +2365,134 @@ describe("typed entry and validation (Phase 5)", () => {
 		yearOtherRadio.dispatchEvent(new Event("change"));
 		expect(yearHost.hidden).toBe(false);
 		expect(yearCard.querySelectorAll("input[type='number']")).toHaveLength(1);
+	});
+
+
+	it("allows checkbox toggle to be clicked and moved back and forth", () => {
+		const { app } = createApp();
+		const onSubmit = vi.fn();
+		const modal = new SelectPropertiesModal(
+			app as any,
+			createMockCatalog(),
+			{ is_active: [true, false] },
+			onSubmit,
+			vi.fn()
+		);
+		modal.onOpen();
+
+		const card = modal.contentEl.querySelector(".pp-property-card")!;
+		const otherRadio = card.querySelectorAll<HTMLInputElement>(".pp-conflict-option input")[2]!;
+		otherRadio.click();
+
+		const toggle = card.querySelector<HTMLElement>(".checkbox-container")!;
+		expect(toggle).not.toBeNull();
+		expect(toggle.classList.contains("is-enabled")).toBe(false);
+		expect(modal.propertyStates.get("is_active")?.selected).toEqual([false]);
+
+		// Click toggle to turn on
+		toggle.click();
+		expect(toggle.classList.contains("is-enabled")).toBe(true);
+		expect(modal.propertyStates.get("is_active")?.selected).toEqual([true]);
+
+		// Click toggle to turn off
+		toggle.click();
+		expect(toggle.classList.contains("is-enabled")).toBe(false);
+		expect(modal.propertyStates.get("is_active")?.selected).toEqual([false]);
+	});
+
+	it("validates URL properties with single input box and accepts www.nytime.com without completion interference", () => {
+		const { app } = createApp();
+		const onSubmit = vi.fn();
+		const modal = new SelectPropertiesModal(
+			app as any,
+			createMockCatalog(),
+			{ url: ["https://youtube.com/watch", "https://journals.lww.com/article"] },
+			onSubmit,
+			vi.fn()
+		);
+		modal.onOpen();
+
+		const card = modal.contentEl.querySelector(".pp-property-card")!;
+		const otherRadio = card.querySelectorAll<HTMLInputElement>(".pp-conflict-option input")[2]!;
+		otherRadio.click();
+
+		const urlInputs = card.querySelectorAll<HTMLInputElement>("input.pp-url-input");
+		expect(urlInputs).toHaveLength(1);
+		expect(card.querySelectorAll(".commons-property-picker-chip")).toHaveLength(0);
+
+		const continueBtn = modal.contentEl.querySelector<HTMLButtonElement>(".pp-finish-button")!;
+
+		// Type valid URL without protocol
+		urlInputs[0].value = "www.nytime.com";
+		urlInputs[0].dispatchEvent(new Event("input"));
+
+		expect(card.classList.contains("is-invalid")).toBe(false);
+		expect(continueBtn.disabled).toBe(false);
+		expect(modal.propertyStates.get("url")?.selected).toEqual(["www.nytime.com"]);
+		// Still only one input box (no second box after completion)
+		expect(card.querySelectorAll<HTMLInputElement>("input.pp-url-input")).toHaveLength(1);
+		expect(card.querySelectorAll(".commons-property-picker-chip")).toHaveLength(0);
+
+		// Type invalid URL
+		urlInputs[0].value = "not_a_valid_url";
+		urlInputs[0].dispatchEvent(new Event("input"));
+
+		expect(card.classList.contains("is-invalid")).toBe(true);
+		expect(continueBtn.disabled).toBe(true);
+		expect(card.querySelector(".pp-validation-error")?.textContent).toContain("Invalid URL");
+
+		// Fix with full URL
+		urlInputs[0].value = "https://www.nytimes.com/2026/04/19/opinion/lucid-dreams.html";
+		urlInputs[0].dispatchEvent(new Event("input"));
+
+		expect(card.classList.contains("is-invalid")).toBe(false);
+		expect(continueBtn.disabled).toBe(false);
+		expect(modal.propertyStates.get("url")?.selected).toEqual(["https://www.nytimes.com/2026/04/19/opinion/lucid-dreams.html"]);
+
+		continueBtn.click();
+		expect(onSubmit).toHaveBeenCalledWith({
+			url: "https://www.nytimes.com/2026/04/19/opinion/lucid-dreams.html",
+		});
+	});
+
+	it("accepts arbitrary text values in a single input without completion dropdown or NEW pills", () => {
+		const { app } = createApp();
+		const onSubmit = vi.fn();
+		const modal = new SelectPropertiesModal(
+			app as any,
+			createMockCatalog(),
+			{ title: ["Note A", "Note B"] },
+			onSubmit,
+			vi.fn()
+		);
+		modal.onOpen();
+
+		const card = modal.contentEl.querySelector(".pp-property-card")!;
+		const otherRadio = card.querySelectorAll<HTMLInputElement>(".pp-conflict-option input")[2]!;
+		otherRadio.click();
+
+		const textInputs = card.querySelectorAll<HTMLInputElement>("input.pp-text-input");
+		expect(textInputs).toHaveLength(1);
+		expect(card.querySelectorAll(".commons-property-picker-chip")).toHaveLength(0);
+		expect(card.querySelector(".commons-property-picker-new-badge")).toBeNull();
+
+		// Enter arbitrary text
+		textInputs[0].value = "Arbitrary Freeform Title (with special chars: !@#$)";
+		textInputs[0].dispatchEvent(new Event("input"));
+
+		expect(card.classList.contains("is-invalid")).toBe(false);
+		expect(modal.propertyStates.get("title")?.selected).toEqual([
+			"Arbitrary Freeform Title (with special chars: !@#$)",
+		]);
+		expect(card.querySelectorAll<HTMLInputElement>("input.pp-text-input")).toHaveLength(1);
+		expect(card.querySelectorAll(".commons-property-picker-chip")).toHaveLength(0);
+		expect(card.querySelector(".commons-property-picker-new-badge")).toBeNull();
+
+		const continueBtn = modal.contentEl.querySelector<HTMLButtonElement>(".pp-finish-button")!;
+		continueBtn.click();
+		expect(onSubmit).toHaveBeenCalledWith({
+			title: "Arbitrary Freeform Title (with special chars: !@#$)",
+		});
 	});
 
 });
