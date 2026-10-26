@@ -2239,3 +2239,101 @@ describe("type markers on values (Phase 4)", () => {
 		expect(warning?.getAttribute("title")).toBe('Text "abc"; this property is Number');
 	});
 });
+
+describe("typed entry and validation (Phase 5)", () => {
+	it("shows type chip with label for a new property and opens menu on click", () => {
+		const { app } = createApp();
+		const catalog = createMockCatalog();
+		const modal = new SelectPropertiesModal(
+			app as any,
+			catalog,
+			{},
+			vi.fn(),
+			vi.fn()
+		);
+		modal.onOpen();
+
+		const state = modal.addProperty("custom_field");
+		expect(state).toBeDefined();
+
+		const chip = state!.cardEl!.querySelector<HTMLButtonElement>("button.pp-property-type-chip")!;
+		expect(chip).not.toBeNull();
+		expect(chip.querySelector(".pp-property-type-chip-label")?.textContent).toBe("Automatic");
+
+		chip.click();
+		expect(obsidianMock.Menu.last).not.toBeNull();
+	});
+
+	it("chooses input by type: number input for Number, toggle for Checkbox", () => {
+		const { app } = createApp();
+		const catalog = createMockCatalog();
+		catalog.properties.push(
+			{ name: "count", kinds: ["number"], values: ["5"] },
+			{ name: "published", kinds: ["boolean"], values: ["true"] }
+		);
+
+		const modal = new SelectPropertiesModal(
+			app as any,
+			catalog,
+			{ count: 5, published: true },
+			vi.fn(),
+			vi.fn()
+		);
+		modal.onOpen();
+
+		const countCard = modal.propertyStates.get("count")!.cardEl!;
+		const numberInput = countCard.querySelector<HTMLInputElement>("input[type='number']");
+		expect(numberInput).not.toBeNull();
+		expect(numberInput?.value).toBe("5");
+
+		const publishedCard = modal.propertyStates.get("published")!.cardEl!;
+		const toggle = publishedCard.querySelector<HTMLInputElement>("input.pp-checkbox-toggle");
+		expect(toggle).not.toBeNull();
+		expect(toggle?.checked).toBe(true);
+	});
+
+	it("marks row is-invalid, displays inline error, and disables Continue on invalid value", () => {
+		const { app } = createApp();
+		const catalog = createMockCatalog();
+		catalog.properties.push({ name: "count", kinds: ["number"], values: ["5"] });
+
+		const modal = new SelectPropertiesModal(
+			app as any,
+			catalog,
+			{ count: 5 },
+			vi.fn(),
+			vi.fn()
+		);
+		modal.onOpen();
+
+		const countCard = modal.propertyStates.get("count")!.cardEl!;
+		const numberInput = countCard.querySelector<HTMLInputElement>("input[type='number']")!;
+		const continueBtn = modal.contentEl.querySelector<HTMLButtonElement>(".pp-finish-button")!;
+		expect(continueBtn.disabled).toBe(false);
+
+		// Enter invalid non-numeric string
+		numberInput.value = "not_a_number";
+		numberInput.dispatchEvent(new Event("change"));
+
+		// Row marked is-invalid
+		expect(countCard.classList.contains("is-invalid")).toBe(true);
+
+		// Error displayed inline
+		const errorEl = countCard.querySelector(".pp-validation-error");
+		expect(errorEl).not.toBeNull();
+		expect(errorEl?.textContent).toBeTruthy();
+
+		// Continue disabled and status line naming property
+		expect(continueBtn.disabled).toBe(true);
+		const hintEl = modal.contentEl.querySelector(".pp-multi-select-hint");
+		expect(hintEl?.textContent).toContain("Cannot continue: count has an invalid value.");
+
+		// Fix value
+		numberInput.value = "42";
+		numberInput.dispatchEvent(new Event("change"));
+
+		expect(countCard.classList.contains("is-invalid")).toBe(false);
+		expect(continueBtn.disabled).toBe(false);
+		expect(modal.propertyStates.get("count")?.selected).toEqual([42]);
+	});
+});

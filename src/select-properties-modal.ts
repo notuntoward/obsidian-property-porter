@@ -49,6 +49,9 @@ export interface PropertyCardState {
 	cardEl?: HTMLElement;
 	skipCheckboxEl?: HTMLInputElement;
 	picker?: ValuePicker;
+	errorEl?: HTMLElement;
+	invalid?: boolean;
+	invalidReason?: string;
 }
 
 // Describes where a conflict came from so the card can name the notes
@@ -661,7 +664,7 @@ export class SelectPropertiesModal extends Modal {
 		if (state.typeEditable) {
 			const choiceLabel = state.widget ? typeLabel : "Automatic";
 			const typeButton = titleGroup.createEl("button", {
-				cls: ["pp-property-type", "is-editable", state.isList ? "is-list" : "is-scalar"],
+				cls: ["pp-property-type", "pp-property-type-chip", "is-editable", state.isList ? "is-list" : "is-scalar"],
 				type: "button",
 				attr: {
 					title: `Type: ${choiceLabel}. Change type (T)`,
@@ -669,7 +672,9 @@ export class SelectPropertiesModal extends Modal {
 					tabindex: "-1",
 				},
 			});
-			setIcon(typeButton, PROPERTY_TYPE_ICONS[typeLabel] ?? "align-left");
+			const iconSpan = typeButton.createSpan({ cls: "pp-property-type-chip-icon" });
+			setIcon(iconSpan, PROPERTY_TYPE_ICONS[typeLabel] ?? "align-left");
+			typeButton.createSpan({ cls: "pp-property-type-chip-label", text: choiceLabel });
 			typeButton.addEventListener("click", () => this.openTypeMenu(state, typeButton));
 			cardEl.addEventListener("keydown", (event) => {
 				if (event.target !== cardEl || event.key.toLowerCase() !== "t") return;
@@ -699,6 +704,136 @@ export class SelectPropertiesModal extends Modal {
 		}
 	}
 
+	// TODO: Stricter tag validation (e.g. disallowing reserved characters or empty sub-tags). Reusing normalizeTag from commons.
+	private validateAndCommitValue(state: PropertyCardState, rawValue: unknown): boolean {
+		const propertyType = getPropertyType(
+			this.catalog,
+			state.name,
+			state.candidates.map((c) => c.display)
+		);
+		const targetType = (state.widget as ValueType) ?? (propertyType as ValueType) ?? "text";
+
+		if (state.name === "tags" || state.name === "tag") {
+			const tagStr = normalizeTag(String(rawValue)).trim();
+			state.selected = [tagStr];
+			this.setCardValidity(state, true);
+			return true;
+		}
+
+		const result = coerceToType(rawValue, targetType);
+		if (result.ok) {
+			state.selected = [result.value];
+			this.setCardValidity(state, true);
+			return true;
+		} else {
+			this.setCardValidity(state, false, result.reason);
+			return false;
+		}
+	}
+
+	private setCardValidity(state: PropertyCardState, isValid: boolean, reason?: string): void {
+		state.invalid = !isValid;
+		state.invalidReason = reason;
+		if (state.cardEl) {
+			state.cardEl.classList.toggle("is-invalid", !isValid);
+			if (!isValid && reason) {
+				if (!state.errorEl) {
+					state.errorEl = state.cardEl.createDiv({ cls: "pp-validation-error" });
+				}
+				state.errorEl.setText(reason);
+				state.errorEl.hidden = false;
+			} else if (state.errorEl) {
+				state.errorEl.hidden = true;
+				state.errorEl.setText("");
+			}
+		}
+		this.updateControls();
+	}
+
+	private renderTypedEditor(
+		state: PropertyCardState,
+		hostEl: HTMLElement,
+		kind: "scalar" | "conflict-other"
+	): void {
+		const propertyType = getPropertyType(
+			this.catalog,
+			state.name,
+			state.candidates.map((c) => c.display)
+		);
+		const effectiveType = (state.widget as ValueType) ?? (propertyType as ValueType) ?? "text";
+
+		if (effectiveType === "number") {
+			const numInput = hostEl.createEl("input", {
+				type: "number",
+				cls: ["pp-number-input", "commons-property-picker-input"],
+				attr: {
+					step: "any",
+					placeholder: "Number value…",
+					"aria-label": `${state.name} value`,
+				},
+			});
+			if (state.selected[0] !== undefined && state.selected[0] !== null) {
+				numInput.value = String(state.selected[0]);
+			}
+			const commitNumber = () => {
+				const trimmed = numInput.value.trim();
+				if (!trimmed) {
+					this.setCardValidity(state, false, "Number cannot be empty");
+					return;
+				}
+				this.validateAndCommitValue(state, trimmed);
+			};
+			numInput.addEventListener("input", commitNumber);
+			numInput.addEventListener("change", commitNumber);
+			return;
+		}
+
+		if (effectiveType === "checkbox") {
+			const toggleLabel = hostEl.createEl("label", { cls: "checkbox-container pp-toggle" });
+			const toggle = toggleLabel.createEl("input", {
+				type: "checkbox",
+				cls: "pp-checkbox-toggle",
+				attr: { "aria-label": `${state.name} value` },
+			});
+			toggle.checked = Boolean(state.selected[0] === true || state.selected[0] === "true");
+			toggle.addEventListener("change", () => {
+				this.validateAndCommitValue(state, toggle.checked);
+			});
+			return;
+		}
+
+		const isDateProperty = effectiveType === "date" || effectiveType === "datetime";
+		const datetimeOptions =
+			effectiveType === "datetime"
+				? datetimePickerOptions(String(state.selected[0] ?? state.candidates[0]?.display ?? ""))
+				: undefined;
+		const datePickerOptions =
+			effectiveType === "date"
+				? { inputType: "date" as const }
+				: datetimeOptions ?? {};
+
+		state.picker = new ValuePicker(this.app, hostEl, {
+			...this.buildPickerOptions(state, kind),
+			value: String(state.selected[0] ?? ""),
+			multiple: false,
+			showSingleValueChip: !isDateProperty,
+			selectedValueStyle: selectedValueStyle(state.name),
+			...datePickerOptions,
+			allowCreate: true,
+			onChange: (values) => {
+				const val = values[0] ?? "";
+				datetimeOptions?.formatInputValue(val);
+				this.validateAndCommitValue(state, val);
+			},
+		});
+		if (isDateProperty) {
+			hostEl.createDiv({
+				cls: "pp-property-picker-hint",
+				text: "Changing this date replaces the property value; it will not add another date.",
+			});
+		}
+	}
+
 	private renderScalarBody(state: PropertyCardState, cardEl: HTMLElement): void {
 		const propertyType = getPropertyType(
 			this.catalog,
@@ -710,10 +845,6 @@ export class SelectPropertiesModal extends Modal {
 			propertyType === "datetime"
 				? datetimePickerOptions(String(state.selected[0] ?? state.candidates[0]?.display ?? ""))
 				: undefined;
-		const datePickerOptions =
-			propertyType === "date"
-				? { inputType: "date" as const }
-				: datetimeOptions ?? {};
 		if (state.hasConflict) {
 			const optionsEl = cardEl.createDiv({ cls: "pp-conflict-options" });
 			optionsEl.setAttribute("role", "radiogroup");
@@ -730,27 +861,8 @@ export class SelectPropertiesModal extends Modal {
 					state.picker.inputEl.focus();
 					return;
 				}
-				state.picker = new ValuePicker(this.app, pickerHost, {
-					...this.buildPickerOptions(state, "conflict-other"),
-					value: "",
-					multiple: false,
-					showSingleValueChip: !isDateProperty,
-					selectedValueStyle: selectedValueStyle(state.name),
-					...datePickerOptions,
-					allowCreate: true,
-					onChange: (values) => {
-						state.selected = values.slice(0, 1);
-						datetimeOptions?.formatInputValue(String(state.selected[0] ?? ""));
-						this.updateControls();
-					},
-				});
-				if (isDateProperty) {
-					pickerHost.createDiv({
-						cls: "pp-property-picker-hint",
-						text: "Changing this date replaces the property value; it will not add another date.",
-					});
-				}
-				state.picker.inputEl.focus();
+				this.renderTypedEditor(state, pickerHost, "conflict-other");
+				pickerHost.querySelector<HTMLInputElement>("input")?.focus();
 			};
 
 			const vaultType = getPropertyType(this.catalog, state.name);
@@ -836,6 +948,7 @@ export class SelectPropertiesModal extends Modal {
 					if (!radio.checked) return;
 					state.selectedCandidateKey = candidate.key;
 					state.selected = [candidate.raw];
+					this.setCardValidity(state, true);
 					datetimeOptions?.formatInputValue(candidate.display);
 					if (pickerHost) pickerHost.hidden = true;
 					this.updateControls();
@@ -881,20 +994,7 @@ export class SelectPropertiesModal extends Modal {
 		}
 
 		const pickerHost = cardEl.createDiv({ cls: "pp-property-picker-host" });
-		state.picker = new ValuePicker(this.app, pickerHost, {
-			...this.buildPickerOptions(state, "scalar"),
-			value: String(state.selected[0] ?? ""),
-			multiple: false,
-			showSingleValueChip: true,
-			selectedValueStyle: selectedValueStyle(state.name),
-			...datePickerOptions,
-			allowCreate: true,
-			onChange: (values) => {
-				state.selected = values.slice(0, 1);
-				datetimeOptions?.formatInputValue(String(state.selected[0] ?? ""));
-				this.updateControls();
-			},
-		});
+		this.renderTypedEditor(state, pickerHost, "scalar");
 	}
 
 	private buildPickerOptions(
@@ -1012,6 +1112,9 @@ export class SelectPropertiesModal extends Modal {
 
 	submit(): void {
 		if (this.submitted) return;
+		for (const state of this.propertyStates.values()) {
+			if (!state.skipped && state.invalid) return;
+		}
 		this.submitted = true;
 		this.onSubmit(this.getSelectedProperties());
 		this.close();
@@ -1058,18 +1161,41 @@ export class SelectPropertiesModal extends Modal {
 		let added = 0;
 		let skipped = 0;
 		let skippedRows = 0;
+		const invalidNames: string[] = [];
+
 		for (const state of this.propertyStates.values()) {
-			if (state.skipped) skippedRows++;
+			if (state.skipped) {
+				skippedRows++;
+				continue;
+			}
+			if (state.invalid) {
+				invalidNames.push(state.name);
+			}
 			if (this.getStateValues(state).length === 0) continue;
-			if (state.skipped) skipped++;
-			else added++;
+			added++;
 		}
 
-		this.hintEl?.setText(addedStatusText(added, skipped));
-		if (this.doneButton) {
-			this.doneButton.setText(`${this.options.finishText ?? "Continue"} (${added})`);
+		for (const state of this.propertyStates.values()) {
+			if (state.skipped && this.getStateValues(state).length > 0) {
+				skipped++;
+			}
+		}
+
+		if (invalidNames.length > 0) {
+			const names = invalidNames.join(", ");
+			this.hintEl?.setText(`Cannot continue: ${names} has an invalid value.`);
+			if (this.doneButton) {
+				this.doneButton.disabled = true;
+				this.doneButton.title = `Fix invalid property: ${names}`;
+			}
+		} else {
+			this.hintEl?.setText(addedStatusText(added, skipped));
+			if (this.doneButton) {
+				this.doneButton.disabled = false;
+				this.doneButton.setText(`${this.options.finishText ?? "Continue"} (${added})`);
 			if (added === 0) this.doneButton.title = "Close and clear copied properties";
 			else this.doneButton.removeAttribute("title");
+			}
 		}
 		if (this.skipAllButton) this.skipAllButton.disabled = skippedRows === this.propertyStates.size;
 		if (this.addAllButton) this.addAllButton.disabled = skippedRows === 0;
