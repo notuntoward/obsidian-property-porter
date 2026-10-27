@@ -1,5 +1,5 @@
 import { App, Menu, Modal, Scope, setIcon, Keymap, TFile, ToggleComponent } from "obsidian";
-import { RowNavigator, renderKeyHints, type KeyHint } from "commons/modal";
+import { RowNavigator, attachModalPaging, renderKeyHints, type KeyHint } from "commons/modal";
 import { TargetHighlighter, getTabHeadersForFiles, openFileInLeaf } from "commons/workspace";
 import {
 	isListProperty,
@@ -183,6 +183,7 @@ export class SelectPropertiesModal extends Modal {
 	private addAllButton: HTMLButtonElement | null = null;
 	private propertyPicker: ValuePicker | null = null;
 	private navigator: RowNavigator | null = null;
+	private detachPaging: (() => void) | null = null;
 	private addRowEl: HTMLElement | null = null;
 	private addHostEl: HTMLElement | null = null;
 	private readonly tabHighlighter = new TargetHighlighter();
@@ -424,6 +425,7 @@ export class SelectPropertiesModal extends Modal {
 			onAccept: () => this.submit(),
 		});
 		this.navigator.attach();
+		this.detachPaging = attachModalPaging(this.contentEl, bodyEl);
 		this.contentEl.addEventListener("focusin", this.handleModalFocus);
 		this.scope.register([], "Escape", () => {
 			if (!this.navigator?.leaveOpenRow(this.contentEl.ownerDocument.activeElement)) this.close();
@@ -571,6 +573,8 @@ export class SelectPropertiesModal extends Modal {
 		this.tabHighlighter.clear();
 		this.navigator?.detach();
 		this.navigator = null;
+		this.detachPaging?.();
+		this.detachPaging = null;
 		this.contentEl.removeEventListener("focusin", this.handleModalFocus);
 		for (const state of this.propertyStates.values()) {
 			state.picker?.destroy();
@@ -1379,7 +1383,9 @@ export class SelectPropertiesModal extends Modal {
 	}
 
 	private setHint(hint: KeyHint[] | null): void {
-		if (this.keyboardHintEl && hint) renderKeyHints(this.keyboardHintEl, [hint], "pp");
+		if (this.keyboardHintEl && hint) {
+			renderKeyHints(this.keyboardHintEl, [[...hint, { key: "PgUp/PgDn", action: "scroll" }]], "pp");
+		}
 	}
 
 	// Footer hint for the focused control; null leaves the current hint alone.

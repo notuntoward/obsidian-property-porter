@@ -162,6 +162,35 @@ afterEach(() => {
 });
 
 describe("SelectPropertiesModal", () => {
+	it("pages the property body from rows and footer buttons without editing, and cleans up on close", () => {
+		const { app } = createApp();
+		const onSubmit = vi.fn();
+		const modal = new SelectPropertiesModal(app, createMockCatalog(), { status: "draft" }, onSubmit, vi.fn());
+		document.body.appendChild(modal.contentEl);
+		modal.onOpen();
+		const body = modal.contentEl.querySelector(".pp-select-properties-body")!;
+		Object.defineProperties(body, {
+			clientHeight: { value: 400 },
+			scrollHeight: { value: 1400 },
+		});
+		const card = modal.propertyStates.get("status")!.cardEl!;
+		card.focus();
+		expect(key(card, "PageDown").defaultPrevented).toBe(true);
+		expect(body.scrollTop).toBe(360);
+		expect(document.activeElement).toBe(card);
+		expect(modal.propertyStates.get("status")!.selected).toEqual(["draft"]);
+		expect(onSubmit).not.toHaveBeenCalled();
+		expect(modal.contentEl.textContent).toContain("PgUp/PgDn");
+		const button = modal.contentEl.querySelector(".pp-finish-button")!;
+		expect(key(button, "PageUp").defaultPrevented).toBe(true);
+		expect(body.scrollTop).toBe(0);
+		modal.onClose();
+		// Retain the old body and row to verify the listener itself was removed.
+		modal.contentEl.appendChild(body);
+		expect(key(card, "PageDown").defaultPrevented).toBe(false);
+		expect(body.scrollTop).toBe(0);
+	});
+
 	it("cancels delayed focus when the modal closes", () => {
 		vi.useFakeTimers();
 		const { app } = createApp();
@@ -1554,7 +1583,7 @@ describe("SelectPropertiesModal", () => {
 		it("words the footer hint by focus: Space skip, Space add back, none inside inputs", () => {
 			const { modal, card, hint } = openModal({ status: "draft", cast: ["Mark Hamill"] });
 			card("status").focus();
-			expect(hint()).toBe("Enter edit Tab next Space skip Ctrl/Cmd+Enter continue Esc cancel");
+			expect(hint()).toBe("Enter edit Tab next Space skip Ctrl/Cmd+Enter continue Esc cancel PgUp/PgDn scroll");
 			key(card("status"), " ");
 			expect(hint()).toContain("Space add back");
 			expect(hint()).not.toContain("Space skip");
