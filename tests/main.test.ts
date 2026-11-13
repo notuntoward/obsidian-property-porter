@@ -2111,7 +2111,7 @@ describe("FileSuggestModal", () => {
 		expect(onSelect).toHaveBeenCalledWith(file);
 	});
 
-	it("registers Emacs motion keys on open", () => {
+	it("retains text motion aliases without overriding native Ctrl+N/P", () => {
 		const file = new obsidianMock.TFile("x.md");
 		const modal = new FileSuggestModal(new obsidianMock.App(), [file], () => {});
 
@@ -2120,12 +2120,13 @@ describe("FileSuggestModal", () => {
 		expect(modal.scope.register).toHaveBeenCalled();
 		const calls = modal.scope.register.mock.calls;
 		const keys = calls.map((c) => c[1]);
-		expect(keys).toContain("N");
-		expect(keys).toContain("P");
+		expect(keys).not.toContain("N");
+		expect(keys).not.toContain("P");
 		expect(keys).toContain("A");
 		expect(keys).toContain("E");
 		expect(keys).toContain("F");
 		expect(keys).toContain("B");
+		expect(new Set(calls.map((c) => `${c[0]?.join("+")}|${c[1]}`)).size).toBe(calls.length);
 	});
 
 	it("prioritizes note basename over folder path when suggesting files", () => {
@@ -2154,68 +2155,11 @@ describe("registerEmacsMotionKeys", () => {
 		return { inputEl, scope, chooser };
 	}
 
-	it("registers Ctrl+N to move selection down", () => {
-		const { inputEl, scope, chooser } = createMockModal();
-		const modal = { inputEl, scope, chooser } as unknown as obsidianMock.SuggestModal<unknown>;
-
-		registerEmacsMotionKeys(modal);
-
-		const ctrlNCall = scope.register.mock.calls.find((c) => c[0][0] === "Ctrl" && c[1] === "N");
-		expect(ctrlNCall).toBeDefined();
-		ctrlNCall[2](new KeyboardEvent("keydown"));
-		expect(chooser.setSelectedItem).toHaveBeenCalledWith(1);
-	});
-
-	it("falls back to assigning selectedItem safely if chooser.setSelectedItem throws", () => {
-		const { inputEl, scope, chooser } = createMockModal();
-		chooser.setSelectedItem = vi.fn().mockImplementation(() => {
-			throw new TypeError("t.instanceOf is not a function");
-		});
-		const modal = { inputEl, scope, chooser } as unknown as obsidianMock.SuggestModal<unknown>;
-
-		registerEmacsMotionKeys(modal);
-
-		const ctrlNCall = scope.register.mock.calls.find((c) => c[0][0] === "Ctrl" && c[1] === "N");
-		expect(() => ctrlNCall[2](new KeyboardEvent("keydown"))).not.toThrow();
-		expect(chooser.selectedItem).toBe(1);
-	});
-
-	it("registers Ctrl+P to move selection up", () => {
-		const { inputEl, scope, chooser } = createMockModal();
-		chooser.selectedItem = 1;
-		const modal = { inputEl, scope, chooser } as unknown as obsidianMock.SuggestModal<unknown>;
-
-		registerEmacsMotionKeys(modal);
-
-		const ctrlPCall = scope.register.mock.calls.find((c) => c[0][0] === "Ctrl" && c[1] === "P");
-		expect(ctrlPCall).toBeDefined();
-		ctrlPCall[2](new KeyboardEvent("keydown"));
-		expect(chooser.setSelectedItem).toHaveBeenCalledWith(0);
-	});
-
-	it("does not move selection down past the last item", () => {
-		const { inputEl, scope, chooser } = createMockModal();
-		chooser.selectedItem = 2;
-		chooser.values = ["a", "b", "c"];
-		const modal = { inputEl, scope, chooser } as unknown as obsidianMock.SuggestModal<unknown>;
-
-		registerEmacsMotionKeys(modal);
-
-		const ctrlNCall = scope.register.mock.calls.find((c) => c[0][0] === "Ctrl" && c[1] === "N");
-		ctrlNCall[2](new KeyboardEvent("keydown"));
-		expect(chooser.setSelectedItem).not.toHaveBeenCalled();
-	});
-
-	it("does not move selection up past the first item", () => {
-		const { inputEl, scope, chooser } = createMockModal();
-		chooser.selectedItem = 0;
-		const modal = { inputEl, scope, chooser } as unknown as obsidianMock.SuggestModal<unknown>;
-
-		registerEmacsMotionKeys(modal);
-
-		const ctrlPCall = scope.register.mock.calls.find((c) => c[0][0] === "Ctrl" && c[1] === "P");
-		ctrlPCall[2](new KeyboardEvent("keydown"));
-		expect(chooser.setSelectedItem).not.toHaveBeenCalled();
+	it("does not register Ctrl+N or Ctrl+P", () => {
+		const modal = createMockModal();
+		registerEmacsMotionKeys(modal as unknown as obsidianMock.SuggestModal<unknown>);
+		const calls = modal.scope.register.mock.calls;
+		expect(calls.filter((c) => c[0]?.includes("Ctrl") && ["N", "P"].includes(c[1]))).toEqual([]);
 	});
 
 	it("registers Ctrl+A to move cursor to start of input", () => {
