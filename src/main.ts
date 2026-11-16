@@ -526,10 +526,7 @@ export default class PropertyPorter extends Plugin {
 		for (const file of files) {
 			const content = await this.readRawFileContent(file);
 			const parsed = parseRawFrontmatter(content);
-			const freshFrontmatter = {
-				...this.parseFrontmatterContent(content, file, parsed),
-				...parsed.map,
-			};
+			const freshFrontmatter = this.parseFrontmatterContent(content, file, parsed);
 			fullByFile.set(file, freshFrontmatter);
 			if (parsed.duplicates.length === 0) continue;
 

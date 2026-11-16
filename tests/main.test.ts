@@ -1839,6 +1839,57 @@ describe("PropertyPorter", () => {
 	});
 
 	describe("copyPropertiesFromActiveTabGroup", () => {
+		it("does not copy an empty YAML list as a tag", async () => {
+			const first = new obsidianMock.TFile("a.md");
+			const second = new obsidianMock.TFile("b.md");
+			const { plugin } = createPlugin({
+				leaves: [{ file: first }, { file: second }],
+				fileContents: {
+					[first.path]: "---\ntags: []\nstatus: draft\n---\n",
+					[second.path]: "---\ntags: []\nstatus: draft\n---\n",
+				},
+			});
+			await plugin.onload();
+			plugin.settings.onlyInclude = "";
+			plugin.settings.excludeKeys = "";
+			vi.spyOn(obsidianMock, "parseYaml").mockReturnValue({
+				tags: [],
+				status: "draft",
+			});
+
+			await plugin.copyPropertiesFromActiveTabGroup();
+
+			expect(plugin.clipboard).toEqual({ status: "draft" });
+			let displayedText = "";
+			obsidianMock.Modal.prototype.open = function (this: any) {
+				this.onOpen();
+				displayedText = this.contentEl.textContent ?? "";
+				this.contentEl.querySelector(".pp-finish-button").click();
+			};
+			await plugin.selectPropertiesToPaste();
+			expect(displayedText).not.toContain("[]");
+			expect(plugin.clipboard).toEqual({ status: "draft" });
+		});
+
+		it("preserves parsed inline lists and quoted scalar values on a single-note copy", async () => {
+			const file = new obsidianMock.TFile("a.md");
+			const { plugin } = createPlugin({
+				activeFile: file,
+				fileContents: { [file.path]: '---\ntags: [one, two]\nstatus: "[]"\n---\n' },
+			});
+			await plugin.onload();
+			plugin.settings.onlyInclude = "";
+			plugin.settings.excludeKeys = "";
+			vi.spyOn(obsidianMock, "parseYaml").mockReturnValue({
+				tags: ["one", "two"],
+				status: "[]",
+			});
+
+			await plugin.copyProperties();
+
+			expect(plugin.clipboard).toEqual({ tags: ["one", "two"], status: "[]" });
+		});
+
 		it("shows notice when the active tab group has no open files", async () => {
 			const { plugin } = createPlugin({ leaves: [] });
 			await plugin.onload();
