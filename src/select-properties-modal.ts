@@ -1,5 +1,5 @@
 import { App, Menu, Modal, Scope, setIcon, Keymap, TFile, ToggleComponent } from "obsidian";
-import { RowNavigator, attachModalPaging, renderKeyHints, type KeyHint } from "commons/modal";
+import { applyModalAppearance, RowNavigator, attachModalPaging, renderKeyHints, type KeyHint } from "commons/modal";
 import { TargetHighlighter, getTabHeadersForFiles, openFileInLeaf } from "commons/workspace";
 import {
 	isListProperty,
@@ -332,6 +332,7 @@ export class SelectPropertiesModal extends Modal {
 		this.contentEl.empty();
 		this.contentEl.addClass("pp-select-properties-modal");
 		this.modalEl.addClass("pp-modal");
+		applyModalAppearance(this);
 		this.titleEl.setText(this.options.title ?? "Edit property clipboard");
 		if (this.options.subtitle) {
 			const badge = this.titleEl.createSpan({

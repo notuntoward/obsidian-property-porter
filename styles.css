@@ -1,12 +1,7 @@
 /* Property Porter. Everything is scoped to the pp- prefix and uses Obsidian's
    CSS variables, so it follows the active theme in light and dark mode. */
 
-/* Modal title: small, accent-colored, like the command palettes. */
-.modal.pp-modal .modal-title {
-	color: var(--text-accent);
-	font-size: var(--font-ui-medium);
-	font-weight: var(--font-medium);
-}
+/* Modal title typography is shared through commons/modal. */
 
 .pp-visually-hidden {
 	position: absolute;

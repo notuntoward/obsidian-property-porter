@@ -48,7 +48,7 @@ import {
 	mergeValueSourcesByMaximumCount,
 	type FrontmatterValueSources,
 } from "commons/properties";
-import { FileSuggestModal } from "commons/modal";
+import { applyModalAppearance, FileSuggestModal } from "commons/modal";
 import {
 	SelectPropertiesModal,
 	type ConflictCardContext,
@@ -64,6 +64,7 @@ export class SourceRepairPermissionModal extends Modal {
 
 	onOpen(): void {
 		this.modalEl.addClass("pp-modal");
+		applyModalAppearance(this);
 		this.titleEl.setText(
 			this.files.length === 1
 				? "Repair duplicate properties in source note?"
@@ -143,6 +144,7 @@ export class PasteChangesConfirmModal extends Modal {
 	onOpen(): void {
 		const overwrite = this.mode === "overwrite";
 		this.modalEl.addClass("pp-modal");
+		applyModalAppearance(this);
 		this.titleEl.setText(overwrite ? "Overwrite existing properties?" : "Skip existing properties?");
 		this.contentEl.createEl("p", {
 			text: overwrite
