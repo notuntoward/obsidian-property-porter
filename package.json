@@ -15,8 +15,9 @@
     "test:ui": "vitest --ui",
     "test:browser": "playwright test",
     "typecheck": "tsc --noEmit -skipLibCheck",
-    "check": "npm run lint && npm run typecheck",
-    "bundle": "node esbuild.config.mjs production"
+    "check": "npm run lint && npm run lint:community-review && npm run typecheck",
+    "bundle": "node esbuild.config.mjs production",
+    "lint:community-review": "eslint . --config eslint.community-review.config.mjs --max-warnings=0"
   },
   "keywords": [
     "obsidian",
@@ -32,11 +33,10 @@
     "@typescript-eslint/parser": "^8.60.1",
     "@vitest/coverage-v8": "^4.0.0",
     "@vitest/ui": "^4.0.0",
-    "builtin-modules": "^4.0.0",
     "commons": "file:../obsidian-commons",
     "esbuild": "^0.28.0",
     "eslint": "^9.39.4",
-    "eslint-plugin-obsidianmd": "^0.4.2",
+    "eslint-plugin-obsidianmd": "^0.6.0",
     "fast-check": "^4.5.3",
     "globals": "^17.6.0",
     "jsdom": "^29.0.1",

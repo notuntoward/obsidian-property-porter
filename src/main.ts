@@ -105,7 +105,7 @@ export class SourceRepairPermissionModal extends Modal {
 			event.key === "ArrowRight"
 				? (currentIndex + 1) % buttons.length
 				: (currentIndex + buttons.length - 1) % buttons.length;
-		buttons[nextIndex]!.focus();
+		buttons[nextIndex].focus();
 		event.preventDefault();
 	};
 
@@ -486,7 +486,7 @@ export default class PropertyPorter extends Plugin {
 			.join("\n");
 
 		try {
-			const parsed = parseYaml(yaml);
+			const parsed: unknown = parseYaml(yaml);
 			if (parsed === null || parsed === undefined) return {};
 			if (typeof parsed !== "object" || Array.isArray(parsed)) {
 				throw new Error("Frontmatter must be a YAML mapping");
@@ -893,7 +893,7 @@ export default class PropertyPorter extends Plugin {
 		forceTagMerge = false
 	): Promise<void> {
 		const data = structuredClone(payload);
-		await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
+		await this.app.fileManager.processFrontMatter(file, (frontmatter: Record<string, unknown>) => {
 			const destination = stripPosition(frontmatter);
 			const merged = this.mergeFrontmatter(data, destination);
 			if (forceTagMerge) {
@@ -935,7 +935,8 @@ export default class PropertyPorter extends Plugin {
 	// is (native window, WorkspaceParent), not just the parent object.
 	getActiveTabGroupFiles(): TFile[] {
 		const workspace = this.app.workspace;
-		const currentLeaf = workspace.activeLeaf ?? null;
+		const activeView = workspace.getActiveViewOfType?.(FileView);
+		const currentLeaf = activeView?.leaf ?? null;
 		const model = buildNavigationModel(this.app, currentLeaf);
 		const activeFile = workspace.getActiveFile?.() ?? null;
 		const activeFileLeaf = activeFile
@@ -1147,8 +1148,8 @@ export default class PropertyPorter extends Plugin {
 				)
 					continue;
 
-				const clipStr = String(clipValue).trim();
-				const targetStr = String(targetValue).trim();
+				const clipStr = formatRawValue(clipValue).trim();
+				const targetStr = formatRawValue(targetValue).trim();
 				if (clipStr === targetStr) continue;
 
 				const candidates = conflicts[key] ?? [clipStr];

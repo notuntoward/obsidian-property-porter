@@ -3,6 +3,18 @@ export { AbstractInputSuggest } from 'commons/testing';
 export { Platform } from 'commons/testing';
 export { setIcon } from 'commons/testing';
 
+// Polyfill Obsidian's cross-window-safe DOM instance check for jsdom.
+if (typeof Node !== "undefined" && !(Node.prototype as any).instanceOf) {
+	(Node.prototype as any).instanceOf = function (type: new (...args: any[]) => any): boolean {
+		let current: any = this;
+		while (current) {
+			if (current.constructor?.name === type.name) return true;
+			current = Object.getPrototypeOf(current);
+		}
+		return false;
+	};
+}
+
 // Minimal mock of the type-only `obsidian` package so that unit tests can
 // resolve `import { ... } from "obsidian"` without the real Obsidian runtime.
 // Extend these stubs as your tests need them.
@@ -391,6 +403,11 @@ export class App {
 	constructor(options: any = {}) {
 		this.vault = options.vault ?? {};
 		this.workspace = options.workspace ?? {};
+		const activeLeaf = this.workspace.activeLeaf;
+		if (activeLeaf?.view && !activeLeaf.view.leaf) activeLeaf.view.leaf = activeLeaf;
+		this.workspace.getActiveViewOfType ??= (viewType: new (...args: any[]) => any) =>
+			activeLeaf?.view instanceof viewType ? activeLeaf.view : null;
+		this.workspace.getActiveFile ??= () => activeLeaf?.view?.file ?? null;
 		this.metadataCache = options.metadataCache ?? {};
 		this.fileManager = options.fileManager ?? {};
 	}

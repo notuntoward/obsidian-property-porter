@@ -16,6 +16,7 @@ import {
 	coerceToType,
 	jsTypeOf,
 	candidateKey,
+	formatRawValue,
 	type ValueType,
 	type FrontmatterValueSources,
 	type ValuePickerOptions,
@@ -243,7 +244,7 @@ export class SelectPropertiesModal extends Modal {
 
 			const candidates: Candidate[] = [];
 			if (isKnownType) {
-				const targetType = vaultType as ValueType;
+				const targetType = vaultType;
 				for (const raw of rawItems) {
 					const res = coerceToType(raw, targetType);
 					if (res.ok) {
@@ -258,7 +259,7 @@ export class SelectPropertiesModal extends Modal {
 							candidates.push({
 								raw: coercedVal,
 								key,
-								display: String(coercedVal),
+								display: formatRawValue(coercedVal),
 								jsType: jsTypeOf(coercedVal),
 								...(raw !== coercedVal ? { coercedFrom: raw } : {}),
 							});
@@ -269,7 +270,7 @@ export class SelectPropertiesModal extends Modal {
 							candidates.push({
 								raw,
 								key,
-								display: String(raw),
+								display: formatRawValue(raw),
 								jsType: jsTypeOf(raw),
 								mismatch: true,
 							});
@@ -283,7 +284,7 @@ export class SelectPropertiesModal extends Modal {
 						candidates.push({
 							raw,
 							key,
-							display: String(raw),
+							display: formatRawValue(raw),
 							jsType: jsTypeOf(raw),
 						});
 					}
@@ -754,7 +755,7 @@ export class SelectPropertiesModal extends Modal {
 			state.name,
 			state.candidates.map((c) => c.display)
 		);
-		if (propertyType && propertyType !== "unknown") return propertyType as ValueType;
+		if (propertyType && propertyType !== "unknown") return propertyType;
 		if (state.candidates.length > 0 && state.candidates.every((c) => c.jsType === "boolean" || typeof c.raw === "boolean")) {
 			return "checkbox";
 		}
@@ -810,7 +811,7 @@ export class SelectPropertiesModal extends Modal {
 				},
 			});
 			if (state.selected[0] !== undefined && state.selected[0] !== null) {
-				numInput.value = String(state.selected[0]);
+				numInput.value = formatRawValue(state.selected[0]);
 			}
 			const commitNumber = () => {
 				const trimmed = numInput.value.trim();
@@ -861,8 +862,8 @@ export class SelectPropertiesModal extends Modal {
 					autocomplete: "off",
 				},
 			});
-			if (state.selected[0] !== undefined && state.selected[0] !== null && String(state.selected[0]).trim()) {
-				textInput.value = String(state.selected[0]);
+			if (state.selected[0] !== undefined && state.selected[0] !== null && formatRawValue(state.selected[0]).trim()) {
+				textInput.value = formatRawValue(state.selected[0]);
 			}
 			const commitText = (rawVal: string) => {
 				const trimmed = rawVal.trim();
@@ -895,7 +896,7 @@ export class SelectPropertiesModal extends Modal {
 
 		const datetimeOptions =
 			effectiveType === "datetime"
-				? datetimePickerOptions(String(state.selected[0] ?? state.candidates[0]?.display ?? ""))
+				? datetimePickerOptions(formatRawValue(state.selected[0] ?? state.candidates[0]?.display ?? ""))
 				: undefined;
 		const datePickerOptions =
 			effectiveType === "date"
@@ -904,7 +905,7 @@ export class SelectPropertiesModal extends Modal {
 
 		state.picker = new ValuePicker(this.app, hostEl, {
 			...this.buildPickerOptions(state, kind),
-			value: String(state.selected[0] ?? ""),
+			value: formatRawValue(state.selected[0] ?? ""),
 			multiple: false,
 			showSingleValueChip: false,
 			selectedValueStyle: selectedValueStyle(state.name),
@@ -932,7 +933,7 @@ export class SelectPropertiesModal extends Modal {
 		);
 		const datetimeOptions =
 			propertyType === "datetime"
-				? datetimePickerOptions(String(state.selected[0] ?? state.candidates[0]?.display ?? ""))
+				? datetimePickerOptions(formatRawValue(state.selected[0] ?? state.candidates[0]?.display ?? ""))
 				: undefined;
 		if (state.hasConflict) {
 			const optionsEl = cardEl.createDiv({ cls: "pp-conflict-options" });
@@ -1025,9 +1026,9 @@ export class SelectPropertiesModal extends Modal {
 				const sources =
 					propSources?.[candidate.key] ??
 					propSources?.[candidate.display] ??
-					propSources?.[String(candidate.raw)] ??
+					propSources?.[formatRawValue(candidate.raw)] ??
 					(candidate.coercedFrom !== undefined
-						? propSources?.[String(candidate.coercedFrom)]
+						? propSources?.[formatRawValue(candidate.coercedFrom)]
 						: undefined) ??
 					[];
 				const sourcesEl = option.createSpan({ cls: "pp-conflict-sources" });
@@ -1339,7 +1340,7 @@ export class SelectPropertiesModal extends Modal {
 	// choices of a conflict. Inside text inputs they do nothing.
 	private stepFocus(delta: 1 | -1): void {
 		const active = this.contentEl.ownerDocument.activeElement;
-		if (active instanceof HTMLInputElement && active.type === "radio") {
+		if (active?.instanceOf(HTMLInputElement) && active.type === "radio") {
 			const radios = Array.from(
 				active.closest(".pp-property-card")?.querySelectorAll<HTMLInputElement>('input[type="radio"]') ?? []
 			);
@@ -1355,7 +1356,7 @@ export class SelectPropertiesModal extends Modal {
 
 	focusCard(delta: 1 | -1): void {
 		const activeElement = this.contentEl.ownerDocument.activeElement;
-		if (!(activeElement instanceof HTMLElement)) return;
+		if (!activeElement?.instanceOf(HTMLElement)) return;
 		const currentCard = activeElement.closest<HTMLElement>(".pp-property-card");
 		if (!currentCard) return;
 		const cards = Array.from(this.contentEl.querySelectorAll<HTMLElement>(".pp-property-card"));
@@ -1364,8 +1365,8 @@ export class SelectPropertiesModal extends Modal {
 	}
 
 	private readonly handleModalFocus = (event: FocusEvent): void => {
-		const target = event.target;
-		if (!(target instanceof HTMLElement)) return;
+		const target = event.target as Node | null;
+		if (!target?.instanceOf(HTMLElement)) return;
 		if (this.addHostEl && !this.addRowEl?.contains(target)) this.addHostEl.hidden = true;
 		this.highlightConflictTabs(target);
 		const hint = this.rowHint(target);

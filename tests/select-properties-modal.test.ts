@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 // @ts-nocheck
 
+import { readFileSync } from "node:fs";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import * as obsidianMock from "obsidian";
 import { ConfirmNewEntryModal } from "commons/properties";
@@ -2015,6 +2016,38 @@ describe("SelectPropertiesModal Ctrl+N / Ctrl+P", () => {
 		expect(document.activeElement).toBe(input);
 	});
 });
+
+	it("uses cross-window-safe element checks in a pop-out document", () => {
+		const { app } = createApp();
+		const modal = new SelectPropertiesModal(app as any, createMockCatalog(), {}, vi.fn(), vi.fn());
+		const popup = document.implementation.createHTMLDocument("popup");
+		const host = popup.createElement("div");
+		host.className = "pp-modal-content";
+		const card = popup.createElement("div");
+		card.className = "pp-property-card";
+		const firstRadio = popup.createElement("input");
+		const secondRadio = popup.createElement("input");
+		firstRadio.type = secondRadio.type = "radio";
+		firstRadio.name = secondRadio.name = "choice";
+		card.append(firstRadio, secondRadio);
+		host.append(card);
+		(modal as any).contentEl = host;
+		const secondClick = vi.spyOn(secondRadio, "click");
+		Object.defineProperty(popup, "activeElement", { configurable: true, value: firstRadio });
+
+		(modal as any).stepFocus(1);
+
+		expect(secondClick).toHaveBeenCalledOnce();
+		expect(firstRadio.instanceOf(HTMLInputElement)).toBe(true);
+	});
+
+	it("avoids same-window instanceof checks for modal focus targets", () => {
+		const source = readFileSync("src/select-properties-modal.ts", "utf8");
+		const newline = String.fromCharCode(10);
+		const executableSource = source.split(newline).filter((line) => !line.trim().startsWith("//")).join(newline);
+		expect(executableSource).not.toContain("instanceof HTMLInputElement");
+		expect(executableSource).not.toContain("instanceof HTMLElement");
+	});
 
 describe("SelectPropertiesModal property type for new properties", () => {
 	function openWithNewProperty(name = "brandnew") {

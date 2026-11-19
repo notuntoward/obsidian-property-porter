@@ -298,9 +298,9 @@ function parseInlineScalar(raw: string): unknown {
 // conflict is settled on a value that did not exist in the note.
 function renderOccurrenceLines(key: string, value: unknown): string[] {
 	if (Array.isArray(value)) {
-		return [`${key}:`, ...value.map((item) => `  - ${String(item)}`)];
+		return [`${key}:`, ...value.map((item) => `  - ${formatRawValue(item)}`)];
 	}
-	return [`${key}: ${value === null || value === undefined ? "" : String(value)}`];
+	return [`${key}: ${value === null || value === undefined ? "" : formatRawValue(value)}`];
 }
 
 /**
