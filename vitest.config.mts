@@ -12,6 +12,8 @@ export default defineConfig({
       'commons/windows': path.resolve(import.meta.dirname, '../obsidian-commons/src/windows/index.ts'),
       'commons/modal': path.resolve(import.meta.dirname, '../obsidian-commons/src/modal/index.ts'),
       'commons/properties/values': path.resolve(import.meta.dirname, '../obsidian-commons/src/properties/values.ts'),
+      'commons/properties/review-modal': path.resolve(import.meta.dirname, '../obsidian-commons/src/properties/review-modal.ts'),
+      'commons/properties/merge': path.resolve(import.meta.dirname, '../obsidian-commons/src/properties/merge.ts'),
       'commons/properties': path.resolve(import.meta.dirname, '../obsidian-commons/src/properties/index.ts'),
       'commons/search': path.resolve(import.meta.dirname, '../obsidian-commons/src/search/index.ts'),
       'commons/geometry': path.resolve(import.meta.dirname, '../obsidian-commons/src/geometry/index.ts'),

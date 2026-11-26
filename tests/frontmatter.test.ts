@@ -1,10 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import {
 	filterFrontmatter,
-	unionFrontmatter,
 	getFrontmatterLines,
-	mergeArrays,
-	deepMerge,
 	mergeFrontmatter,
 	findOverlappingPropertyFilters,
 	removeOverlappingExcludedProperties,
@@ -36,6 +33,12 @@ describe("findPasteChanges", () => {
 		const destination = { version: "2" };
 		expect(findPasteChanges(source, destination, "skip")).toHaveLength(1);
 		expect(findPasteChanges(source, destination, "merge")).toEqual([]);
+	});
+
+	it("compares with the note's property of the same name in another case", () => {
+		expect(findPasteChanges({ status: "done" }, { Status: "draft" }, "overwrite")).toEqual([
+			{ key: "Status", from: "draft", to: "done" },
+		]);
 	});
 });
 
@@ -97,100 +100,6 @@ describe("isEmptyPropertyValue", () => {
 	});
 });
 
-describe("normalizeArrayItems", () => {
-	const normalize = (arr: unknown[]) =>
-		// Import is internal; test through mergeArrays behavior
-		mergeArrays(arr, []);
-
-	it("strips leading # from string items", () => {
-		expect(normalize(["#a", "#b", "#c"])).toEqual(["a", "b", "c"]);
-	});
-
-	it("leaves non-string items untouched", () => {
-		expect(normalize([1, true, null])).toEqual([1, true, null]);
-	});
-
-	it("handles mixed arrays", () => {
-		expect(normalize(["#a", 1, "#b"])).toEqual(["a", 1, "b"]);
-	});
-});
-
-describe("mergeArrays", () => {
-	it("returns destination when source is empty", () => {
-		expect(mergeArrays([], ["b", "c"])).toEqual(["b", "c"]);
-	});
-
-	it("returns source when destination is empty", () => {
-		expect(mergeArrays(["a", "b"], [])).toEqual(["a", "b"]);
-	});
-
-	it("unions arrays, preserving destination order then appending new source items", () => {
-		expect(mergeArrays(["a", "b", "c"], ["b", "c", "d", "e"])).toEqual([
-			"b",
-			"c",
-			"d",
-			"e",
-			"a",
-		]);
-	});
-
-	it("treats #a and a as duplicates", () => {
-		expect(mergeArrays(["#a", "b"], ["a", "c"])).toEqual(["a", "c", "b"]);
-	});
-
-	it("deduplicates within source", () => {
-		expect(mergeArrays(["a", "a", "b"], ["b", "c"])).toEqual([
-			"b",
-			"c",
-			"a",
-		]);
-	});
-
-	it("handles arrays of objects by JSON equality", () => {
-		const a = { x: 1 };
-		const b = { x: 2 };
-		expect(mergeArrays([a], [b])).toEqual([b, a]);
-	});
-});
-
-describe("deepMerge", () => {
-	it("returns destination when source is empty string", () => {
-		expect(deepMerge("", "dest")).toBe("dest");
-	});
-
-	it("returns destination when source is empty array", () => {
-		expect(deepMerge([], ["dest"])).toEqual(["dest"]);
-	});
-
-	it("returns source when destination is empty string", () => {
-		expect(deepMerge("src", "")).toBe("src");
-	});
-
-	it("returns source when destination is empty array", () => {
-		expect(deepMerge(["src"], [])).toEqual(["src"]);
-	});
-
-	it("merges arrays by union", () => {
-		expect(deepMerge(["a", "b"], ["b", "c"])).toEqual(["b", "c", "a"]);
-	});
-
-	it("recursively merges objects", () => {
-		expect(deepMerge({ a: { x: 1 } }, { a: { y: 2 } })).toEqual({
-			a: { x: 1, y: 2 },
-		});
-	});
-
-	it("returns source scalar for scalar types", () => {
-		expect(deepMerge("src", "dest")).toBe("src");
-		expect(deepMerge(1, 2)).toBe(1);
-	});
-
-	it("returns source when one value is an array and the other is not", () => {
-		expect(deepMerge(["a"], "dest")).toEqual(["a"]);
-		expect(deepMerge("src", ["b"])).toBe("src");
-	});
-});
-
 describe("mergeFrontmatter", () => {
 	const base = { tags: ["b", "c", "d", "e"], status: "draft" };
 	const incoming = { tags: ["#a", "#b", "#c"], title: "New Title" };
@@ -213,6 +122,13 @@ describe("mergeFrontmatter", () => {
 		});
 	});
 
+	it("merge adds a single pasted value to a list without dropping its values or their #", () => {
+		expect(mergeFrontmatter({ related: "[[C]]", aliases: ["#2 result"] }, { related: ["[[A]]", "[[B]]"], aliases: ["#1 result"] }, "merge")).toEqual({
+			related: ["[[A]]", "[[B]]", "[[C]]"],
+			aliases: ["#1 result", "#2 result"],
+		});
+	});
+
 	it("merge unions arrays and preserves non-array values", () => {
 		const result = mergeFrontmatter(incoming, base, "merge");
 		expect(result).toEqual({
@@ -220,6 +136,16 @@ describe("mergeFrontmatter", () => {
 			status: "draft",
 			title: "New Title",
 		});
+	});
+
+	it("matches property names regardless of case and keeps the note's spelling", () => {
+		const note = { Tags: ["project"], Status: "draft" };
+		expect(mergeFrontmatter({ tags: ["Project", "new"], status: "done" }, note, "merge")).toEqual({
+			Tags: ["project", "new"],
+			Status: "done",
+		});
+		expect(mergeFrontmatter({ status: "done" }, note, "skip")).toEqual(note);
+		expect(mergeFrontmatter({ status: "done" }, note, "overwrite")).toEqual({ Tags: ["project"], Status: "done" });
 	});
 });
 
@@ -272,56 +198,6 @@ describe("filterFrontmatter", () => {
 
 	it("returns empty object when fm is empty", () => {
 		expect(filterFrontmatter({}, "tags", "aliases")).toEqual({});
-	});
-});
-
-describe("unionFrontmatter", () => {
-	it("deduplicates repeated list values when parsing frontmatter", () => {
-		const parsed = parseRawFrontmatter("---\ntags:\n  - a\n  - a\n  - b\n---\n");
-		expect(parsed.map.tags).toEqual(["a", "b"]);
-	});
-
-	it("unions list properties across inputs", () => {
-		const r = unionFrontmatter([
-			{ tags: ["a", "b"] },
-			{ tags: ["b", "c"] },
-		]);
-		expect(r).toEqual({ tags: ["a", "b", "c"] });
-	});
-
-	it("preserves identical scalar values as scalar", () => {
-		const r = unionFrontmatter([
-			{ status: "draft" },
-			{ status: "draft" },
-		]);
-		expect(r).toEqual({ status: "draft" });
-	});
-
-	it("keeps first scalar by default when conflicting values exist", () => {
-		const r = unionFrontmatter([
-			{ status: "draft" },
-			{ status: "published" },
-		]);
-		expect(r).toEqual({ status: "draft" });
-	});
-
-	it("gathers conflicting scalar values into an array of candidate values when gatherConflicts is true", () => {
-		const r = unionFrontmatter(
-			[
-				{ status: "draft" },
-				{ status: "published" },
-			],
-			{ gatherConflicts: true }
-		);
-		expect(r).toEqual({ status: ["draft", "published"] });
-	});
-
-	it("ignores empty property values", () => {
-		const r = unionFrontmatter([
-			{ status: "draft", tags: [] },
-			{ tags: ["work"] },
-		]);
-		expect(r).toEqual({ status: "draft", tags: ["work"] });
 	});
 });
 

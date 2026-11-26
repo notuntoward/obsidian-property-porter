@@ -16,6 +16,7 @@ import {
 	filterFrontmatter,
 	mergeFrontmatter,
 	mergeArrays,
+	findPropertyKey,
 	unionFrontmatter,
 	isEmptyPropertyValue,
 	countPropertyValue,
@@ -40,6 +41,7 @@ import {
 import {
 	collectVaultMetadata,
 	propertyNamePickerOptions,
+	findScalarConflicts,
 	isListProperty,
 	ValuePicker,
 	collectValueSources,
@@ -51,6 +53,7 @@ import {
 import { applyModalAppearance, FileSuggestModal } from "commons/modal";
 import {
 	SelectPropertiesModal,
+	propertyReviewStatus,
 	type ConflictCardContext,
 	type SelectPropertiesModalOptions,
 } from "./select-properties-modal";
@@ -187,6 +190,7 @@ interface PropertyPorterSettings {
 	pasteMode: PasteMode;
 	confirmOverwrite: boolean;
 	confirmSkip: boolean;
+	previewMerge: boolean;
 }
 
 type FilterOverride = { include: string[]; exclude: string[] };
@@ -198,6 +202,7 @@ const DEFAULT_SETTINGS: PropertyPorterSettings = {
 	pasteMode: "merge",
 	confirmOverwrite: true,
 	confirmSkip: true,
+	previewMerge: false,
 };
 
 const TAGS_FILTER_OVERRIDE: FilterOverride = { include: ["tags"], exclude: [] };
@@ -820,6 +825,18 @@ export default class PropertyPorter extends Plugin {
 		// A merge-mode scalar collision is ambiguous: ask once before writing.
 		// Overwrite and skip modes already encode the user's choice.
 		const { conflicts, context } = await this.gatherPasteConflicts(markdownFiles, overrides, payload);
+		if (this.settings.pasteMode === "merge" && this.settings.previewMerge && markdownFiles.length === 1) {
+			const [file] = markdownFiles;
+			const reviewed = await this.previewMergePaste(file, overrides.get(file), payload, conflicts, context);
+			if (reviewed === "cancelled") return; // nothing written, note stays untouched
+			if (reviewed) {
+				await duplicates.commit();
+				this.applyClipboardTypes(reviewed);
+				await this.writeReviewedProperties(file, reviewed);
+				new Notice(pastedClipboardNotice(reviewed, [file.basename]));
+				return;
+			}
+		}
 		if (Object.keys(conflicts).length > 0) {
 			const resolved = await this.resolveConflicts(payload, conflicts, context);
 			if (resolved === null) return; // cancelled: target stays untouched
@@ -860,6 +877,57 @@ export default class PropertyPorter extends Plugin {
 		}
 	}
 
+	// Merge preview: the note's properties after the paste, in the property
+	// editor with each row marked as new, extended, changed or unchanged, so
+	// the user approves the result instead of the clipboard. Returns the
+	// reviewed values, "cancelled", or null when the paste changes nothing.
+	private async previewMergePaste(
+		file: TFile,
+		override: Record<string, unknown> | undefined,
+		payload: Record<string, unknown>,
+		conflicts: Record<string, unknown[]>,
+		context: Record<string, ConflictCardContext>
+	): Promise<Record<string, unknown> | "cancelled" | null> {
+		const target = override ?? (await this.getFreshParsedFrontmatter(file));
+		const merged = this.mergeFrontmatter(payload, target);
+		const proposed: Record<string, unknown> = {};
+		const conflictNames: string[] = [];
+		const rowContext: Record<string, ConflictCardContext> = {};
+		for (const key of Object.keys(payload)) {
+			const targetKey = findPropertyKey(target, key) ?? key;
+			proposed[targetKey] = conflicts[key] ?? merged[targetKey];
+			if (key in conflicts) conflictNames.push(targetKey);
+			const keyContext = context[key] ?? context[targetKey];
+			const sources = keyContext?.valueSources?.[key] ?? keyContext?.valueSources?.[targetKey];
+			if (keyContext) rowContext[targetKey] = { ...keyContext, valueSources: sources ? { [targetKey]: sources } : undefined };
+		}
+		const changes = Object.entries(proposed).some(
+			([key, value]) => propertyReviewStatus(key, target, Array.isArray(value) ? value : [value], false) !== "unchanged"
+		);
+		if (!changes && conflictNames.length === 0) return null;
+		const result = await this.openPropertySelectionModal(proposed, rowContext, {
+			title: "Review merged properties",
+			subtitle: file.basename,
+			conflictNames,
+			finishText: "Paste",
+			original: target,
+		});
+		if (result.cancelled) return "cancelled";
+		Object.assign(this.clipboardTypes, result.propertyTypes);
+		return result.properties;
+	}
+
+	// Writes values the user already approved in the merge preview as they
+	// are; merging them again would restore list values the user removed.
+	private async writeReviewedProperties(file: TFile, values: Record<string, unknown>): Promise<void> {
+		const data = structuredClone(values);
+		await this.app.fileManager.processFrontMatter(file, (frontmatter: Record<string, unknown>) => {
+			for (const [key, value] of Object.entries(data)) {
+				frontmatter[findPropertyKey(frontmatter, key) ?? key] = value;
+			}
+		});
+	}
+
 	// The existing values an Overwrite or Skip paste would replace or ignore,
 	// per note. Tags pasted with a tags command are always unioned, so they
 	// never count as changes.
@@ -897,17 +965,18 @@ export default class PropertyPorter extends Plugin {
 			const destination = stripPosition(frontmatter);
 			const merged = this.mergeFrontmatter(data, destination);
 			if (forceTagMerge) {
-				for (const key of Object.keys(data)) {
-					if (!["tag", "tags"].includes(key.toLowerCase())) continue;
+				for (const sourceKey of Object.keys(data)) {
+					if (!["tag", "tags"].includes(sourceKey.toLowerCase())) continue;
+					const key = findPropertyKey(destination, sourceKey) ?? sourceKey;
 					const destinationValue = destination[key];
 					const destinationTags = Array.isArray(destinationValue)
 						? destinationValue
 						: destinationValue === null || destinationValue === undefined || destinationValue === ""
 							? []
 							: [destinationValue];
-					const sourceValue = data[key];
+					const sourceValue = data[sourceKey];
 					const sourceTags = Array.isArray(sourceValue) ? sourceValue : [sourceValue];
-					merged[key] = mergeArrays(sourceTags, mergeArrays(destinationTags, []));
+					merged[key] = mergeArrays(sourceTags, destinationTags, key);
 				}
 			}
 			for (const [key, value] of Object.entries(merged)) {
@@ -1051,14 +1120,7 @@ export default class PropertyPorter extends Plugin {
 	// Extracts the scalar keys whose conflicting values were gathered into
 	// candidate arrays by `unionFrontmatter(..., { gatherConflicts: true })`.
 	private extractScalarConflicts(union: Record<string, unknown>): Record<string, unknown[]> {
-		const catalog = collectVaultMetadata(this.app);
-		const conflicts: Record<string, unknown[]> = {};
-		for (const [key, value] of Object.entries(union)) {
-			if (Array.isArray(value) && !isListProperty(catalog, key)) {
-				conflicts[key] = value;
-			}
-		}
-		return conflicts;
+		return findScalarConflicts(collectVaultMetadata(this.app), union);
 	}
 
 	// Builds the conflict-card context for a tab-group copy: for each
@@ -1139,7 +1201,7 @@ export default class PropertyPorter extends Plugin {
 				if (isEmptyPropertyValue(clipValue) || Array.isArray(clipValue)) continue;
 				if (isListProperty(catalog, key)) continue;
 
-				const targetValue = target[key];
+				const targetValue = target[findPropertyKey(target, key) ?? key];
 				if (
 					targetValue === null ||
 					targetValue === undefined ||
@@ -1256,24 +1318,6 @@ export default class PropertyPorter extends Plugin {
 	): Record<string, unknown> {
 		return mergeFrontmatter(source, destination, this.settings.pasteMode);
 	}
-
-	deepMerge(_source: unknown, _destination: unknown): unknown {
-		throw new Error(
-			"deepMerge is extracted to ./frontmatter and should not be called on the plugin instance."
-		);
-	}
-
-	mergeArrays(_source: unknown[], _destination: unknown[]): unknown[] {
-		throw new Error(
-			"mergeArrays is extracted to ./frontmatter and should not be called on the plugin instance."
-		);
-	}
-
-	normalizeArrayItems(_arr: unknown[]): unknown[] {
-		throw new Error(
-			"normalizeArrayItems is extracted to ./frontmatter and should not be called on the plugin instance."
-		);
-	}
 }
 
 export { FileSuggestModal, FileSuggestModal as SuggestFilesModal, SelectPropertiesModal };
@@ -1385,6 +1429,15 @@ export class PropertyPorterSettingTab extends PluginSettingTab {
 						control: {
 							type: "toggle",
 							key: "confirmSkip" satisfies keyof PropertyPorterSettings,
+						},
+					},
+					{
+						name: "Review merged properties",
+						desc: "Before a Merge paste into one note, show the note's properties as they will be after the paste and let you approve or change each one. Rows are marked as new, values added, changed or unchanged. Pasting into a tab group is not previewed.",
+						visible: () => this.plugin.settings.pasteMode === "merge",
+						control: {
+							type: "toggle",
+							key: "previewMerge" satisfies keyof PropertyPorterSettings,
 						},
 					},
 				],

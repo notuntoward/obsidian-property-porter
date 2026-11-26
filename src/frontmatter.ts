@@ -1,40 +1,7 @@
 import { formatRawValue, isEmptyPropertyValue } from "commons/properties/values";
+import { deepMerge, findPropertyKey, mergeArrays, unionFrontmatter } from "commons/properties/merge";
 
-export { formatRawValue, isEmptyPropertyValue };
-
-// Obsidian's getAllTags() returns tags with a leading "#" (e.g. "#foo/bar"),
-// but clipboard/known-tag comparisons expect the bare form. Centralized here
-// so the picker and frontmatter merging strip it the same way.
-export function stripHashTag(tag: string): string {
-	return tag.replace(/^#/, "");
-}
-
-export function normalizeArrayItems(arr: unknown[]): unknown[] {
-	return arr.map((item) =>
-		typeof item === "string" ? stripHashTag(item) : item
-	);
-}
-
-export function mergeArrays(
-	source: unknown[],
-	destination: unknown[]
-): unknown[] {
-	const normalizedSource = normalizeArrayItems(source);
-	const normalizedDest = normalizeArrayItems(destination);
-
-	const seen = new Set(normalizedDest.map((v) => JSON.stringify(v)));
-	const result = [...normalizedDest];
-
-	for (const item of normalizedSource) {
-		const key = JSON.stringify(item);
-		if (!seen.has(key)) {
-			result.push(item);
-			seen.add(key);
-		}
-	}
-
-	return result;
-}
+export { formatRawValue, isEmptyPropertyValue, deepMerge, findPropertyKey, mergeArrays, unionFrontmatter };
 
 // Parses a user-facing comma-separated settings string (e.g. "tags, status")
 // into a trimmed, non-empty list. Shared by every setting that accepts this
@@ -74,80 +41,6 @@ export function countPropertyValue(value: unknown): number {
 	return 1;
 }
 
-export function deepMerge(source: unknown, destination: unknown): unknown {
-	if (isEmptyPropertyValue(source)) {
-		return destination;
-	}
-	if (isEmptyPropertyValue(destination)) {
-		return source;
-	}
-
-	const sourceArray = Array.isArray(source);
-	const destArray = Array.isArray(destination);
-
-	if (sourceArray && destArray) {
-		return mergeArrays(
-			source as unknown[],
-			destination as unknown[]
-		);
-	}
-	if (sourceArray || destArray) {
-		return source;
-	}
-	if (typeof source === "object" && typeof destination === "object") {
-		const destObj = destination as Record<string, unknown>;
-		const sourceObj = source as Record<string, unknown>;
-		const out: Record<string, unknown> = { ...destObj };
-		for (const key of Object.keys(sourceObj)) {
-			if (key in destObj) {
-				out[key] = deepMerge(sourceObj[key], destObj[key]);
-			} else {
-				out[key] = sourceObj[key];
-			}
-		}
-		return out;
-	}
-	return source;
-}
-
-// Unions a sequence of frontmatter objects into a single result. List
-// (array) properties accumulate every distinct value across the inputs via
-// `mergeArrays`. For scalar properties, by default the first non-empty value seen
-// is kept; when `gatherConflicts` is true, conflicting scalar values are gathered
-// into an array of candidate values for conflict resolution.
-export function unionFrontmatter(
-	inputs: Record<string, unknown>[],
-	options?: { gatherConflicts?: boolean }
-): Record<string, unknown> {
-	const result: Record<string, unknown> = {};
-	const gatherConflicts = options?.gatherConflicts ?? false;
-	for (const input of inputs) {
-		for (const [key, value] of Object.entries(input)) {
-			if (isEmptyPropertyValue(value)) continue;
-
-			if (key in result) {
-				const existing = result[key];
-				if (Array.isArray(existing) && Array.isArray(value)) {
-					result[key] = mergeArrays(value, existing);
-				} else if (gatherConflicts) {
-					const existingArr = Array.isArray(existing) ? existing : [existing];
-					const valueArr = Array.isArray(value) ? value : [value];
-					const merged = mergeArrays(valueArr, existingArr);
-					if (merged.length === 1 && !Array.isArray(existing) && !Array.isArray(value)) {
-						result[key] = merged[0];
-					} else {
-						result[key] = merged;
-					}
-				}
-				// scalar already set: keep the first value when gatherConflicts is false
-				continue;
-			}
-			result[key] = value;
-		}
-	}
-	return result;
-}
-
 export type PasteMode = "overwrite" | "skip" | "merge";
 
 export interface PasteChange {
@@ -168,7 +61,8 @@ export function findPasteChanges(
 ): PasteChange[] {
 	if (pasteMode === "merge") return [];
 	const changes: PasteChange[] = [];
-	for (const [key, value] of Object.entries(source)) {
+	for (const [sourceKey, value] of Object.entries(source)) {
+		const key = findPropertyKey(destination, sourceKey) ?? sourceKey;
 		const existing = destination[key];
 		if (isEmptyPropertyValue(value) || isEmptyPropertyValue(existing)) continue;
 		const from = formatRawValue(existing).trim();
@@ -185,13 +79,16 @@ export function mergeFrontmatter(
 ): Record<string, unknown> {
 	const result: Record<string, unknown> = { ...destination };
 
-	for (const key of Object.keys(source)) {
+	// Obsidian treats property names case-insensitively, so a pasted "Tags"
+	// updates the note's "tags" instead of adding a second key.
+	for (const sourceKey of Object.keys(source)) {
+		const key = findPropertyKey(destination, sourceKey) ?? sourceKey;
 		if (pasteMode === "skip" && key in destination) continue;
 
 		if (pasteMode === "merge") {
-			result[key] = deepMerge(source[key], destination[key]);
+			result[key] = deepMerge(source[sourceKey], destination[key], key);
 		} else {
-			result[key] = source[key];
+			result[key] = source[sourceKey];
 		}
 	}
 

@@ -1294,6 +1294,60 @@ describe("PropertyPorter", () => {
 			expect(fileCache[target.path].frontmatter).toEqual({ status: "target" });
 		});
 
+		it("previews a single-note merge paste and writes the reviewed values as approved", async () => {
+			const target = new obsidianMock.TFile("dest.md");
+			const { plugin, fileCache } = createPlugin();
+			await plugin.onload();
+			plugin.settings.previewMerge = true;
+			plugin.clipboard = { tags: ["b"], Status: "clip" };
+			fileCache[target.path] = { frontmatter: { tags: ["a"], status: "target", keep: 1 } };
+			const modal = vi
+				.spyOn(plugin, "openPropertySelectionModal")
+				.mockResolvedValue({ properties: { tags: ["b"], status: "target" }, cancelled: false });
+
+			await plugin.pasteProperties(target);
+
+			const [initial, , options] = modal.mock.calls[0];
+			expect(initial).toEqual({ tags: ["a", "b"], status: ["clip", "target"] });
+			expect(options).toMatchObject({
+				title: "Review merged properties",
+				conflictNames: ["status"],
+				original: { tags: ["a"], status: "target", keep: 1 },
+			});
+			expect(modal).toHaveBeenCalledTimes(1);
+			// The reviewed list replaces the old one: the removed "a" stays removed.
+			expect(fileCache[target.path].frontmatter).toEqual({ tags: ["b"], status: "target", keep: 1 });
+		});
+
+		it("leaves the note untouched when the merge preview is cancelled", async () => {
+			const target = new obsidianMock.TFile("dest.md");
+			const { plugin, fileCache } = createPlugin();
+			await plugin.onload();
+			plugin.settings.previewMerge = true;
+			plugin.clipboard = { tags: ["b"] };
+			fileCache[target.path] = { frontmatter: { tags: ["a"] } };
+			vi.spyOn(plugin, "openPropertySelectionModal").mockResolvedValue({ properties: {}, cancelled: true });
+
+			await plugin.pasteProperties(target);
+
+			expect(fileCache[target.path].frontmatter).toEqual({ tags: ["a"] });
+		});
+
+		it("skips the merge preview when the paste changes nothing", async () => {
+			const target = new obsidianMock.TFile("dest.md");
+			const { plugin, fileCache } = createPlugin();
+			await plugin.onload();
+			plugin.settings.previewMerge = true;
+			plugin.clipboard = { tags: ["a"] };
+			fileCache[target.path] = { frontmatter: { tags: ["a"] } };
+			const modal = vi.spyOn(plugin, "openPropertySelectionModal");
+
+			await plugin.pasteProperties(target);
+
+			expect(modal).not.toHaveBeenCalled();
+			expect(fileCache[target.path].frontmatter).toEqual({ tags: ["a"] });
+		});
+
 		it("repairs duplicate keys in the paste target before pasting", async () => {
 			const active = new obsidianMock.TFile("active.md");
 			const target = new obsidianMock.TFile("dup.md");
@@ -2123,16 +2177,6 @@ describe("PropertyPorter", () => {
 			const result = plugin.mergeFrontmatter({ a: 1, b: 2 }, { a: 3, c: 4 });
 
 			expect(result).toEqual({ a: 3, b: 2, c: 4 });
-		});
-
-		it("throws when extracted helpers are called on the plugin", () => {
-			const { plugin } = createPlugin();
-
-			expect(() => plugin.deepMerge({}, {})).toThrow("deepMerge is extracted");
-			expect(() => plugin.mergeArrays([], [])).toThrow("mergeArrays is extracted");
-			expect(() => plugin.normalizeArrayItems([])).toThrow(
-				"normalizeArrayItems is extracted"
-			);
 		});
 	});
 });
